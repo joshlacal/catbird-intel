@@ -67,6 +67,8 @@ export class ClickHouseWriter {
     u.searchParams.set("input_format_skip_unknown_fields", "1");
     u.searchParams.set("date_time_input_format", "best_effort");
     u.searchParams.set("input_format_json_throw_on_bad_escape_sequence", "0");
+    // Monthly partitions bound this to ~50; the guard is headroom, not a fix.
+    u.searchParams.set("max_partitions_per_insert_block", "500");
     const headers: Record<string, string> = {};
     if (this.opts.user) headers["X-ClickHouse-User"] = this.opts.user;
     if (this.opts.password) headers["X-ClickHouse-Key"] = this.opts.password;

@@ -7,8 +7,10 @@
 --     version and an older create can never override a newer delete.
 --   * Delete commits carry only did/collection/rkey/rev; they are written as a
 --     row with is_deleted = 1 under the same key.
---   * Partitions use `rkey_date` (decoded from the TID record key), so a delete
---     lands in the same partition as its create and merges can drop both.
+--   * Partitions use the month of `rkey_date` (decoded from the TID record key),
+--     so a delete lands in its create's partition and merges can drop both.
+--     Monthly, not daily: deletes of old records otherwise spread one insert
+--     over >100 partitions (see ops/migrations/002_monthly_hot_partitions.sql).
 -- Read paths must use FINAL (or the v_* views) and exclude is_deleted = 1.
 
 CREATE DATABASE IF NOT EXISTS catbird;
@@ -17,62 +19,60 @@ CREATE DATABASE IF NOT EXISTS catbird;
 
 CREATE TABLE IF NOT EXISTS catbird.posts
 (
-    did              String,
-    rkey             String,
-    rev              UInt64,
+    did              String CODEC(ZSTD(3)),
+    rkey             String CODEC(ZSTD(3)),
+    rev              UInt64 CODEC(Delta, ZSTD(3)),
     is_deleted       UInt8,
     rkey_date        Date,
-    seq              UInt64,
-    indexed_at       DateTime64(3, 'UTC'),
-    created_at       DateTime64(3, 'UTC'),
-    cid              String,
+    seq              UInt64 CODEC(Delta, ZSTD(3)),
+    indexed_at       DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
+    created_at       DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
+    cid              String CODEC(ZSTD(3)),
     text             String CODEC(ZSTD(3)),
     langs            Array(LowCardinality(String)),
-    reply_root       String,
-    reply_parent     String,
-    quote_uri        String,
+    reply_root       String CODEC(ZSTD(3)),
+    reply_parent     String CODEC(ZSTD(3)),
+    quote_uri        String CODEC(ZSTD(3)),
     embed_type       LowCardinality(String),
     image_count      UInt8,
     has_alt_text     UInt8,
     has_video        UInt8,
-    external_uri     String,
-    facet_links      Array(String),
-    facet_tags       Array(String),
-    facet_mentions   Array(String),
+    external_uri     String CODEC(ZSTD(3)),
+    facet_links      Array(String) CODEC(ZSTD(3)),
+    facet_tags       Array(String) CODEC(ZSTD(3)),
+    facet_mentions   Array(String) CODEC(ZSTD(3)),
     self_labels      Array(LowCardinality(String))
 )
 ENGINE = ReplacingMergeTree(rev, is_deleted)
-PARTITION BY rkey_date
+PARTITION BY toYYYYMM(rkey_date)
 ORDER BY (did, rkey)
 TTL rkey_date + INTERVAL 14 DAY
 SETTINGS index_granularity = 8192;
 
 -- Likes and reposts share one table; `kind` distinguishes them. Subject URIs
--- are split so the projection can aggregate by subject cheaply.
+-- are split into did/collection/rkey. Per-subject aggregation is done by
+-- Phase 2 materialized views, not a projection (a full-copy projection
+-- doubled this table's disk use).
 CREATE TABLE IF NOT EXISTS catbird.engagements
 (
     kind               Enum8('like' = 1, 'repost' = 2),
-    did                String,
-    rkey               String,
-    rev                UInt64,
+    did                String CODEC(ZSTD(3)),
+    rkey               String CODEC(ZSTD(3)),
+    rev                UInt64 CODEC(Delta, ZSTD(3)),
     is_deleted         UInt8,
     rkey_date          Date,
-    seq                UInt64,
-    indexed_at         DateTime64(3, 'UTC'),
-    subject_did        String,
+    seq                UInt64 CODEC(Delta, ZSTD(3)),
+    indexed_at         DateTime64(3, 'UTC') CODEC(DoubleDelta, ZSTD(3)),
+    subject_did        String CODEC(ZSTD(3)),
     subject_collection LowCardinality(String),
-    subject_rkey       String,
-    via_uri            String,
-    PROJECTION by_subject
-    (
-        SELECT * ORDER BY (subject_did, subject_rkey, indexed_at)
-    )
+    subject_rkey       String CODEC(ZSTD(3)),
+    via_uri            String CODEC(ZSTD(3))
 )
 ENGINE = ReplacingMergeTree(rev, is_deleted)
-PARTITION BY (rkey_date, kind)
+PARTITION BY toYYYYMM(rkey_date)
 ORDER BY (did, kind, rkey)
 TTL rkey_date + INTERVAL 14 DAY
-SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild';
+SETTINGS index_granularity = 8192;
 
 -- --------------------------------------------- current state (no TTL)
 

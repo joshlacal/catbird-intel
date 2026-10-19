@@ -65,9 +65,22 @@ SCHEMA = pa.schema(
 
 
 def gws_json(*args: str, cwd: str | None = None) -> dict:
-    out = subprocess.run([GWS, *args], capture_output=True, text=True, cwd=cwd, check=True).stdout
-    start = out.find("{")
-    return json.loads(out[start:]) if start >= 0 else {}
+    last_err = ""
+    for attempt in range(5):
+        r = subprocess.run([GWS, *args], capture_output=True, text=True, cwd=cwd)
+        if r.returncode == 0:
+            start = r.stdout.find("{")
+            if start >= 0:
+                try:
+                    return json.loads(r.stdout[start:])
+                except json.JSONDecodeError as exc:
+                    last_err = str(exc)
+            else:
+                return {}
+        else:
+            last_err = (r.stderr or r.stdout)[-300:]
+        time.sleep(3 * (attempt + 1))
+    raise RuntimeError(f"gws_json failed after 5 attempts ({args[:3]}): {last_err}")
 
 
 def list_children(folder_id: str) -> list[dict]:
@@ -117,28 +130,39 @@ def sha256_file(path: pathlib.Path) -> str:
 def download_segment(seg: dict, dest_dir: pathlib.Path) -> pathlib.Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     name = seg["jss"]["name"]
+    target = dest_dir / name
     # gws returns JSON media on stdout (it does not honor -o for JSON), so the
     # receipt is captured and written here; the binary segment uses -o.
     receipt = gws_json("drive", "files", "get", "--params", json.dumps({"fileId": seg["receipt"]["id"], "alt": "media"}))
     if receipt.get("name") != name or "sha256" not in receipt:
         raise RuntimeError(f"unexpected receipt for {name}: {str(receipt)[:200]}")
     (dest_dir / (name + ".receipt.json")).write_text(json.dumps(receipt, indent=2))
-    for attempt in range(5):
+    expected_bytes = int(receipt.get("bytes") or seg["jss"].get("size") or 0)
+    expected_sha = receipt["sha256"]
+    if target.exists() and target.stat().st_size == expected_bytes and sha256_file(target) == expected_sha:
+        return target
+    last_err = ""
+    for attempt in range(6):
+        target.unlink(missing_ok=True)
         r = subprocess.run(
             [GWS, "drive", "files", "get", "--params", json.dumps({"fileId": seg["jss"]["id"], "alt": "media"}), "-o", name],
             cwd=str(dest_dir),
             capture_output=True,
             text=True,
         )
-        if r.returncode == 0 and (dest_dir / name).exists():
-            break
-        time.sleep(5 * (attempt + 1))
-    else:
-        raise RuntimeError(f"download failed for {name}: {r.stderr[-300:]}")
-    got = sha256_file(dest_dir / name)
-    if got != receipt.get("sha256"):
-        raise RuntimeError(f"sha256 mismatch for {name}: {got} != {receipt.get('sha256')}")
-    return dest_dir / name
+        if r.returncode == 0 and target.exists():
+            actual_bytes = target.stat().st_size
+            if expected_bytes and actual_bytes != expected_bytes:
+                last_err = f"truncated download {actual_bytes} != {expected_bytes}"
+            else:
+                got = sha256_file(target)
+                if got == expected_sha:
+                    return target
+                last_err = f"sha256 mismatch {got} != {expected_sha}"
+        else:
+            last_err = (r.stderr or r.stdout)[-300:]
+        time.sleep(4 * (attempt + 1))
+    raise RuntimeError(f"download failed for {name} after 6 attempts: {last_err}")
 
 
 def row_from_event(ev: dict) -> dict:

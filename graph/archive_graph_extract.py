@@ -101,20 +101,54 @@ def list_children(folder_id: str) -> list[dict]:
             return items
 
 
+def find_preserved_pair(seg_base: str) -> tuple[dict, dict] | None:
+    """When an active segment is still flushing or truncated on Drive FUSE, check
+    if a full-size (>=50MB) .jss + .receipt.json pair exists in the same parent
+    folder (including preserved _trash generations)."""
+    params = {
+        "q": f"name contains '{seg_base}'",
+        "fields": "files(id,name,size,parents,modifiedTime)",
+        "pageSize": 100,
+    }
+    files = gws_json("drive", "files", "list", "--params", json.dumps(params)).get("files", [])
+    by_parent: dict[str, dict[str, dict]] = {}
+    for f in files:
+        for p in f.get("parents") or []:
+            by_parent.setdefault(p, {})[f["name"]] = f
+    jss_name = f"{seg_base}.jss"
+    rec_name = f"{seg_base}.jss.receipt.json"
+    for p, fmap in by_parent.items():
+        j = fmap.get(jss_name)
+        r = fmap.get(rec_name)
+        if j and r and int(j.get("size") or 0) >= 50_000_000:
+            return j, r
+    return None
+
+
 def completed_segments() -> dict[int, dict]:
-    """Map segment index -> {group, jss, receipt} for segments with receipts."""
+    """Map segment index -> {group, jss, receipt} for verified full-size segments."""
     out: dict[int, dict] = {}
     for group in list_children(ARCHIVE_SEGMENTS_FOLDER):
         if group.get("mimeType") != "application/vnd.google-apps.folder":
             continue
         files = {f["name"]: f for f in list_children(group["id"])}
-        for name, f in files.items():
-            if not (name.startswith("seg_") and name.endswith(".jss")):
-                continue
+        seen_bases = {
+            n[:-17] if n.endswith(".jss.receipt.json") else n[:-4]
+            for n in files
+            if n.startswith("seg_") and (n.endswith(".jss") or n.endswith(".jss.receipt.json"))
+        }
+        for base in sorted(seen_bases):
+            name = f"{base}.jss"
+            f = files.get(name)
             receipt = files.get(name + ".receipt.json")
             if not receipt:
                 continue
-            index = int(name[4:-4], 36)
+            if not f or int(f.get("size") or 0) < 50_000_000:
+                pair = find_preserved_pair(base)
+                if not pair:
+                    continue
+                f, receipt = pair
+            index = int(base[4:], 36)
             out[index] = {"group": group["name"], "jss": f, "receipt": receipt}
     return out
 
@@ -200,17 +234,18 @@ def row_from_event(ev: dict) -> dict:
     }
 
 
-def convert_shards(decoded_dir: pathlib.Path, out_dir: pathlib.Path, done: set[str]) -> int:
+def convert_shards(decoded_dir: pathlib.Path, out_dir: pathlib.Path, done: set[str], batch_tag: str) -> int:
     meta = json.loads((decoded_dir / "checkpoint.json").read_text())
     rows_total = 0
     out_dir.mkdir(parents=True, exist_ok=True)
-    for shard in meta.get("shards", []):
+    for idx, shard in enumerate(meta.get("shards", [])):
         path = shard["path"]
-        if path in done:
+        sha = shard.get("sha256", pathlib.Path(path).stem)
+        if sha in done or path in done:
             continue
         src = decoded_dir / path
         if not src.exists():
-            done.add(path)
+            done.add(sha)
             continue
         rows = []
         with src.open() as fh:
@@ -218,11 +253,11 @@ def convert_shards(decoded_dir: pathlib.Path, out_dir: pathlib.Path, done: set[s
                 if line.strip():
                     rows.append(row_from_event(json.loads(line)))
         table = pa.Table.from_pylist(rows, schema=SCHEMA)
-        dst = out_dir / (pathlib.Path(path).stem + ".parquet")
+        dst = out_dir / f"events-{batch_tag}-{idx:02d}-{sha}.parquet"
         pq.write_table(table, dst, compression="zstd", compression_level=6)
         rows_total += len(rows)
         src.unlink()
-        done.add(path)
+        done.add(sha)
     return rows_total
 
 
@@ -232,12 +267,12 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
     ap.add_argument("--once", action="store_true")
-    ap.add_argument("--poll", type=int, default=600, help="seconds to wait when no new contiguous segments")
+    ap.add_argument("--poll", type=int, default=600, help="seconds to wait when no new segments")
     args = ap.parse_args()
 
     work = pathlib.Path(args.work)
     staging = work / "staging" / "segments"
-    decoded = work / "decoded"
+    decoded = work / "decoded_batch"
     events = work / "events"
     ledger_path = work / "ledger.json"
     work.mkdir(parents=True, exist_ok=True)
@@ -246,17 +281,23 @@ def main() -> int:
 
     while True:
         available = completed_segments()
-        batch = []
-        idx = ledger["next_index"]
-        while idx in available and len(batch) < args.batch:
-            batch.append((idx, available[idx]))
-            idx += 1
+        pending_indices = [idx for idx in sorted(available) if available[idx]["jss"]["name"] not in ledger["segments"]]
+        batch = [(idx, available[idx]) for idx in pending_indices[: args.batch]]
         if not batch:
-            print(json.dumps({"ts": time.strftime("%FT%TZ", time.gmtime()), "msg": "waiting", "next_index": ledger["next_index"], "available": len(available)}), flush=True)
+            print(json.dumps({"ts": time.strftime("%FT%TZ", time.gmtime()), "msg": "waiting", "done_segments": len(ledger["segments"]), "available": len(available)}), flush=True)
             if args.once:
                 return 0
             time.sleep(args.poll)
             continue
+
+        # Ensure staging only holds segments belonging to the current batch.
+        batch_names = {seg["jss"]["name"] for _, seg in batch}
+        if staging.exists():
+            for p in staging.rglob("*"):
+                if p.is_file():
+                    base_jss = p.name[:-13] if p.name.endswith(".receipt.json") else p.name
+                    if base_jss not in batch_names:
+                        p.unlink(missing_ok=True)
 
         t0 = time.time()
         with cf.ThreadPoolExecutor(max_workers=args.parallel) as pool:
@@ -265,6 +306,10 @@ def main() -> int:
                 fut.result()
         dl_s = time.time() - t0
         dl_bytes = sum(int(seg["jss"]["size"]) for _, seg in batch)
+
+        if decoded.exists():
+            shutil.rmtree(decoded)
+        decoded.mkdir(parents=True, exist_ok=True)
 
         t1 = time.time()
         cmd = [
@@ -282,7 +327,8 @@ def main() -> int:
             print(r.stderr[-2000:], file=sys.stderr)
             return 2
         summary = json.loads(r.stdout)
-        rows = convert_shards(decoded, events, shards_done)
+        batch_tag = f"{batch[0][0]:06d}-{batch[-1][0]:06d}"
+        rows = convert_shards(decoded, events, shards_done, batch_tag)
         dec_s = time.time() - t1
 
         for i, seg in batch:
@@ -290,7 +336,7 @@ def main() -> int:
             ledger["segments"][name] = {"index": i, "sha256": json.loads((staging / seg["group"] / (name + ".receipt.json")).read_text())["sha256"]}
             (staging / seg["group"] / name).unlink(missing_ok=True)
             (staging / seg["group"] / (name + ".receipt.json")).unlink(missing_ok=True)
-        ledger["next_index"] = batch[-1][0] + 1
+        ledger["next_index"] = max(ledger.get("next_index", 0), batch[-1][0] + 1)
         ledger["shards_done"] = sorted(shards_done)
         tmp = ledger_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(ledger))
@@ -299,6 +345,7 @@ def main() -> int:
         print(json.dumps({
             "ts": time.strftime("%FT%TZ", time.gmtime()),
             "segments": [b[0] for b in batch],
+            "done_total": len(ledger["segments"]),
             "download_mb_s": round(dl_bytes / 1e6 / max(dl_s, 0.001), 1),
             "decode_s": round(dec_s, 1),
             "graph_rows": rows,

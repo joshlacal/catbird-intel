@@ -143,7 +143,7 @@ def completed_segments() -> dict[int, dict]:
             receipt = files.get(name + ".receipt.json")
             if not receipt:
                 continue
-            if not f or int(f.get("size") or 0) < 50_000_000:
+            if not f or int(f.get("size") or 0) < 200_000_000:
                 pair = find_preserved_pair(base)
                 if not pair:
                     continue
@@ -300,10 +300,24 @@ def main() -> int:
                         p.unlink(missing_ok=True)
 
         t0 = time.time()
+        ready_batch = []
         with cf.ThreadPoolExecutor(max_workers=args.parallel) as pool:
-            futures = {pool.submit(download_segment, seg, staging / seg["group"]): i for i, seg in batch}
+            futures = {pool.submit(download_segment, seg, staging / seg["group"]): (i, seg) for i, seg in batch}
             for fut in cf.as_completed(futures):
-                fut.result()
+                i, seg = futures[fut]
+                try:
+                    fut.result()
+                    ready_batch.append((i, seg))
+                except Exception as exc:
+                    name = seg["jss"]["name"]
+                    for suffix in ("", ".receipt.json"):
+                        (staging / seg["group"] / (name + suffix)).unlink(missing_ok=True)
+                    print(json.dumps({"ts": time.strftime("%FT%TZ", time.gmtime()), "msg": "deferring_segment_until_drivefs_flush", "segment": name, "error": str(exc)[:200]}), flush=True)
+        ready_batch.sort(key=lambda x: x[0])
+        batch = ready_batch
+        if not batch:
+            time.sleep(30)
+            continue
         dl_s = time.time() - t0
         dl_bytes = sum(int(seg["jss"]["size"]) for _, seg in batch)
 

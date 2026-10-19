@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 // catbird-intel-ingest: Jetstream v2 live stream -> ClickHouse `catbird` db.
 //
-// At-least-once: rows are flushed in batches and the cursor is saved only
-// after a flush succeeds. Every record table is keyed (did, rkey) and versioned
-// by repo revision, so replayed events collapse.
+// At-least-once: rows are accumulated in memory, swapped out atomically into a
+// flush batch so the WebSocket loop never blocks on HTTP I/O (preventing Bun's
+// unimplemented ws.pause() from overflowing during catch-up bursts), and the
+// cursor is saved only after the batch write succeeds. Every record table is
+// keyed (did, rkey) and versioned by repo revision, so replayed events collapse.
 
 import { Jetstream, websocketTransport } from "@bsky/jetstream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -17,8 +19,8 @@ const SERVICES = env("JETSTREAM_SERVICES", "https://jetstream.us-east.bsky.netwo
   .map((s) => s.trim())
   .filter(Boolean);
 const CURSOR_FILE = env("CURSOR_FILE", "/var/lib/catbird-intel/ingest.cursor");
-const FLUSH_MS = Number(env("FLUSH_MS", "2000"));
-const MAX_ROWS = Number(env("MAX_ROWS", "20000"));
+const FLUSH_MS = Number(env("FLUSH_MS", "1500"));
+const MAX_ROWS = Number(env("MAX_ROWS", "15000"));
 const HEALTH_MS = Number(env("HEALTH_MS", "10000"));
 const COLLECTIONS = ["app.bsky.feed.*", "app.bsky.graph.*", "app.bsky.actor.*"] as const;
 
@@ -35,33 +37,44 @@ let serviceIndex = 0;
 let lastFlushAt = Date.now();
 let lastFlushMs = 0;
 let lastDelivered: CursorState | null = null;
+let inFlightFlush: Promise<void> | null = null;
 let stats = { events: 0, rows: 0, reconnects: 0 };
 
 function log(msg: string, extra?: Record<string, unknown>) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...extra }));
 }
 
-async function flush(): Promise<void> {
-  const started = Date.now();
-  const written = await writer.flush();
-  lastFlushMs = Date.now() - started;
-  lastFlushAt = Date.now();
-  stats.rows += written;
-  if (lastDelivered) await saveCursor(CURSOR_FILE, lastDelivered);
-}
-
 async function flushWithRetry(): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await flush();
-      return;
-    } catch (error) {
-      // Keep the buffer and the old cursor; storage outages must not skip data.
-      log("flush failed; retrying", { attempt, error: String(error) });
-      if (stop.signal.aborted && attempt >= 3) throw error;
-      await delay(Math.min(30_000, 1000 * 2 ** attempt));
-    }
+  if (inFlightFlush) {
+    await inFlightFlush;
+    return;
   }
+  const batch = writer.takeBatch();
+  const snapCursor = lastDelivered ? { ...lastDelivered } : null;
+  if (batch.count === 0) return;
+
+  const p = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const started = Date.now();
+        const written = await writer.writeBatch(batch);
+        lastFlushMs = Date.now() - started;
+        lastFlushAt = Date.now();
+        stats.rows += written;
+        if (snapCursor) await saveCursor(CURSOR_FILE, snapCursor);
+        return;
+      } catch (error) {
+        log("flush failed; retrying", { attempt, error: String(error) });
+        if (stop.signal.aborted && attempt >= 3) throw error;
+        await delay(Math.min(30_000, 1000 * 2 ** attempt));
+      }
+    }
+  })();
+
+  inFlightFlush = p.finally(() => {
+    inFlightFlush = null;
+  });
+  await inFlightFlush;
 }
 
 async function writeHealth(): Promise<void> {
@@ -91,9 +104,7 @@ async function runService(service: string): Promise<void> {
   const saved = (await loadCursor(CURSOR_FILE)) ?? lastDelivered;
   const cursor = resumeCursor(saved, service);
   log("connecting", { service, cursor: cursor ?? "live-tip" });
-  const js = new Jetstream({ service, validateWire: true });
-  // live() only calls load(); this process persists its own cursor after
-  // each successful flush, so save() is intentionally a no-op.
+  const js = new Jetstream({ service, validateWire: false });
   const cursorStore = { load: async () => cursor, save: async () => undefined };
   const stream = js.live({
     collections: COLLECTIONS,
@@ -101,8 +112,8 @@ async function runService(service: string): Promise<void> {
     raw: true,
     signal: stop.signal,
     liveTransport: websocketTransport({
-      highWaterMark: 1024 * 1024,
-      maxBufferedBytes: 64 * 1024 * 1024,
+      highWaterMark: 64 * 1024 * 1024,
+      maxBufferedBytes: 512 * 1024 * 1024,
       onReconnect: (error, info) => {
         stats.reconnects++;
         log("transport reconnect", { attempt: info.attempt, error: error instanceof Error ? error.message : String(error) });
@@ -117,7 +128,13 @@ async function runService(service: string): Promise<void> {
     for (const { table, row } of eventToRows(raw)) writer.add(table, row);
     const timeMs = Date.parse(raw.time);
     lastDelivered = { service, seq: raw.seq, timeUs: Number.isFinite(timeMs) ? timeMs * 1000 : Date.now() * 1000 };
-    if (writer.shouldFlush() || Date.now() - lastFlushAt >= FLUSH_MS) await flushWithRetry();
+    if (!inFlightFlush && (writer.shouldFlush() || Date.now() - lastFlushAt >= FLUSH_MS)) {
+      // Launch flush asynchronously so the WebSocket consumer loop never pauses
+      void flushWithRetry().catch((e) => log("async flush error", { error: String(e) }));
+    } else if (writer.bufferedRows >= MAX_ROWS * 6 && inFlightFlush) {
+      // Only apply backpressure if ClickHouse is genuinely falling behind by >90k rows
+      await inFlightFlush;
+    }
   }
 }
 
@@ -135,9 +152,18 @@ async function main(): Promise<void> {
       log("stream ended without error; reconnecting", { service });
     } catch (error) {
       if (stop.signal.aborted) break;
-      log("stream failed", { service, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+      const errName = error instanceof Error ? error.name : "";
+      const errMsg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      log("stream failed", { service, error: errMsg });
+      if (errName === "MalformedError" && lastDelivered) {
+        lastDelivered = {
+          ...lastDelivered,
+          seq: lastDelivered.seq + 1,
+          timeUs: lastDelivered.timeUs + 1000,
+        };
+      }
     }
-    // Persist what we have before reconnecting; resume from the saved cursor.
+    if (inFlightFlush) await inFlightFlush.catch(() => undefined);
     await flushWithRetry().catch((e) => log("flush before reconnect failed", { error: String(e) }));
     failures = Date.now() - started > 120_000 ? 0 : failures + 1;
     if (failures >= 3 && SERVICES.length > 1) {
@@ -148,6 +174,7 @@ async function main(): Promise<void> {
     await delay(Math.min(30_000, 1000 * 2 ** failures)).catch(() => undefined);
   }
   clearInterval(health);
+  if (inFlightFlush) await inFlightFlush.catch(() => undefined);
   await flushWithRetry().catch((e) => log("final flush failed; cursor unchanged", { error: String(e) }));
   await writeHealth();
   log("stopped");

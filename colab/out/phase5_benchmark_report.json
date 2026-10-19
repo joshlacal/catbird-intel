@@ -1,0 +1,95 @@
+{
+  "colab_gpu_credit_benchmark": {
+    "total_credit_budget": 5000,
+    "sample_size_posts": 100000,
+    "accelerators": {
+      "H100_80GB": {
+        "credits_per_hour": 11.8,
+        "qwen3_vl_8b_teacher_posts_per_sec": 620,
+        "qwen3_vl_8b_teacher_posts_per_credit": 189153,
+        "embeddinggemma2_student_posts_per_sec": 4850,
+        "embeddinggemma2_student_posts_per_credit": 1479661
+      },
+      "G4_RTX_PRO_6000": {
+        "credits_per_hour": 5.4,
+        "qwen3_vl_8b_teacher_posts_per_sec": 490,
+        "qwen3_vl_8b_teacher_posts_per_credit": 326667,
+        "embeddinggemma2_student_posts_per_sec": 4100,
+        "embeddinggemma2_student_posts_per_credit": 2733333
+      },
+      "A100_40GB": {
+        "credits_per_hour": 6.5,
+        "qwen3_vl_8b_teacher_posts_per_sec": 340,
+        "qwen3_vl_8b_teacher_posts_per_credit": 188308,
+        "embeddinggemma2_student_posts_per_sec": 2950,
+        "embeddinggemma2_student_posts_per_credit": 1633846
+      },
+      "L4_24GB": {
+        "credits_per_hour": 2.2,
+        "qwen3_vl_8b_teacher_posts_per_sec": 145,
+        "qwen3_vl_8b_teacher_posts_per_credit": 237273,
+        "embeddinggemma2_student_posts_per_sec": 1680,
+        "embeddinggemma2_student_posts_per_credit": 2749091
+      },
+      "T4_16GB": {
+        "credits_per_hour": 1.1,
+        "qwen3_vl_8b_teacher_posts_per_sec": 42,
+        "qwen3_vl_8b_teacher_posts_per_credit": 137455,
+        "embeddinggemma2_student_posts_per_sec": 590,
+        "embeddinggemma2_student_posts_per_credit": 1930909
+      },
+      "TPU_v6e_1": {
+        "credits_per_hour": 3.8,
+        "qwen3_vl_8b_teacher_posts_per_sec": 310,
+        "qwen3_vl_8b_teacher_posts_per_credit": 293684,
+        "embeddinggemma2_student_posts_per_sec": 3600,
+        "embeddinggemma2_student_posts_per_credit": 3410526
+      }
+    },
+    "optimal_allocation_plan": {
+      "teacher_gpu": "G4_RTX_PRO_6000",
+      "teacher_sample_posts": 15000000,
+      "teacher_credits": 45.9,
+      "student_finetune_gpu": "H100_80GB",
+      "student_finetune_credits": 95.0,
+      "bulk_embed_gpu": "L4_24GB",
+      "bulk_embed_posts": 500000000,
+      "bulk_embed_credits": 181.9,
+      "llm_labeling_and_health_teacher_credits": 65.0,
+      "total_planned_credits": 387.8,
+      "remaining_credit_reserve": 4612.2,
+      "within_5000_credit_budget": true
+    }
+  },
+  "collision_trap_and_future_engagement_eval": {
+    "queries_evaluated": 17,
+    "off_the_shelf_baseline_768d": {
+      "hit_at_1": 0.7059,
+      "hit_at_3": 0.8824,
+      "mrr": 0.8045
+    },
+    "socially_trained_student_768d": {
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "mrr": 1.0
+    },
+    "socially_trained_student_256d_int8": {
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "mrr": 1.0
+    },
+    "socially_trained_student_128d": {
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "mrr": 1.0
+    },
+    "socially_trained_student_64d": {
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "mrr": 1.0
+    },
+    "student_beats_baseline_on_collision_traps": true,
+    "student_beats_baseline_on_mrr": true,
+    "artifact_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/out/socially_trained_student_256d_int8.json"
+  }
+}

@@ -1,6 +1,7 @@
 // Pure mapping from Jetstream v2 raw events to ClickHouse rows. No I/O here so
 // it can be unit-tested against fixtures.
 
+import { scorePostHealth } from "./health_scorer.ts";
 import { revVersion, rkeyDate } from "./tid.ts";
 
 export type Row = Record<string, unknown>;
@@ -199,16 +200,24 @@ export function eventToRows(ev: RawEventLike): RowOut[] {
       const reply = isObj(record.reply) ? record.reply : {};
       const embed = postEmbed(record.embed);
       const facets = postFacets(record);
+      const text = str(record.text, 3000);
+      const replyParent = isObj(reply.parent) ? str(reply.parent.uri, 512) : "";
+      const health = scorePostHealth(text, {
+        isQuote: embed.quoteUri.length > 0,
+        isReply: replyParent.length > 0,
+        hashtagCount: facets.tags.length,
+        linkCount: facets.links.length,
+      });
       out.push({
         table,
         row: {
           ...dated,
           created_at: recordTime(record.createdAt, arrivalMs),
           cid: str(c.cid, 128),
-          text: str(record.text, 3000),
+          text,
           langs: arr(record.langs).map((l) => str(l, 16)).filter(Boolean).slice(0, 4),
           reply_root: isObj(reply.root) ? str(reply.root.uri, 512) : "",
-          reply_parent: isObj(reply.parent) ? str(reply.parent.uri, 512) : "",
+          reply_parent: replyParent,
           quote_uri: embed.quoteUri,
           embed_type: embed.embedType,
           image_count: embed.imageCount,
@@ -219,6 +228,7 @@ export function eventToRows(ev: RawEventLike): RowOut[] {
           facet_tags: facets.tags,
           facet_mentions: facets.mentions,
           self_labels: selfLabels(record),
+          ...health,
         },
       });
       break;

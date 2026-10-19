@@ -1,0 +1,22 @@
+[Unit]
+Description=Catbird Community Intelligence Serving API (For You v0 & Community Browse)
+After=network-online.target clickhouse-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=josh
+WorkingDirectory=/home/josh/catbird-intel
+Environment=CLICKHOUSE_URL=http://127.0.0.1:8123
+Environment=CLICKHOUSE_DB=catbird
+Environment=HOST=127.0.0.1
+Environment=PORT=3210
+ExecStart=/home/josh/.bun/bin/bun run src/api.ts
+Restart=always
+RestartSec=3
+Nice=10
+CPUQuota=100%
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

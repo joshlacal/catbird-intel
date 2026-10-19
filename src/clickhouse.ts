@@ -1,7 +1,9 @@
 // Batched ClickHouse writer over the HTTP interface. Rows accumulate per table
-// and are flushed together; the caller persists its cursor only after a flush
-// succeeds, so a crash replays events rather than dropping them. Replays are
-// harmless because every record table is keyed and versioned.
+// and are swapped out atomically before flushing so the WebSocket consumer
+// never blocks on HTTP I/O (avoiding Bun's unimplemented ws.pause() buffer
+// overflow during high-rate catch-up). The caller persists its cursor only
+// after a batch write succeeds, so a crash replays events rather than dropping
+// them. Replays are harmless because every record table is keyed and versioned.
 
 import type { Row, TableName } from "./extract.ts";
 
@@ -12,6 +14,11 @@ export interface WriterOptions {
   password?: string;
   maxRows: number;
   timeoutMs?: number;
+}
+
+export interface FlushBatch {
+  batches: [TableName, Row[]][];
+  count: number;
 }
 
 export class ClickHouseWriter {
@@ -38,17 +45,27 @@ export class ClickHouseWriter {
     return this.pending >= this.opts.maxRows;
   }
 
+  /** Atomically swap out all buffered rows so new events can accumulate while HTTP I/O runs. */
+  takeBatch(): FlushBatch {
+    if (this.pending === 0) return { batches: [], count: 0 };
+    const batches = [...this.buffers.entries()].filter(([, rows]) => rows.length > 0);
+    const count = this.pending;
+    this.buffers = new Map<TableName, Row[]>();
+    this.pending = 0;
+    return { batches, count };
+  }
+
+  /** Write a previously taken batch. Safe to retry on transient ClickHouse errors. */
+  async writeBatch(batch: FlushBatch): Promise<number> {
+    if (batch.count === 0 || batch.batches.length === 0) return 0;
+    await Promise.all(batch.batches.map(([table, rows]) => this.insert(table, rows)));
+    return batch.count;
+  }
+
   /** Insert every buffered table. Returns the number of rows written. */
   async flush(): Promise<number> {
-    if (this.pending === 0) return 0;
-    const batches = [...this.buffers.entries()].filter(([, rows]) => rows.length > 0);
-    // Insert all tables before clearing anything, so a failure retries the
-    // whole batch (duplicates are collapsed by the table engines).
-    await Promise.all(batches.map(([table, rows]) => this.insert(table, rows)));
-    const written = this.pending;
-    this.buffers.clear();
-    this.pending = 0;
-    return written;
+    const batch = this.takeBatch();
+    return this.writeBatch(batch);
   }
 
   async insert(table: string, rows: Row[]): Promise<void> {

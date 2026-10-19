@@ -1,3 +1,5 @@
 node_modules/
 *.cursor
 *.tmp
+graph/.venv/
+graph/simgraph/target/

@@ -1,0 +1,14 @@
+[package]
+name = "simgraph"
+version = "0.1.0"
+edition = "2021"
+description = "Producer-producer cosine similarity of follower sets (SimClusters-style), sampled and parallel"
+
+[dependencies]
+rayon = "1.10"
+rand = { version = "0.8", features = ["small_rng"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

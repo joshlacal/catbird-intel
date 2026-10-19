@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-10-19T20:43:15Z",
+  "dataset": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k.parquet",
+  "total_rows": 150000,
+  "train_rows": 135000,
+  "val_rows": 15000,
+  "device": "mps",
+  "elapsed_s": 12.61,
+  "val_mae": {
+    "politicalness": 0.1001,
+    "heat": 0.06639,
+    "engagement_bait": 0.03248,
+    "spam": 0.02587
+  },
+  "val_f1": {
+    "politicalness_f1": 0.6728,
+    "heat_f1": 0.5021
+  },
+  "onnx_export": {
+    "in_dim": 16386,
+    "out_dim": 4,
+    "onnx_bytes": 262407,
+    "mean_scale": 0.2286422997713089
+  }
+}

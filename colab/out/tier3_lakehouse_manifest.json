@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-10-19T20:43:16Z",
+  "posts_embedded": 500000,
+  "producers_embedded": 96092,
+  "communities_embedded": 1500,
+  "matryoshka_dims": [
+    256,
+    128,
+    64
+  ],
+  "onnx_export": {
+    "in_dim": 4096,
+    "out_dim": 256,
+    "onnx_bytes": 4194486
+  },
+  "tier3_files": [
+    "community_centroids_256d.parquet",
+    "post_vectors_256d_fp16_part00.parquet",
+    "post_vectors_256d_fp16_part01.parquet",
+    "post_vectors_256d_fp16_part02.parquet",
+    "post_vectors_256d_fp16_part03.parquet",
+    "post_vectors_256d_fp16_part04.parquet",
+    "post_vectors_64d_int8_serving.parquet",
+    "producer_vectors_256d.parquet"
+  ],
+  "elapsed_s": 1.37
+}

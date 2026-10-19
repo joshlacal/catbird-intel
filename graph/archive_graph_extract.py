@@ -125,10 +125,10 @@ def find_preserved_pair(seg_base: str) -> tuple[dict, dict] | None:
     return None
 
 
-def completed_segments() -> dict[int, dict]:
+def completed_segments(segments_folder: str = ARCHIVE_SEGMENTS_FOLDER) -> dict[int, dict]:
     """Map segment index -> {group, jss, receipt} for verified full-size segments."""
     out: dict[int, dict] = {}
-    for group in list_children(ARCHIVE_SEGMENTS_FOLDER):
+    for group in list_children(segments_folder):
         if group.get("mimeType") != "application/vnd.google-apps.folder":
             continue
         files = {f["name"]: f for f in list_children(group["id"])}
@@ -264,6 +264,7 @@ def convert_shards(decoded_dir: pathlib.Path, out_dir: pathlib.Path, done: set[s
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", default="/Users/joshlacalamito/catbird-lake-local/archive-graph")
+    ap.add_argument("--segments-folder", default=ARCHIVE_SEGMENTS_FOLDER, help="Google Drive segments folder ID")
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
     ap.add_argument("--once", action="store_true")
@@ -280,7 +281,7 @@ def main() -> int:
     shards_done = set(ledger["shards_done"])
 
     while True:
-        available = completed_segments()
+        available = completed_segments(args.segments_folder)
         pending_indices = [idx for idx in sorted(available) if available[idx]["jss"]["name"] not in ledger["segments"]]
         batch = [(idx, available[idx]) for idx in pending_indices[: args.batch]]
         if not batch:

@@ -1,0 +1,52 @@
+{
+  "schema": "catbird-independent-gpu-pilot-verification-v1",
+  "verified_at": "2026-10-20T07:59:14.676829+00:00",
+  "status": "passed_teacher_execution_only",
+  "unique_real_posts": 32,
+  "same_as_local_smoke_selection": true,
+  "all_downloaded_file_hashes_verified": 11,
+  "all_executed_source_hashes_match_delivered_revision2": true,
+  "source_manifest_sha256": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592",
+  "teacher_results": {
+    "qwen": {
+      "rows": 32,
+      "stage_seconds": 382.967510636,
+      "model": [
+        "Qwen/Qwen2.5-32B-Instruct-AWQ",
+        "5c7cb76a268fc6cfbb9c4777eb24ba6e27f9ee6c"
+      ],
+      "label_sha256": "08ffaf4b41fa8be598f2e065a649cfa4e3240d8916ceb962f6609c898c3340a0"
+    },
+    "political": {
+      "rows": 32,
+      "stage_seconds": 18.261254293000093,
+      "model": [
+        "mlburnham/Political_DEBATE_large_v1.0",
+        "1a3aff1ecb97ad93a6de598f7414b1707de7e7c3"
+      ],
+      "label_sha256": "7ab973cf674c096f623da33f5de200bd3c63b092d5d67d60c17b3fc485ac9976"
+    }
+  },
+  "qwen_rubric_scores": 128,
+  "qwen_raw_digit_logprobs": 1280,
+  "max_reconstructed_score_error": 3.817703764230629e-08,
+  "successful_attempt_seconds": 769.6099727500114,
+  "first_attempt_seconds": 11.259873500006506,
+  "successful_attempt_install_seconds": 279.989760155,
+  "successful_attempt_inference_process_seconds": 420.79974345000005,
+  "account_balance_before": 4997.64,
+  "account_balance_immediate_after": 4997.03,
+  "account_balance_delayed_readback": 4996.58,
+  "account_balance_delayed_delta": 1.06,
+  "integrated_account_rate_units": 1.0679380615041518,
+  "billing_scope": "Account-wide readbacks, subject to display precision and update latency; not exact per-job billing.",
+  "active_assignments": 0,
+  "usage_rate_per_hour": 0.0,
+  "runtime_stop_confirmed": true,
+  "full_bank_labels": false,
+  "holdout_labels": false,
+  "gpu_student_training": false,
+  "quality_claim": null,
+  "bulk_throughput_estimate": null,
+  "output_archive_sha256": "e3ce385208bc9b9224c1625cb41396a3b09d7a3782c91032a5acfff91b00dad4"
+}

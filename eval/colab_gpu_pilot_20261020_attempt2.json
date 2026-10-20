@@ -1,0 +1,121 @@
+{
+  "account_balance_delta": 0.6100000000005821,
+  "allocated": true,
+  "allocation_attempted": true,
+  "allocation_outcome_uncertain": false,
+  "automatic_allocation_retry_allowed": false,
+  "budget_accounting_scope": "account-wide; may include other sessions; conservative, not exact pilot billing",
+  "elapsed_seconds": 769.6099727500114,
+  "error": null,
+  "integrated_account_rate_units": 1.0679380615041518,
+  "outputs": {
+    "credit_use": null,
+    "installation": {
+      "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+      "returncode": 0,
+      "runtime": {
+        "gpu": "NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07",
+        "gpu_probe_error": "",
+        "gpu_probe_returncode": 0,
+        "machine": "x86_64",
+        "payload_sha256": "bdaa01479061aa1e2bed4b97f0b5e36507b2651747db8cdd591aabeecbb05f7e",
+        "platform": "Linux",
+        "prepared_python_versions": [
+          "3.10",
+          "3.11",
+          "3.12",
+          "3.13"
+        ],
+        "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+        "python_executable": "/usr/bin/python3",
+        "python_version": "3.13",
+        "selected_dependency_lock": {
+          "path": "dependency-locks/python-3.13.lock.txt",
+          "sha256": "b6f59d74786377c158bb2a7c7f89ff91579a62f65c0845874f3a2db713045ec8"
+        },
+        "source_manifest_sha256": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592",
+        "status": "bootstrap_verified"
+      },
+      "seconds": 279.989760155,
+      "status": "install_verified"
+    },
+    "rows": 32,
+    "runtime": {
+      "gpu": "NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07",
+      "gpu_probe_error": "",
+      "gpu_probe_returncode": 0,
+      "machine": "x86_64",
+      "payload_sha256": "bdaa01479061aa1e2bed4b97f0b5e36507b2651747db8cdd591aabeecbb05f7e",
+      "platform": "Linux",
+      "prepared_python_versions": [
+        "3.10",
+        "3.11",
+        "3.12",
+        "3.13"
+      ],
+      "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+      "python_executable": "/usr/bin/python3",
+      "python_version": "3.13",
+      "selected_dependency_lock": {
+        "path": "dependency-locks/python-3.13.lock.txt",
+        "sha256": "b6f59d74786377c158bb2a7c7f89ff91579a62f65c0845874f3a2db713045ec8"
+      },
+      "source_manifest_sha256": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592",
+      "status": "bootstrap_verified"
+    },
+    "seconds": 420.79974345000005,
+    "status": "teacher_inference_complete",
+    "teacher_model": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+    "teacher_revision": "5c7cb76a268fc6cfbb9c4777eb24ba6e27f9ee6c",
+    "teachers": [
+      "qwen",
+      "political"
+    ],
+    "versions": {
+      "pyarrow": "26.0.0",
+      "torch": "2.9.0",
+      "transformers": "4.57.3",
+      "vllm": "0.11.2"
+    }
+  },
+  "prepared_sha256": "74ea306959bd2a21ed35f638d549e94022a4c7f185649f9fbf72d65ec1f73345",
+  "runtime": {
+    "gpu": "NVIDIA A100-SXM4-40GB, 40960 MiB, 580.82.07",
+    "gpu_probe_error": "",
+    "gpu_probe_returncode": 0,
+    "machine": "x86_64",
+    "payload_sha256": "bdaa01479061aa1e2bed4b97f0b5e36507b2651747db8cdd591aabeecbb05f7e",
+    "platform": "Linux",
+    "prepared_python_versions": [
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13"
+    ],
+    "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+    "python_executable": "/usr/bin/python3",
+    "python_version": "3.13",
+    "selected_dependency_lock": {
+      "path": "dependency-locks/python-3.13.lock.txt",
+      "sha256": "b6f59d74786377c158bb2a7c7f89ff91579a62f65c0845874f3a2db713045ec8"
+    },
+    "source_manifest_sha256": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592",
+    "status": "bootstrap_verified"
+  },
+  "schema": "catbird-colab-teacher-pilot-execution-v1",
+  "session": "catbird-intel-qwen32-20261020T074119Z-c2fc52dc",
+  "status": "teacher_pilot_complete",
+  "stop_confirmed": true,
+  "usage_after": {
+    "assignments": 0,
+    "balance": 4997.03,
+    "rate_per_hour": 0.0
+  },
+  "usage_before": {
+    "assignments": 0,
+    "balance": 4997.64,
+    "rate_per_hour": 0.0
+  },
+  "watchdog_reason": null,
+  "wrapper_sha256": "7857f28b4e4e0392fb7c628c9388f23198d2d1dfb511492c7d3d70db412a5523"
+}

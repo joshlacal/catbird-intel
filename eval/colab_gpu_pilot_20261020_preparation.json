@@ -1,0 +1,128 @@
+{
+  "account_wide_budget_accounting": true,
+  "bank_path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k_v1_unlabeled.parquet",
+  "bank_sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538",
+  "dependency_locks": {
+    "3.10": {
+      "path": "dependency-locks/python-3.10.lock.txt",
+      "sha256": "0c85d0173ed503198bb5fbbf8cbcce752fbf77f60e5176509d4422fc464ed092"
+    },
+    "3.11": {
+      "path": "dependency-locks/python-3.11.lock.txt",
+      "sha256": "65a8aec47d95c41430d1292ea7c94c4cf46b325714526bd3e4eb135057fb5ed2"
+    },
+    "3.12": {
+      "path": "dependency-locks/python-3.12.lock.txt",
+      "sha256": "519db98355dff9ac896119696f2a766057ea63d8aae8ea000cce684e2c396d97"
+    },
+    "3.13": {
+      "path": "dependency-locks/python-3.13.lock.txt",
+      "sha256": "b6f59d74786377c158bb2a7c7f89ff91579a62f65c0845874f3a2db713045ec8"
+    }
+  },
+  "dependency_platform": "Linux x86_64 manylinux_2_28",
+  "dependency_resolution": {
+    "3.10": {
+      "returncode": 0
+    },
+    "3.11": {
+      "returncode": 0
+    },
+    "3.12": {
+      "returncode": 0
+    },
+    "3.13": {
+      "returncode": 0
+    }
+  },
+  "dependency_resolution_only_not_gpu_install_validation": true,
+  "export_manifest_sha256": "18230128db1ba0347e9a3050a25a25bf14faf09944a458247d7955a1e71a5117",
+  "full_canonical_bank_uploaded": true,
+  "gpu": "A100",
+  "holdout_author_count": 600,
+  "holdout_author_overlap": 0,
+  "holdout_sha256": "fd57d61c490cf11860c74341f4c5d16d884d65ae0a0b9dd200b867c52b6b9792",
+  "holdout_text_uploaded": true,
+  "include_political": true,
+  "max_compute_units": 24.0,
+  "max_seconds": 1740,
+  "payload_files": {
+    "dependency-locks/python-3.10.lock.txt": "0c85d0173ed503198bb5fbbf8cbcce752fbf77f60e5176509d4422fc464ed092",
+    "dependency-locks/python-3.11.lock.txt": "65a8aec47d95c41430d1292ea7c94c4cf46b325714526bd3e4eb135057fb5ed2",
+    "dependency-locks/python-3.12.lock.txt": "519db98355dff9ac896119696f2a766057ea63d8aae8ea000cce684e2c396d97",
+    "dependency-locks/python-3.13.lock.txt": "b6f59d74786377c158bb2a7c7f89ff91579a62f65c0845874f3a2db713045ec8",
+    "inputs/phase3_health_training_150k_v1_unlabeled.manifest.json": "69e0d2792cb9fd9859284b3000260611281f5efbb788aa7a876c4c1bab10c0d8",
+    "inputs/phase3_health_training_150k_v1_unlabeled.parquet": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538",
+    "inputs/phase3_holdout_600_unlabeled.jsonl": "fd57d61c490cf11860c74341f4c5d16d884d65ae0a0b9dd200b867c52b6b9792",
+    "inputs/phase3_holdout_600_unlabeled.jsonl.sha256": "85f9af5f96e256e4a7c60cffb551d628e16da32c5ce7e907d0320ac0d481145a",
+    "inputs/phase3_v1_export_manifest.json": "18230128db1ba0347e9a3050a25a25bf14faf09944a458247d7955a1e71a5117",
+    "pilot32.parquet": "064a0f2eaff0f2cab0a4437cdcb200f587a13299a2d930de892e299b361636e8",
+    "source/Catbird_Intel_Real_Teachers_Ettin_V1_1.ipynb": "67c82274ce540869e367bb1e004a8237e8ca42eaff4f240201bf1639d984a042",
+    "source/README_REAL_MODELS.md": "9bfd007c547a3a716027f85386de6c8e08a2ba67f35fe7353163b945e4961a6f",
+    "source/real_pipeline.py": "73e6a09a0b42807626531d9979df979f36134729916744b67c280cb6742db7d5",
+    "source/real_pipeline/__init__.py": "6c41619880be4625c1f654440c71c70edf755d3d72f1158ebc43e57b8f62d64e",
+    "source/real_pipeline/checkpoints.py": "a5353e57cad2313b85e7811bf426366aa2ffde02a5b5f198d165914e0f7802bb",
+    "source/real_pipeline/common.py": "6ed15d63c1ac35a33b232e9f59c879fbb0b0e97d24848a2aadd1d0c0e139260e",
+    "source/real_pipeline/student.py": "618244267f7625a135ad78deb6942267f992e827dffd912644aeff61c278ff82",
+    "source/real_pipeline/teachers.py": "a3ce58db48e786a90c79a3ad66fdf53556dfe7793219ae2b100128b9ad73e8c6",
+    "source/requirements-colab.txt": "978e939cfcfbbb2ff72b77f1ecc54b30f1608e13abe773b9a43289d9c36bbe9c",
+    "source/requirements-local.txt": "82e2a6d744a725665d343f3a3ecb8744b5187f2ea04b9b44728f226037afaf50",
+    "source/source_manifest.json": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592",
+    "source/structural_verification_20261020.json": "de5c2cb7eeea8e036a983cb60facb0706a453dfa06bbe5e3c893ba340b5fdba8",
+    "source/tests/test_checkpoint_durability.py": "66b24e077956564326456f605e9c89b4024980ce7a988f7440e82c0f8898d14d",
+    "source/tests/test_sealed_contracts.py": "6dfa3140aace8192df76a067b57f540de92650065e8d1d404e6f93c14e4d15dd"
+  },
+  "payload_sha256": "bdaa01479061aa1e2bed4b97f0b5e36507b2651747db8cdd591aabeecbb05f7e",
+  "prepared_at": "2026-10-20T07:41:19.588040+00:00",
+  "python_targets": [
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13"
+  ],
+  "rows": 32,
+  "schema": "catbird-colab-teacher-pilot-v1",
+  "selected_uris": [
+    "at://did:plc:4m7h42lvyi2utmhq7frazgn6/app.bsky.feed.post/3mybsa3lsyc2d",
+    "at://did:plc:ulo7ofuepf4y6hwlbgilp6gc/app.bsky.feed.post/3myb3n2gtps2s",
+    "at://did:plc:iflhzft4fp4piwgdkpxkn2dw/app.bsky.feed.post/3myaitka5l52p",
+    "at://did:plc:4gjna7xsjigqf5ip3xkxoejq/app.bsky.feed.post/3mybayuslts2w",
+    "at://did:plc:swhavnqrtvhstcm275j242my/app.bsky.feed.post/f6rwyvikbnkgz",
+    "at://did:plc:6o6fo4xou6o6iqa4hhsj2hqn/app.bsky.feed.post/3mybzltypqc2s",
+    "at://did:plc:pevy7q6o6dwp5a5bhhuukp6e/app.bsky.feed.post/3myarqobbgc2x",
+    "at://did:plc:lc3ec62pnl3gwiluslu7h5ir/app.bsky.feed.post/3myatkohxac2h",
+    "at://did:plc:ndmo46tikxkjugw73bllvhyr/app.bsky.feed.post/3mybfn6kr622g",
+    "at://did:plc:ypsazx7gr5pzfmg7r4cu4j52/app.bsky.feed.post/3myacjui7z22o",
+    "at://did:plc:wk4yzktljzxq7useuy6ovrkl/app.bsky.feed.post/3mybjpvlafc2w",
+    "at://did:plc:guk5or6an3zxsfxm7dbwrxfx/app.bsky.feed.post/3myabbgl7322q",
+    "at://did:plc:ut67tdxisulkzco74cpxuisv/app.bsky.feed.post/3myagqa747k2i",
+    "at://did:plc:f4z2nftgrn75h7h3wucdyzaf/app.bsky.feed.post/3myahvxrl6l2j",
+    "at://did:plc:uygbkkl3w772u644vky4u7iw/app.bsky.feed.post/3mybawkwy422t",
+    "at://did:plc:yuwu72ct4sj42lyfzpcbxfhg/app.bsky.feed.post/3mybci3wgks2h",
+    "at://did:plc:saoif63uo65jxpirxkirdav6/app.bsky.feed.post/3mybvkkwfzf26",
+    "at://did:plc:65r3dy2t6xfuwidxmzvctvsh/app.bsky.feed.post/3myai5tnykx2v",
+    "at://did:plc:7ka2hcwnnkdgurrvoutz4jb3/app.bsky.feed.post/3mybjbjjq7v2p",
+    "at://did:plc:jz4ltamu5gu6z6ehr7ccylsw/app.bsky.feed.post/3mybvcw23pk2a",
+    "at://did:plc:xajzz6h7aurf4llr356w2fnd/app.bsky.feed.post/3myaz7tfznc2g",
+    "at://did:plc:ti4sibugwofz5gzx6xwrjemw/app.bsky.feed.post/3mybvjiehrs27",
+    "at://did:plc:5y7k7i32xyo6ky3hshum3ubs/app.bsky.feed.post/3myb4eg56cc2e",
+    "at://did:plc:wsajfpa2ivb26j65j55gqtpc/app.bsky.feed.post/3myaf37e7mk2z",
+    "at://did:plc:w23i6wxhyheqrwevgb4ukncb/app.bsky.feed.post/3myabr72n6a2v",
+    "at://did:plc:tzfxsn7tzq6rpzopu5brndpg/app.bsky.feed.post/3myazccg3422t",
+    "at://did:plc:zrj6yrgszoyjfpdktl2if5dz/app.bsky.feed.post/3mybjuy6i2b23",
+    "at://did:plc:nlvhbcpp4g7pk7zyhxefwuis/app.bsky.feed.post/3myadn3ihoc2h",
+    "at://did:plc:qqlyohbza675keaeokmcnqml/app.bsky.feed.post/3mybcf33mhc2l",
+    "at://did:plc:rvarwdtleiyxm334divg7veu/app.bsky.feed.post/3myaavbgiqk2c",
+    "at://did:plc:4idj567kdvs33kzrfftqpwyw/app.bsky.feed.post/3myaqfczt2k2v",
+    "at://did:plc:upr3owqxjzfwri7eaw6zlppm/app.bsky.feed.post/3myawia2e522f"
+  ],
+  "selection_audit_only": "pilot32.parquet",
+  "session_name": "catbird-intel-qwen32-20261020T074119Z-c2fc52dc",
+  "source_manifest_sha256": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592",
+  "status": "prepared_only_no_gpu_allocated",
+  "stop_reserve_seconds": 120,
+  "teacher": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+  "teacher_revision": "5c7cb76a268fc6cfbb9c4777eb24ba6e27f9ee6c",
+  "work_reserve_seconds": 240,
+  "wrapper_sha256": "7857f28b4e4e0392fb7c628c9388f23198d2d1dfb511492c7d3d70db412a5523"
+}

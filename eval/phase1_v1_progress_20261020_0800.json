@@ -1,0 +1,19 @@
+{
+  "observed_at": "2026-10-20T07:59:48.060536+00:00",
+  "fold_pid": 95795,
+  "driver_pid": 10905,
+  "driver_stage": "waiting_for_fold",
+  "fold_stage": "materializing latest-revision distinct follows into temporary MergeTree (inferred from changing temporary table parts)",
+  "observed_follows_rows_lower_bound": 399064711,
+  "observed_parts": 8,
+  "max_part_number": 368,
+  "temporary_table_uuid": "3be9abce-56fe-43cd-b1d0-9f4781186e46",
+  "observation_method": "count.txt in non-contained all_min_max_level parts of the same observed temporary follows table; concurrent merges mean not final stats",
+  "final_output_files_present": {
+    "producers.tsv": false,
+    "edges.bin": false,
+    "stats.tsv": false
+  },
+  "free_disk_bytes": 160294674432,
+  "processes": "  PID  PPID STARTED                       ELAPSED  %CPU    RSS COMMAND\n10905 61314 Tue Oct 20 03:04:34 2026        55:14   0.0   4272 /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python graph/run_phase1_v1.py --fold-pid 95795 --rayon-threads 8\n95795 95789 Tue Oct 20 02:48:25 2026     01:11:23  35.0 4584016 clickhouse local --path /Users/joshlacalamito/catbird-lake-local/graph-build/ch --queries-file /Users/joshlacalamito/catbird-lake-local/graph-build/fold.sql -- --user_files_path=/Users/joshlacalamito/catbird-lake-local\n"
+}

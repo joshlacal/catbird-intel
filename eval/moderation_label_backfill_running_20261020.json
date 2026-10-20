@@ -1,0 +1,259 @@
+{
+  "observed_at": "2026-10-20T13:26:43.464807+00:00",
+  "launch": {
+    "pid": 83952,
+    "command": [
+      "/tmp/catbird-label-backfill-venv/bin/python",
+      "-u",
+      "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/ops/backfill_moderation_labels.py",
+      "--directory",
+      "/Users/joshlacalamito/catbird-lake-local/moderation-labels/bluesky-v2",
+      "--parent-v1",
+      "/Users/joshlacalamito/catbird-lake-local/moderation-labels/bluesky-v1",
+      "--target-seq",
+      "44494621",
+      "--max-frames",
+      "45000000",
+      "--max-seconds",
+      "86400",
+      "--frames-per-second",
+      "1000",
+      "--batch-frames",
+      "5000",
+      "--max-total-bytes",
+      "7516192768",
+      "--min-free-bytes",
+      "118111600640"
+    ],
+    "log": "/Users/joshlacalamito/catbird-lake-local/moderation-labels/bluesky-v2/continuation-1792502669556269000.log",
+    "launched_at_unix": 1792502669.557794,
+    "source_sha256": "bf6e6db10a6a113d6ace91d1715c2906179d17f6d3979b94e6de12f48681f594",
+    "stop_bounds": "frozen target OR7GiB logical cap OR110GiB free floor OR24h receive-loop budget (not exact whole-process wallclock)"
+  },
+  "checkpoint": {
+    "chunks": 26,
+    "compressed_bytes": 18372291,
+    "journal_chain_sha256": "a47b173ef0532883ec2c9dc5e9ed116963765a5775a7448377d8b1616ca6b14d",
+    "schema": "catbird-public-label-replay-packed-v2",
+    "state": {
+      "cid_labels": 136596,
+      "cursor": 137366,
+      "expiry_labels": 0,
+      "first_seq": 1,
+      "frames": 136762,
+      "labels": 136762,
+      "last_frame_sha256": "6dd1a7615bb621e0cc2bba107afac1a751a3b626f0ff469ab95c7e86da5adad8",
+      "maximum_cts": "2023-08-13T21:10:47.987Z",
+      "minimum_cts": "2023-04-13T05:48:27.340Z",
+      "missing_sequence_count": 604,
+      "negated_labels": 237,
+      "notice_count": 0,
+      "notices_sample": [],
+      "raw_bytes": 44772571,
+      "sequence_gap_count": 524,
+      "sequence_gaps_sample": [
+        {
+          "after": 37,
+          "before": 39
+        },
+        {
+          "after": 327,
+          "before": 329
+        },
+        {
+          "after": 484,
+          "before": 486
+        },
+        {
+          "after": 499,
+          "before": 501
+        },
+        {
+          "after": 536,
+          "before": 538
+        },
+        {
+          "after": 594,
+          "before": 596
+        },
+        {
+          "after": 991,
+          "before": 993
+        },
+        {
+          "after": 1091,
+          "before": 1093
+        },
+        {
+          "after": 1532,
+          "before": 1534
+        },
+        {
+          "after": 1641,
+          "before": 1643
+        },
+        {
+          "after": 1666,
+          "before": 1668
+        },
+        {
+          "after": 1788,
+          "before": 1790
+        },
+        {
+          "after": 1790,
+          "before": 1792
+        },
+        {
+          "after": 1859,
+          "before": 1861
+        },
+        {
+          "after": 1870,
+          "before": 1872
+        },
+        {
+          "after": 1984,
+          "before": 1986
+        },
+        {
+          "after": 2164,
+          "before": 2166
+        },
+        {
+          "after": 2220,
+          "before": 2222
+        },
+        {
+          "after": 2223,
+          "before": 2225
+        },
+        {
+          "after": 2335,
+          "before": 2337
+        },
+        {
+          "after": 2381,
+          "before": 2383
+        },
+        {
+          "after": 2452,
+          "before": 2454
+        },
+        {
+          "after": 2578,
+          "before": 2580
+        },
+        {
+          "after": 2608,
+          "before": 2610
+        },
+        {
+          "after": 2616,
+          "before": 2618
+        },
+        {
+          "after": 2712,
+          "before": 2714
+        },
+        {
+          "after": 2755,
+          "before": 2757
+        },
+        {
+          "after": 2829,
+          "before": 2831
+        },
+        {
+          "after": 2844,
+          "before": 2846
+        },
+        {
+          "after": 2848,
+          "before": 2850
+        },
+        {
+          "after": 2907,
+          "before": 2909
+        },
+        {
+          "after": 2912,
+          "before": 2914
+        }
+      ],
+      "signed_labels": 136762,
+      "values": {
+        "!filter": 3,
+        "!no-promote": 1,
+        "!warn": 57,
+        "corpse": 1137,
+        "dmca-violation": 3,
+        "gore": 1679,
+        "icon-intolerant": 1,
+        "icon-kkk": 1,
+        "icon-nazi": 33,
+        "impersonation": 95,
+        "misleading": 9,
+        "nsfl": 8,
+        "nudity": 6511,
+        "nudity-nonconsentual": 4,
+        "porn": 69550,
+        "self-harm": 405,
+        "sexual": 35459,
+        "spam": 64,
+        "torture": 4,
+        "underwear": 21738
+      }
+    },
+    "target_seq": 44494621,
+    "updated_at": "2026-10-20T13:26:42.535486+00:00"
+  },
+  "manifest_sha256": "5bce73760f42c9d17ace8b9341d829ea4e28c2fd40b17ee93c478964fb26312c",
+  "parent": {
+    "directory": "/Users/joshlacalamito/catbird-lake-local/moderation-labels/bluesky-v1",
+    "frames": 6762,
+    "identity_sha256": "f4a4fb252f4a921fcd41e77b9f2cf2cfff8ed763fa238524b0d2f4ba6ad3fe85",
+    "journal_sha256": "922bfdbf168fce6e11e59a29843025bb88dc825150e7bd5d34ea68d9f3f1d79e",
+    "through_seq": 6816,
+    "verification": "all parent raw hashes and CBOR frames independently decoded"
+  },
+  "policy_at_creation": {
+    "cid": "bafyreidh754j3y7isnikzv2itrkywmhrfqcx646hl6w5r62wqecioychoi",
+    "response_sha256": "f03b274acf5d23fdfb322fe6845fddaf7999247e992d780ff5bd354ca75b8c03",
+    "uri": "at://did:plc:ar7c4by46qjdydhdevvrndac/app.bsky.labeler.service/self",
+    "url": "https://inkcap.us-east.host.bsky.network/xrpc/com.atproto.repo.getRecord?repo=did%3Aplc%3Aar7c4by46qjdydhdevvrndac&collection=app.bsky.labeler.service&rkey=self"
+  },
+  "execution": {
+    "bounds": {
+      "batch_frames": 5000,
+      "directory": "/Users/joshlacalamito/catbird-lake-local/moderation-labels/bluesky-v2",
+      "frames_per_second": 1000.0,
+      "max_frames": 45000000,
+      "max_seconds": 86400.0,
+      "max_total_bytes": 7516192768,
+      "min_free_bytes": 118111600640,
+      "parent_v1": "/Users/joshlacalamito/catbird-lake-local/moderation-labels/bluesky-v1",
+      "start_cursor": null,
+      "storage": "packed",
+      "target_seq": 44494621,
+      "verify_only": false
+    },
+    "dependencies": {
+      "cbor2": "6.1.3",
+      "websockets": "17.3"
+    },
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]",
+    "source_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/ops/backfill_moderation_labels.py",
+    "source_sha256": "bf6e6db10a6a113d6ace91d1715c2906179d17f6d3979b94e6de12f48681f594",
+    "started_at": "2026-10-20T13:24:29.625766+00:00"
+  },
+  "limitations": [
+    "Running, not completed or caught up",
+    "Sequence gaps are observed absent positions, not proven delivery loss",
+    "Signature verification unperformed",
+    "Run seconds bound receive loop, not strict whole-process wallclock",
+    "7GiB cap applies to this generation logical bytes;110GiB filesystem floor also checked",
+    "Initial compression/time extrapolations are not guarantees"
+  ]
+}

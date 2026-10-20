@@ -1,0 +1,90 @@
+{
+  "verified_at": "2026-10-20T13:25:08.184800+00:00",
+  "directory": "/Users/joshlacalamito/catbird-lake-local/moderation-labels/recent-tail-20261020",
+  "scope": "Independent retained recent-tail slice; not full historical label coverage",
+  "manifest_sha256": "0a9261356fd1aa25440e8308555d91d0b58a2a3403a4ee0af46a617247d59fcd",
+  "journal_sha256": "90df5a15aca041877a01c1553fd3021a926d2772402c7db5f2c1b863cb71bcc4",
+  "requested_start_cursor": 44394621,
+  "frozen_target_seq": 44494621,
+  "first_observed_seq": 44394622,
+  "last_observed_seq": 44494621,
+  "frames": 95096,
+  "labels": 95096,
+  "compressed_bytes": 13599968,
+  "raw_frame_bytes": 30061588,
+  "minimum_cts": "2026-10-18T20:28:15.501Z",
+  "maximum_cts": "2026-10-20T13:13:13.746Z",
+  "sequence_gap_count": 4129,
+  "missing_sequence_positions": 4904,
+  "scope_counts": {
+    "post_at_uri": 79215,
+    "account_did": 13170,
+    "other": 2711
+  },
+  "label_values": {
+    "!hide": {
+      "positive": 25
+    },
+    "!suspend": {
+      "negated": 103,
+      "positive": 92
+    },
+    "!takedown": {
+      "positive": 5283,
+      "negated": 1450
+    },
+    "!warn": {
+      "positive": 3,
+      "negated": 1
+    },
+    "graphic-media": {
+      "positive": 438,
+      "negated": 21
+    },
+    "intolerant": {
+      "positive": 97,
+      "negated": 1
+    },
+    "needs-review": {
+      "positive": 6069,
+      "negated": 601
+    },
+    "nudity": {
+      "positive": 1438,
+      "negated": 187
+    },
+    "porn": {
+      "positive": 60335,
+      "negated": 1235
+    },
+    "rude": {
+      "negated": 1,
+      "positive": 7
+    },
+    "rumor": {
+      "positive": 4
+    },
+    "self-harm": {
+      "positive": 68,
+      "negated": 1
+    },
+    "sexual": {
+      "positive": 16974,
+      "negated": 225
+    },
+    "sexual-figurative": {
+      "positive": 322,
+      "negated": 19
+    },
+    "spam": {
+      "negated": 20,
+      "positive": 76
+    }
+  },
+  "signed_labels": 95096,
+  "cid_scoped_labels": 81926,
+  "expiry_labels": 5712,
+  "signature_verification": "unperformed",
+  "negative_label_semantics": "neg=true revokes matching label; not a safe/benign example",
+  "no_label_means_safe": false
+}

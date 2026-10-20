@@ -1,0 +1,66 @@
+{
+  "verified_at": "2026-10-20T13:12:19.151354+00:00",
+  "raw_files_verified": 1000,
+  "labels_independently_decoded": 1000,
+  "negations": 28,
+  "minimum_cts": "2023-04-13T05:48:27.340Z",
+  "maximum_cts": "2023-04-25T23:39:30.726Z",
+  "journal_sha256": "b375d6f0a1cb422124cb28de047476263a633c7d57779e573b0867763eee1625",
+  "checkpoint": {
+    "cid_labels": 984,
+    "cursor": 1007,
+    "expiry_labels": 0,
+    "first_seq": 1,
+    "frames": 1000,
+    "labels": 1000,
+    "negated_labels": 28,
+    "notices": [],
+    "raw_bytes": 325125,
+    "sequence_gaps": [
+      {
+        "after": 37,
+        "before": 39
+      },
+      {
+        "after": 327,
+        "before": 329
+      },
+      {
+        "after": 484,
+        "before": 486
+      },
+      {
+        "after": 499,
+        "before": 501
+      },
+      {
+        "after": 536,
+        "before": 538
+      },
+      {
+        "after": 594,
+        "before": 596
+      },
+      {
+        "after": 991,
+        "before": 993
+      }
+    ],
+    "signed_labels": 1000,
+    "values": {
+      "corpse": 21,
+      "dmca-violation": 3,
+      "gore": 18,
+      "icon-nazi": 3,
+      "impersonation": 5,
+      "nudity": 444,
+      "nudity-nonconsentual": 4,
+      "porn": 96,
+      "self-harm": 12,
+      "sexual": 383,
+      "spam": 11
+    }
+  },
+  "signature_verification": "unperformed",
+  "full_history": "unproven; seven observed sequence gaps in first 1000 events"
+}

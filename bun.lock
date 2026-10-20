@@ -14,6 +14,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@atproto/ws-client@0.2.1": "patches/@atproto%2Fws-client@0.2.1.patch",
+  },
   "packages": {
     "@atproto-labs/did-resolver": ["@atproto-labs/did-resolver@0.3.11", "", { "dependencies": { "@atproto-labs/fetch": "^0.4.0", "@atproto-labs/pipe": "^0.2.4", "@atproto-labs/simple-store": "^0.5.1", "@atproto-labs/simple-store-memory": "^0.2.6", "@atproto/did": "^0.5.6", "zod": "^3.23.8" } }, "sha512-CeAC6VY3xaXQ8CaOXLz4EOopSvfcQBcuJvX3J5ew2nbf+BM0nes45ZvxUieP5ZlLPXbJborwJh5zDeJcYpwCFQ=="],
 

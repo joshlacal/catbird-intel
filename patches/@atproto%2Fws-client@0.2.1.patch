@@ -1,0 +1,41 @@
+diff --git a/dist/transport/node-transport.js b/dist/transport/node-transport.js
+index 95a449001442325d6846b49938fde779d418e9b6..2b095170c8961e58d3cd99fb455be0cc1a8ae635 100644
+--- a/dist/transport/node-transport.js
++++ b/dist/transport/node-transport.js
+@@ -64,6 +64,11 @@ function createTransportImpl(options) {
+         headers: options.headers
+             ? Object.fromEntries(new Headers(options.headers))
+             : undefined,
++        // Bun's `ws` compatibility class consumes `tls`, while the real Node
++        // `ws` package consumes top-level CA and verification options.
++        tls: options.tls,
++        ca: options.tls?.ca,
++        rejectUnauthorized: options.tls?.rejectUnauthorized,
+         closeTimeout: CLOSE_TIMEOUT_MS, // supported by our version of ws, but not in @types/ws yet
+     };
+     const ws = new WebSocket(options.url, options.protocols, wsopts);
+diff --git a/dist/transport/transport.d.ts b/dist/transport/transport.d.ts
+index 0791ec293108e8f43b4ba31b02e4770143fb6828..a5cf751da3b485241793a9c46e2b3831cb43c945 100644
+--- a/dist/transport/transport.d.ts
++++ b/dist/transport/transport.d.ts
+@@ -67,6 +67,8 @@ export interface TransportOptions<M extends DataMode = 'auto'> {
+     maxBufferedBytes: undefined | number;
+     /** Applied to the upgrade request (Node only; the browser transport throws). */
+     headers: undefined | HeadersInit;
++    /** Explicit trust anchors for TLS upgrade requests. */
++    tls: undefined | { ca: string; rejectUnauthorized: true };
+     protocols: undefined | string | string[];
+     /** The socket opened; `sender` is valid until this connection ends. */
+     onOpen(sender: Sender<M>): void;
+diff --git a/dist/websocket.js b/dist/websocket.js
+index bf50c991cd7c0474d18d8e00654c569aad5ec198..9eb8a6d7c8128b32e90f4435f1c15d55824506cf 100644
+--- a/dist/websocket.js
++++ b/dist/websocket.js
+@@ -51,6 +51,7 @@ export async function* websocketFactory(url, createTransport, options = {}) {
+                     dataMode: options.dataMode ?? 'auto',
+                     protocols: options.protocols,
+                     headers: options.headers,
++                    tls: options.tls,
+                     heartbeat: options.heartbeat,
+                     idleTimeoutMs: options.idleTimeoutMs,
+                     highWaterMark: options.highWaterMark,

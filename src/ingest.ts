@@ -8,6 +8,9 @@
 // keyed (did, rkey) and versioned by repo revision, so replayed events collapse.
 
 import { Jetstream, websocketTransport } from "@bsky/jetstream";
+import { X509Certificate } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ClickHouseWriter } from "./clickhouse.ts";
 import { loadCursor, resumeCursor, saveCursor, type CursorState } from "./cursor.ts";
@@ -23,6 +26,42 @@ const FLUSH_MS = Number(env("FLUSH_MS", "1500"));
 const MAX_ROWS = Number(env("MAX_ROWS", "15000"));
 const HEALTH_MS = Number(env("HEALTH_MS", "10000"));
 const COLLECTIONS = ["app.bsky.feed.*", "app.bsky.graph.*", "app.bsky.actor.*"] as const;
+
+// A stale host CA bundle must fail startup. Bun's bundled roots can still
+// contain these incident roots, so --use-system-ca alone cannot remove them.
+const REJECTED_ROOTS = new Set([
+  "7DD78D5F4F13459A83DFF9ABBBA62EDBAF6F2D102BF257FD712F4D9F2746ED8D", // emSign Root TLS CA - G3
+  "F2EDAAFF3D9B701FB4D14C9F285F8C0BAD90FC3BCC1FA07D47F4718EDABA34A5", // emSign Root CS CA - G3
+  "D7A7A0FB5D7E2731D771E9484EBCDEF71D5F0C3E0A2948782BC83EE0EA699EF4", // AAA Certificate Services
+  "86A1ECBA089C4A8D3BBE2734C612BA341D813E043CF9E8A862CD5C57A36BBE6B", // emSign ECC Root CA - G3
+]);
+
+export function ingestTlsOptions(
+  bundlePath = env("INGEST_TRUST_BUNDLE", "/etc/ssl/certs/ca-certificates.crt"),
+): { ca: string; rejectUnauthorized: true } {
+  const [major = NaN, minor = NaN] = Bun.version.split(".").map(Number);
+  if (!Number.isInteger(major) || !Number.isInteger(minor) || major < 1 || (major === 1 && minor < 4)) {
+    throw new Error("catbird-intel ingest requires Bun 1.4 or later for explicit WebSocket TLS trust");
+  }
+  if (!isAbsolute(bundlePath)) throw new Error("INGEST_TRUST_BUNDLE must be an absolute path");
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+    throw new Error("NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate verification");
+  }
+  const ca = readFileSync(bundlePath, "utf8");
+  const certificates = ca.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+  if (certificates.length === 0 || ca.replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, "").trim()) {
+    throw new Error(`invalid PEM certificate bundle: ${bundlePath}`);
+  }
+  for (const pem of certificates) {
+    const fingerprint = new X509Certificate(pem).fingerprint256.replaceAll(":", "").toUpperCase();
+    if (REJECTED_ROOTS.has(fingerprint)) {
+      throw new Error(`affected certificate remains in ${bundlePath}: ${fingerprint}`);
+    }
+  }
+  return { ca, rejectUnauthorized: true };
+}
+
+const jetstreamTls = ingestTlsOptions();
 
 const writer = new ClickHouseWriter({
   url: env("CH_URL", "http://127.0.0.1:8123"),
@@ -112,6 +151,9 @@ async function runService(service: string): Promise<void> {
     raw: true,
     signal: stop.signal,
     liveTransport: websocketTransport({
+      // @atproto/ws-client forwards this to Bun's native WebSocket upgrade.
+      // Setting node:tls defaults alone does not replace Bun's bundled roots.
+      tls: jetstreamTls,
       highWaterMark: 64 * 1024 * 1024,
       maxBufferedBytes: 512 * 1024 * 1024,
       onReconnect: (error, info) => {
@@ -180,4 +222,4 @@ async function main(): Promise<void> {
   log("stopped");
 }
 
-await main();
+if (import.meta.main) await main();

@@ -206,7 +206,9 @@ def row_from_event(ev: dict) -> dict:
     subject = rec.get("subject") if isinstance(rec.get("subject"), str) else ""
     extra = ""
     if collection == "app.bsky.graph.starterpack":
-        extra = json.dumps([f.get("uri") for f in rec.get("feeds", []) if isinstance(f, dict)])
+        feeds = rec.get("feeds")
+        # Malformed records exist upstream (e.g. `feeds` as an int); treat non-lists as empty.
+        extra = json.dumps([f.get("uri") for f in feeds if isinstance(f, dict)] if isinstance(feeds, list) else [])
     elif collection == "app.bsky.feed.generator":
         extra = rec.get("did", "") if isinstance(rec.get("did"), str) else ""
     elif collection == "app.bsky.actor.contentVisibilityDeclaration":

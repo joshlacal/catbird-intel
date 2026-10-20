@@ -1,0 +1,8 @@
+[Unit]
+Description=Try Drive drain every ten minutes during the authorized buffer run
+
+[Timer]
+OnCalendar=2026-10-20 20..23:00/10:00 UTC
+OnCalendar=2026-10-21 00..05:00/10:00 UTC
+Persistent=false
+Unit=catbird-gcs-drive-drain.service

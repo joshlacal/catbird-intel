@@ -1,0 +1,13 @@
+[Unit]
+Description=Bounded same-region Cloud Storage to Drive drain
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/catbird-offloader/backfill
+ExecStart=/opt/catbird-gcs-buffer/venv/bin/python -u /opt/catbird-gcs-buffer/gcs_drive_drain.py --bucket catbird-436600-jetstream-buffer-20261020 --source-id gce-selfhost-001 --source-epoch buffer-admission-20261020 --drive-root 16Zd7n4pwTSDMDsnP9chX2Ci0r0ahEy45 --work-dir /data/gcs-drive-drain --max-segments 8 --once
+SuccessExitStatus=75
+TimeoutStartSec=30min
+MemoryMax=2G
+CPUQuota=200%

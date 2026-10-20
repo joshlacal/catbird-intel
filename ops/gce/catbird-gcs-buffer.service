@@ -1,0 +1,16 @@
+[Unit]
+Description=Bounded Jetstream Cloud Storage buffer and collector supervisor
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/catbird-gcs-buffer/venv/bin/python -u /opt/catbird-gcs-buffer/gcs_buffer_supervisor.py --bucket catbird-436600-jetstream-buffer-20261020 --deadline 2026-10-21T05:29:29Z --poweroff-on-exit
+ExecStopPost=-/usr/bin/docker stop --time 120 js
+Restart=no
+TimeoutStopSec=300
+KillMode=mixed
+MemoryMax=4G
+CPUQuota=400%

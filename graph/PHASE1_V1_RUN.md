@@ -1,5 +1,15 @@
 # Phase 1 v1 continuation
 
+## User-requested pause — 2026-10-20 17:48 UTC
+
+Josh requested pausing graph processing until Google Drive is ready. The original fold, continuation driver and local archive decoder are now **SIGSTOP suspended**, with every observed member of process groups `95789`, `10905` and `13499` verified in state `T`. The graph follow-up automation is paused. Do not resume automatically; the older continuation instructions below apply only after explicit authorization to resume.
+
+This is **RAM-dependent suspension, not a durable query checkpoint**. Existing archive files and ClickHouse parts remain on disk, but the incomplete query's execution state depends on the surviving processes. Do not reboot, terminate these processes or assume a fresh process can continue at the same row. Final producer/edge/stat outputs are still absent; the latest observed temporary table contained 658,047,474 rows, which is not a final edge count.
+
+Before an authorized resume, require a real bulk archive segment **and matching receipt** successfully uploaded to Drive and verified by size/checksum, followed by a subsequent successful transfer without renewed quota errors. A metadata probe or expired cooldown alone is insufficient. Also recheck local disk capacity for the remaining fold and downstream outputs; approximately 47 GiB was free at pause, and no sufficient completion-space bound has been established. Reverify process identities before any `SIGCONT`; do not launch duplicates. The paused decoder's outstanding network request may need normal error recovery after resumption.
+
+The separately authorized GCE Cloud Storage buffer continues under its own 1 TiB admission limit and absolute VM stop deadline. It does not authorize resuming the graph. Exact process-state evidence: `~/catbird-lake-local/graph-build/out/graph_pause_20261020.json`.
+
 Catbird Intel is rebuilding its account communities from archive follow records after the previous evaluation admitted supplemental seed edges and inflated separation. The original archive-only fold is still running; a separate local driver waits for its verified outputs, then builds similarities, clusters accounts, evaluates the result, and exports real post triplets. No v1 graph-quality result or v1 pair bank exists at this checkpoint. Continue the existing processes and publish only artifacts whose completion and checksums have been verified.
 
 Governing documents: [master plan](../../docs/execution-plans/2026-10-19-catbird-community-intelligence-master-plan.md), [correction decision](../../docs/DECISIONS.md#2026-10-20--catbird-intel--invalidate-stub-completion-claims-and-rebuild-from-real-data), [actual clustering/evaluation decision](../../docs/DECISIONS.md#2026-10-20--catbird-intel-phase-1--report-actual-clustering-and-raw-evaluation-failures), and [size-only tuning decision](../../docs/DECISIONS.md#2026-10-20--catbird-intel-phase-1--tune-actual-community-median-using-size-only).

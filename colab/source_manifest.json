@@ -1,0 +1,18 @@
+{
+  "schema": "catbird-real-pipeline-source-v1",
+  "note": "Delivered source inventory; not a retrospective source attribution for earlier smoke runs.",
+  "files": {
+    "real_pipeline.py": "f0896c61763254c24ee36a6c72d050c1399cef7ec3f4ea140774e94bebbfc2cd",
+    "real_pipeline/__init__.py": "6c41619880be4625c1f654440c71c70edf755d3d72f1158ebc43e57b8f62d64e",
+    "real_pipeline/common.py": "adb52eebc569361782f91167f1ada0bfd0d8f9af1ed90a725ffd26a6758fb33c",
+    "real_pipeline/student.py": "83a0e9a995d04dc428768cfafc9674adeb90fd2c7c144fd56f9804848c3be6f7",
+    "real_pipeline/teachers.py": "85ed8b6b270fd0a7122f79e3a145819bc3d19dd71a9625ce6d1ded2545901bf4",
+    "requirements-colab.txt": "978e939cfcfbbb2ff72b77f1ecc54b30f1608e13abe773b9a43289d9c36bbe9c",
+    "requirements-local.txt": "82e2a6d744a725665d343f3a3ecb8744b5187f2ea04b9b44728f226037afaf50",
+    "README_REAL_MODELS.md": "63e4ce791cdd6161b4087093504b1208895c56106a4a15213011e379ca1746d7"
+  },
+  "notebook": {
+    "name": "Catbird_Intel_Real_Teachers_Ettin_V1.ipynb",
+    "sha256": "7d55ed45bfa135f6483fbe26197278f59545b16b1e8ec1d0a634ccb709f8f728"
+  }
+}

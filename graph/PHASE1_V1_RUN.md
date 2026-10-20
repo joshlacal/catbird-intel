@@ -108,7 +108,9 @@ PYTHONDONTWRITEBYTECODE=1 graph/.venv/bin/python ops/upload_repair_v1.py \
   --file ~/catbird-lake-local/drive-sync-staging/training-banks/phase5_social_encoder_pairs_v1.manifest.json
 ```
 
-Upload the raw graph evaluation/provenance JSON files to the repair `eval` destination with the same tool and explicit `--file` arguments. Do not run a broad legacy lake sync to discover and publish everything in a live graph directory. Keep Drive upload receipts and update master-plan §8 with actual observed outcomes. The [real model launch instructions](../colab/README_REAL_MODELS.md) describe the Colab side once the validated pair bank is present.
+For raw graph evaluation/provenance JSON uploads, first copy the verified bytes to versioned filenames in a separate delivery directory, for example `phase1_eval_report_v1_<sha256-prefix>.json`, `phase1_input_provenance_v1_<sha256-prefix>.json`, `phase1_cluster_stats_v1_<sha256-prefix>.json` and `phase1_evaluation_inputs_v1_<sha256-prefix>.json`. Preserve the original files and record the source-to-delivery name/hash mapping. The uploader deliberately rejects the old unversioned `phase1_eval_report.json` name because it was used by invalidated v0 artifacts. It also rejects changing bytes under an existing Drive filename.
+
+Upload those copies to the repair `eval` destination with the same tool and explicit `--file` arguments. Later repair-report updates likewise need a new dated/versioned Drive filename; the 2026-10-20 delivery is immutable. Do not run a broad legacy lake sync to discover and publish everything in a live graph directory. Keep Drive upload receipts and update master-plan §8 with actual observed outcomes. The [real model launch instructions](../colab/README_REAL_MODELS.md) and [completed GPU-pilot addendum](../eval/COLAB_GPU_PILOT_20261020.md) describe the Colab side once the validated pair bank is present.
 
 ## Qualification boundaries and protected state
 

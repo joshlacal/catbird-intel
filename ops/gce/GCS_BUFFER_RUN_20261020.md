@@ -1,5 +1,7 @@
 # Temporary archive buffer: 20 October deployment
 
+**Later owner hold, 20 October:** the GCS-to-Drive timer was stopped before its first 20:00 UTC run. The drain has no shared account-wide 700 GiB/24h reservation ledger or explicit global pacing, so it must not start under the newly surfaced hard quota invariant. Both timer and drain service were verified inactive with no drain journal entries. The GCS buffer and absolute VM stop deadline remain unchanged. See the [reconciliation and release conditions](../../eval/lakehouse_reconciliation_20261020.md#drive-drain-hold-and-quota-evidence); earlier scheduled-start statements below describe deployment history, not current permission.
+
 The historical archive collector was blocked by Google Drive upload throttling. Josh authorized a temporary Google Cloud Storage queue using existing credits, with $15 for storage/operations and $60 for additional compute. The buffer is now running on the existing collector VM and transferring preserved segments before collection resumes. Drive transfer remains separately scheduled and unverified while its quota cools down.
 
 Governing [buffer plan](../../../docs/execution-plans/2026-10-20-gce-archive-buffer.md), [master plan](../../../docs/execution-plans/2026-10-19-catbird-community-intelligence-master-plan.md), and [decision log](../../../docs/DECISIONS.md) live in the parent workspace.

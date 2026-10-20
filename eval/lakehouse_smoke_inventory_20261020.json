@@ -1,0 +1,58 @@
+[
+  {
+    "path": "scripts/onboarding/data/catbird-lake/embeddings/accounts/2026/10/19/accounts_embeddings_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/embeddings/accounts/2026/10/19/manifest_accounts_embeddings_seg_0000000001.json",
+    "rows": 3480,
+    "bytes": 548118,
+    "sha256": "1114fa12c7ba24b2a675434192f53ff9fe30d21593046790b2e750098ed646e4",
+    "matches_manifest": true
+  },
+  {
+    "path": "scripts/onboarding/data/catbird-lake/embeddings/pairs/2026/10/19/pairs_embeddings_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/embeddings/pairs/2026/10/19/manifest_pairs_embeddings_seg_0000000001.json",
+    "rows": 6699,
+    "bytes": 839338,
+    "sha256": "6cb8740655ae98daf41b7d46853600ed7a1c8f306138318131a063fbcde77ed3",
+    "matches_manifest": true
+  },
+  {
+    "path": "scripts/onboarding/data/catbird-lake/embeddings/posts/2026/10/19/posts_embeddings_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/embeddings/posts/2026/10/19/manifest_posts_embeddings_seg_0000000001.json",
+    "rows": 6753,
+    "bytes": 3171339,
+    "sha256": "2b9ed28b9e27e1695f4650722fba1c6dde488941388d91b705a08fce23d2dba7",
+    "matches_manifest": true
+  },
+  {
+    "path": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/follows_graph_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/manifest_follows_graph_seg_0000000001.json",
+    "rows": 4147,
+    "bytes": 103584,
+    "sha256": "f9450e0f8841be54f5fe52bf475de80ae43ae35affe0890f1f989796a0733e0f",
+    "matches_manifest": true
+  },
+  {
+    "path": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/interactions_bipartite_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/manifest_interactions_bipartite_seg_0000000001.json",
+    "rows": 45243,
+    "bytes": 1766170,
+    "sha256": "1784c838d32d5084730d6f446f27c448eec1219af481f2ec28b0ac4a5344c91a",
+    "matches_manifest": true
+  },
+  {
+    "path": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/profiles_and_packs_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/manifest_profiles_and_packs_seg_0000000001.json",
+    "rows": 142,
+    "bytes": 11722,
+    "sha256": "1cec24abb6370687aec4029514094f92a222b5c0e329771724370c7db288786b",
+    "matches_manifest": true
+  },
+  {
+    "path": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/posts_seg_0000000001.parquet",
+    "manifest": "scripts/onboarding/data/catbird-lake/raw/2026/10/19/manifest_seg_0000000001.json",
+    "rows": 6753,
+    "bytes": 2352260,
+    "sha256": "de70f6f7f7dfad4a8e3f76f1e10bb73c1e79b83a990e9a19ec4cf14ccd625e59",
+    "matches_manifest": true
+  }
+]

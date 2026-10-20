@@ -75,13 +75,13 @@ await controlResponse.body?.cancel();
 if (!controlResponse.ok) throw new Error(`normal HTTPS control failed: ${controlResponse.status}`);
 console.log("normal Jetstream HTTPS control passed");
 
-async function confirmJetstream(service: string): Promise<void> {
+async function confirmJetstream(service: string, transportTls = tls): Promise<void> {
   const jetstream = new Jetstream({ service, validateWire: false });
   const stream = jetstream.live({
     collections: ["app.bsky.feed.*"],
     raw: true,
     signal: AbortSignal.timeout(20_000),
-    liveTransport: websocketTransport({ shouldReconnect: false, tls }),
+    liveTransport: websocketTransport({ shouldReconnect: false, tls: transportTls }),
   });
   let firstSeq: number | undefined;
   let lastSeq: number | undefined;
@@ -100,6 +100,20 @@ await Promise.all([
   confirmJetstream("https://jetstream.us-east.bsky.network"),
   confirmJetstream("https://jetstream.us-west.bsky.network"),
 ]);
+
+// Passing only an unrelated root to the same healthy WSS endpoint must fail.
+// If Bun ignores the patched tls.ca option, its built-in roots will connect.
+const restrictedCa = tls.ca.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/)?.[0];
+if (!restrictedCa) throw new Error("host CA bundle has no certificate for restricted trust control");
+let restrictedRejected = false;
+try {
+  await confirmJetstream("https://jetstream.us-east.bsky.network", { ca: restrictedCa, rejectUnauthorized: true });
+} catch (error) {
+  if (!isCertificateFailure(error)) throw new Error("restricted CA WSS probe was inconclusive", { cause: error });
+  restrictedRejected = true;
+  console.log("Jetstream WSS rejected unrelated CA while full host CA succeeded");
+}
+if (!restrictedRejected) throw new Error("Jetstream WSS accepted an unrelated restricted CA");
 
 let clickhouseRequest = false;
 const server = Bun.serve({

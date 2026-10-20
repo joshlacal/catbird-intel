@@ -4,10 +4,11 @@
 Uploads and verifies:
 1. hot-export/day=YYYY-MM-DD/ from netcup:/var/lib/catbird-intel/export/
 2. graph-parquet/ from M4 Max local decoded archive batches (/Users/joshlacalamito/catbird-lake-local/archive-graph/events/)
-3. training-banks/ exported from netcup ClickHouse (priority=10, max_threads=2):
-   - phase3_health_training_150k.parquet (150k stratified Bluesky posts with health & community signals)
-   - phase5_social_encoder_pairs_500k.parquet (500k co-engaged / community-labeled posts from feed.posts + catbird.known_for)
-4. models/ (KnownFor Parquet, communities Parquet, top-500 labels, socially_trained_student_256d_int8.json, catbird_jev_int8.onnx, evaluation reports)
+3. training-banks/: only explicitly named, validated v1 unlabeled banks; run
+   export_training_banks_v1.py first. Regex ingest scores are baseline columns,
+   never teacher targets. V1 social pairs require their graph provenance manifest.
+4. models/: no implicit upload. Invalidated v0/stub artifacts are quarantined;
+   publish real model bundles separately after measured validation.
 """
 from __future__ import annotations
 
@@ -85,6 +86,8 @@ class DriveUploader:
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             files = json.loads(resp.read().decode()).get("files", [])
+        if len(files) > 1:
+            raise RuntimeError(f"Ambiguous Drive folder: {name}")
         if files:
             fid = files[0]["id"]
             with self._lock:
@@ -132,8 +135,9 @@ class DriveUploader:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
             for f in data.get("files", []):
-                if int(f.get("size") or 0) > 0:
-                    out[f["name"]] = f
+                if f["name"] in out:
+                    raise RuntimeError(f"Duplicate Drive name in {parent_id}: {f['name']}")
+                out[f["name"]] = f
             page_token = data.get("nextPageToken")
             if not page_token:
                 return out
@@ -155,10 +159,13 @@ class DriveUploader:
                 md5.update(chunk)
         expected_md5 = md5.hexdigest()
 
+        if existing_map is None:
+            existing_map = self.list_existing(parent_id)
         if existing_map and name in existing_map:
             ex = existing_map[name]
             if int(ex.get("size") or -1) == size and ex.get("md5Checksum") == expected_md5:
                 return {"status": "cached", "id": ex["id"], "name": name, "bytes": size}
+            raise RuntimeError(f"Existing Drive bytes differ for {name}; use a new versioned name")
 
         mime = "application/json" if name.endswith(".json") else "application/octet-stream"
         meta = json.dumps({"name": name, "parents": [parent_id]}).encode()
@@ -188,7 +195,41 @@ class DriveUploader:
             uploaded = json.loads(resp.read().decode())
         if int(uploaded.get("size") or -1) != size or uploaded.get("md5Checksum") != expected_md5:
             raise RuntimeError(f"Checksum mismatch uploading {name}")
+        existing_map[name] = uploaded
         return {"status": "uploaded", "id": uploaded["id"], "name": name, "bytes": size}
+
+
+def validate_health_bank(path: pathlib.Path) -> None:
+    """Require the sealed export receipt and actual reserved-author isolation."""
+    import pyarrow.parquet as pq
+    receipt = json.loads(path.with_suffix(".manifest.json").read_text())
+    if hashlib.sha256(path.read_bytes()).hexdigest() != receipt["sha256"]:
+        raise RuntimeError("Unlabeled bank differs from its export receipt")
+    schema = pq.read_schema(path)
+    if any(name.startswith("teacher_") for name in schema.names):
+        raise RuntimeError("Unlabeled bank contains forbidden teacher aliases")
+    required = {"regex_baseline_" + name for name in
+                ("politicalness", "heat", "engagement_bait", "spam")}
+    if not required.issubset(schema.names):
+        raise RuntimeError("Unlabeled bank is missing explicit regex baseline columns")
+    data = pq.read_table(path, columns=["author_did", "uri", "author_split_bucket"])
+    if data.num_rows != receipt["rows"] or data.num_rows == 0:
+        raise RuntimeError("Unlabeled bank row count differs from its receipt")
+    if 0 in set(data["author_split_bucket"].to_pylist()):
+        raise RuntimeError("Reserved holdout author bucket leaked into bank")
+    if len(set(data["uri"].to_pylist())) != data.num_rows:
+        raise RuntimeError("Duplicate post URI in bank")
+    eval_dir = pathlib.Path(__file__).resolve().parents[1] / "eval"
+    manifest = json.loads((eval_dir / "phase3_v1_export_manifest.json").read_text())
+    holdout = eval_dir / "phase3_holdout_600_unlabeled.jsonl"
+    if hashlib.sha256(holdout.read_bytes()).hexdigest() != manifest["holdout"]["sha256"]:
+        raise RuntimeError("Holdout differs from its sealed receipt")
+    if manifest["bank"]["sha256"] != receipt["sha256"]:
+        raise RuntimeError("Bank is not the holdout's audited training generation")
+    with holdout.open() as fh:
+        held_authors = {json.loads(line)["author_did"] for line in fh if line.strip()}
+    if held_authors & set(data["author_did"].to_pylist()):
+        raise RuntimeError("Holdout authors overlap training")
 
 
 def main() -> None:
@@ -217,98 +258,22 @@ def main() -> None:
             summary["hot_export"].append(res)
     print(f"[1/4] Synced {len(summary['hot_export'])} hot-export files for day=2026-10-19", flush=True)
 
-    # 2. Export Phase 3 (150k posts) & Phase 5 (500k co-engagement / community post bank) from netcup ClickHouse via stdin
+    # 2. Never rediscover old banks via a wildcard or regenerate v0 labels.
     tb_local = staging / "training-banks"
-    tb_local.mkdir(parents=True, exist_ok=True)
-    p3_file = tb_local / "phase3_health_training_150k.parquet"
-    if not p3_file.exists() or p3_file.stat().st_size < 1_000_000:
-        q_p3 = """
-        SELECT
-            concat('at://', p.did, '/app.bsky.feed.post/', p.rkey) AS uri,
-            p.did AS author_did,
-            p.text AS text,
-            p.langs AS langs,
-            p.reply_root != '' AS is_reply,
-            p.quote_uri != '' AS is_quote,
-            p.politicalness AS teacher_politicalness,
-            p.heat AS teacher_heat,
-            p.engagement_bait AS teacher_engagement_bait,
-            p.spam AS teacher_spam,
-            kf.top_comm AS author_primary_community,
-            c.label AS community_label,
-            c.seed_subculture AS seed_subculture
-        FROM catbird.posts AS p
-        LEFT JOIN (
-            SELECT did, argMax(community, score) AS top_comm
-            FROM catbird.known_for
-            GROUP BY did
-        ) AS kf ON p.did = kf.did
-        LEFT JOIN catbird.communities AS c ON kf.top_comm = c.community
-        WHERE length(p.text) >= 20 AND p.is_deleted = 0
-        ORDER BY cityHash64(p.did, p.rkey)
-        LIMIT 150000
-        FORMAT Parquet
-        SETTINGS output_format_parquet_compression_method = 'zstd', max_threads = 2, priority = 10
-        """
-        with p3_file.open("wb") as fh:
-            subprocess.run(["ssh", "netcup", "clickhouse-client"], input=q_p3.encode(), stdout=fh, check=True)
-
-    p5_file = tb_local / "phase5_social_encoder_pairs_500k.parquet"
-    if not p5_file.exists() or p5_file.stat().st_size < 5_000_000:
-        q_p5 = """
-        SELECT
-            fp.uri AS uri,
-            fp.author AS author_did,
-            fp.created AS created_at,
-            fp.text AS text,
-            kf.top_comm AS community_id,
-            kf.max_score AS community_weight,
-            c.label AS community_label,
-            c.scene_id AS scene_id,
-            c.domain_id AS domain_id,
-            c.seed_subculture AS seed_subculture
-        FROM feed.posts AS fp
-        INNER JOIN (
-            SELECT did, argMax(community, score) AS top_comm, max(score) AS max_score
-            FROM catbird.known_for
-            GROUP BY did
-        ) AS kf ON fp.author = kf.did
-        LEFT JOIN catbird.communities AS c ON kf.top_comm = c.community
-        WHERE length(fp.text) BETWEEN 25 AND 600
-        ORDER BY cityHash64(fp.uri)
-        LIMIT 500000
-        FORMAT Parquet
-        SETTINGS output_format_parquet_compression_method = 'zstd', max_threads = 2, priority = 10
-        """
-        with p5_file.open("wb") as fh:
-            subprocess.run(["ssh", "netcup", "clickhouse-client"], input=q_p5.encode(), stdout=fh, check=True)
-
+    p3_file = tb_local / "phase3_health_training_150k_v1_unlabeled.parquet"
+    if not p3_file.exists():
+        raise RuntimeError("Run ops/export_training_banks_v1.py before syncing clean banks")
+    validate_health_bank(p3_file)
     existing_tb = up.list_existing(LAKE_FOLDERS["training-banks"])
-    for f in sorted(tb_local.glob("*.parquet")):
-        res = up.upload_file(f, LAKE_FOLDERS["training-banks"], existing_tb)
-        summary["training_banks"].append(res)
-    print(f"[2/4] Synced {len(summary['training_banks'])} training bank Parquet files", flush=True)
+    summary["training_banks"].append(
+        up.upload_file(p3_file, LAKE_FOLDERS["training-banks"], existing_tb))
+    print("[2/4] Synced validated v1 unlabeled health bank; v0 social bank excluded", flush=True)
 
-    # 3. Sync models & evaluation artifacts to catbird-lake/models/
-    repo_root = pathlib.Path("/Users/joshlacalamito/Developer/Catbird+Petrel")
-    graph_out = pathlib.Path("/Users/joshlacalamito/catbird-lake-local/graph-build/out")
-    model_candidates = [
-        *sorted(graph_out.glob("*")),
-        repo_root / "catbird-intel/graph/out/phase1_eval_report.json",
-        repo_root / "catbird-intel/colab/out/phase5_benchmark_report.json",
-        repo_root / "catbird-intel/colab/out/socially_trained_student_256d_int8.json",
-        repo_root / "catbird-intel/ops/out/phase6_eval_report.json",
-        repo_root / "scripts/onboarding/models/catbird_jev_int8.onnx",
-        repo_root / "scripts/onboarding/catbird_seed_dataset.json",
-    ]
-    existing_models = up.list_existing(LAKE_FOLDERS["models"])
-    seen_names: set[str] = set()
-    for mc in model_candidates:
-        if mc.is_file() and mc.name not in seen_names:
-            seen_names.add(mc.name)
-            res = up.upload_file(mc, LAKE_FOLDERS["models"], existing_models)
-            summary["models"].append(res)
-    print(f"[3/4] Synced {len(summary['models'])} model & eval artifacts", flush=True)
+    # 3. Explicitly empty until a real, measured model bundle is ready. In
+    # particular do not glob an in-progress graph output directory or upload
+    # the old Phase 1, Phase 5, Phase 6 reports or hashed/regex student artifacts.
+    model_candidates: list[pathlib.Path] = []
+    print("[3/4] Model upload deferred to explicit validated release bundle", flush=True)
 
     # 4. Sync local decoded graph Parquet batches (/Users/joshlacalamito/catbird-lake-local/archive-graph/events/events-*.parquet)
     local_graph_dir = pathlib.Path("/Users/joshlacalamito/catbird-lake-local/archive-graph/events")

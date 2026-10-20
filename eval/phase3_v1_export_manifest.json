@@ -1,0 +1,164 @@
+{
+  "bank": {
+    "author_split_buckets": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19
+    ],
+    "authors": 91165,
+    "bytes": 22436763,
+    "columns": [
+      "uri",
+      "author_did",
+      "author_split_bucket",
+      "created_at",
+      "text",
+      "langs",
+      "post_type",
+      "reply_parent_uri",
+      "reply_root_uri",
+      "quote_uri",
+      "embed_type",
+      "image_count",
+      "has_video",
+      "external_uri",
+      "facet_tags",
+      "regex_baseline_politicalness",
+      "regex_baseline_heat",
+      "regex_baseline_engagement_bait",
+      "regex_baseline_spam"
+    ],
+    "created_at_utc": "2026-10-20T06:58:36.045721+00:00",
+    "path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k_v1_unlabeled.parquet",
+    "query_sha256": "3a9954c97591bbf32e69d457b5eb3920d001650536a077bf643b03febe27a808",
+    "requested_rows": 150000,
+    "rows": 150000,
+    "sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538",
+    "shortfall": 0,
+    "source": "catbird.v_posts_live; stored regex scores joined from catbird.posts FINAL",
+    "source_indexed_at_cutoff_utc": "2026-10-20 06:58:27.989"
+  },
+  "created_at_utc": "2026-10-20T06:58:56.863690+00:00",
+  "excluded_training_authors": 148595,
+  "excluded_training_bank_inventory": [
+    {
+      "author_columns": [
+        "author_did"
+      ],
+      "authors": 89189,
+      "path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k.parquet",
+      "rows": 150000,
+      "sha256": "4e5b5c2bc49a945b5cc441df9e0709124e5333803609bc438576e6bc079f511e"
+    },
+    {
+      "author_columns": [
+        "author_did"
+      ],
+      "authors": 31223,
+      "path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase5_social_encoder_pairs_500k.parquet",
+      "rows": 500000,
+      "sha256": "ab26c831eb060a00fe6ebe7a0a8282465f739ef424b03b017f377f0329a06d80"
+    },
+    {
+      "author_columns": [
+        "author_did"
+      ],
+      "authors": 91165,
+      "path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k_v1_unlabeled.parquet",
+      "rows": 150000,
+      "sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538"
+    }
+  ],
+  "holdout": {
+    "author_split_bucket": 0,
+    "authors": 600,
+    "bytes": 404267,
+    "english_only": true,
+    "labels": "none; sampling keywords are not labels",
+    "overlap_with_training_authors": 0,
+    "path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/phase3_holdout_600_unlabeled.jsonl",
+    "post_types": {
+      "original": 252,
+      "quote": 110,
+      "reply": 238
+    },
+    "requested_rows": 600,
+    "rows": 600,
+    "sha256": "fd57d61c490cf11860c74341f4c5d16d884d65ae0a0b9dd200b867c52b6b9792",
+    "shortfall": 0,
+    "source_indexed_at_cutoff_utc": "2026-10-20 06:58:27.989",
+    "strata": [
+      {
+        "candidate_authors": 3817,
+        "query_sha256": "f35f27b7eb8db906405d7df7eaff8852644dff2c79cc2065ddd9b8520a26beac",
+        "requested": 120,
+        "selected": 120,
+        "shortfall": 0,
+        "stratum": "political_kw"
+      },
+      {
+        "candidate_authors": 217,
+        "query_sha256": "8a61266efb7fd38814dacb725dfc40c325174a24fab8221ce7e6ba821b0485e5",
+        "requested": 120,
+        "selected": 120,
+        "shortfall": 0,
+        "stratum": "heated_nonpolitical_kw"
+      },
+      {
+        "candidate_authors": 1484,
+        "query_sha256": "afbdd659482e39d4b32390713018b3a8aa82605ea2a105a89f570d87f9ca6cbb",
+        "requested": 120,
+        "selected": 120,
+        "shortfall": 0,
+        "stratum": "collision_trap_kw"
+      },
+      {
+        "candidate_authors": 2823,
+        "query_sha256": "b6f385d9efdeb7dfdc56f7f2865463e796ad424fd541cca19504c5ffd29f7857",
+        "requested": 80,
+        "selected": 80,
+        "shortfall": 0,
+        "stratum": "random_quote"
+      },
+      {
+        "candidate_authors": 9516,
+        "query_sha256": "d745786d2c3c30648833b32c52ef23de9734bf762d366685c1f446d2ebde9b1a",
+        "requested": 80,
+        "selected": 80,
+        "shortfall": 0,
+        "stratum": "random_reply"
+      },
+      {
+        "candidate_authors": 9227,
+        "query_sha256": "d673796b5e09c5c1e38185074d2c0ee90b030bec0b2bec16167de1884699f554",
+        "requested": 80,
+        "selected": 80,
+        "shortfall": 0,
+        "stratum": "random_original"
+      }
+    ]
+  },
+  "limitations": [
+    "English holdout is keyword-enriched and not a representative population sample.",
+    "No political viewpoint labels, human labels, teacher targets, thresholds or quality metrics exist yet.",
+    "Live visibility and deletions were enforced at export; recheck the deletion/visibility ledger before use.",
+    "Author-isolation audit covers the listed local lakehouse training banks, not unknown external banks."
+  ],
+  "status": "unlabeled_data_export_only"
+}

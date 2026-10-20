@@ -46,10 +46,11 @@ def prune_for_backbone(raw: np.ndarray, top_k: int = 35, min_cos: float = 0.035)
     mask = raw["w"] >= min_cos
     sub = raw[mask]
     if len(sub) == 0:
-        return raw
-    if np.any(np.diff(sub["p"].astype(np.int64)) < 0):
-        order = np.lexsort((-sub["w"], sub["p"]))
-        sub = sub[order]
+        return sub
+    # simgraph groups edges by p but does not promise weight order within p.
+    # Always sort before selecting the strongest neighbors.
+    order = np.lexsort((sub["q"], -sub["w"], sub["p"]))
+    sub = sub[order]
     first_p = np.r_[0, np.flatnonzero(np.diff(sub["p"])) + 1]
     rank_p = np.arange(len(sub)) - np.repeat(first_p, np.diff(np.r_[first_p, len(sub)]))
     sub = sub[rank_p < top_k]
@@ -89,6 +90,11 @@ def median_size(membership: np.ndarray, min_size: int) -> float:
     per_node = sizes[membership]
     per_node = per_node[per_node >= min_size]
     return float(np.median(per_node)) if len(per_node) else 0.0
+
+
+def community_median_size(membership: np.ndarray, min_size: int) -> float:
+    sizes = np.bincount(membership)
+    return float(np.median(sizes[sizes >= min_size])) if np.any(sizes >= min_size) else 0.0
 
 
 def build_hierarchy(
@@ -198,13 +204,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="/Users/joshlacalamito/catbird-lake-local/graph-build/out")
     ap.add_argument("--target-size", type=float, default=100)
+    ap.add_argument("--size-objective", choices=["community", "producer"], default="community")
     ap.add_argument("--min-size", type=int, default=8)
-    ap.add_argument("--max-communities", type=int, default=1500)
+    ap.add_argument("--max-communities", type=int, default=30000)
     ap.add_argument("--cluster-top-k", type=int, default=30)
     ap.add_argument("--cluster-min-cos", type=float, default=0.035)
     ap.add_argument("--target-scenes", type=int, default=150)
     ap.add_argument("--target-domains", type=int, default=15)
-    ap.add_argument("--resolution", type=float, default=0.015, help="CPM resolution (None to bisect)")
+    ap.add_argument("--resolution", type=float, default=0, help="CPM resolution (0 to bisect)")
     ap.add_argument("--search-steps", type=int, default=4)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -213,6 +220,8 @@ def main() -> None:
     dids, followers, raw = load(d)
     n = len(dids)
     backbone = prune_for_backbone(raw, top_k=args.cluster_top_k, min_cos=args.cluster_min_cos)
+    if not len(backbone):
+        raise SystemExit("No similarity edges meet the backbone threshold; clustering failed")
     b_src, b_dst, b_w = symmetric_edges(backbone)
     g = ig.Graph(n=n, edges=list(zip(b_src.tolist(), b_dst.tolist())), directed=False)
     g.es["weight"] = b_w.tolist()
@@ -220,17 +229,25 @@ def main() -> None:
     if args.resolution is not None and args.resolution > 0:
         res = args.resolution
     else:
-        lo, hi = 0.004, 0.08
+        lo, hi = 0.0001, 0.08
         res = (lo * hi) ** 0.5
-        for _ in range(args.search_steps):
+        best_res, best_error = res, float("inf")
+        for step in range(args.search_steps):
             res = (lo * hi) ** 0.5
-            ms = median_size(run_leiden(g, res, args.seed, iterations=1), args.min_size)
-            if abs(ms - args.target_size) / args.target_size < 0.20:
+            trial = run_leiden(g, res, args.seed, iterations=1)
+            objective = community_median_size if args.size_objective == "community" else median_size
+            ms = objective(trial, args.min_size)
+            error = abs(ms - args.target_size)
+            print(f"resolution trial {step + 1}: resolution={res:.8f}, {args.size_objective}_median={ms}", flush=True)
+            if error < best_error:
+                best_res, best_error = res, error
+            if abs(ms - args.target_size) / args.target_size < 0.10:
                 break
             if ms > args.target_size:
                 lo = res
             else:
                 hi = res
+        res = best_res
     memb = run_leiden(g, res, args.seed, iterations=2)
 
     sizes = np.bincount(memb)
@@ -313,6 +330,14 @@ def main() -> None:
         "backbone_edges_undirected": int(len(b_w)),
         "sim_edges_undirected": int(len(w)),
         "resolution": res,
+        "algorithm": "Leiden CPM with similarity-share overlapping memberships; not twitter/sbf Metropolis-Hastings",
+        "seed": args.seed,
+        "target_size": args.target_size,
+        "size_objective": args.size_objective,
+        "max_communities": args.max_communities,
+        "communities_before_cap": int((sizes >= args.min_size).sum()),
+        "communities_discarded_by_cap": max(0, int((sizes >= args.min_size).sum()) - args.max_communities),
+        "size_producer_weighted_median": median_size(memb, args.min_size),
         "communities": len(members),
         "scenes": int(len(np.unique(scene_of_comm))) if len(scene_of_comm) else 0,
         "domains": int(len(np.unique(domain_of_comm))) if len(domain_of_comm) else 0,

@@ -4,13 +4,15 @@ profile/handle/list signals, and optionally ship KnownFor + communities to netcu
 
 Checks:
   1. 26 seed subcultures and 8 collision traps separate into distinct communities.
-  2. Starter-pack / curated-list co-membership recovery beats a 503-cluster baseline.
+  2. Archive curated-list co-membership recovery (real A Blue Start comparison pending).
   3. KnownFor + communities ship to netcup as a versioned table under 50 MB.
 """
 from __future__ import annotations
 
 import argparse
 import collections
+import datetime
+import hashlib
 import json
 import math
 import pathlib
@@ -21,6 +23,14 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def js_divergence(p: dict[int, float], q: dict[int, float]) -> float:
@@ -53,7 +63,7 @@ def cosine_dict(p: dict[int, float], q: dict[int, float]) -> float:
 
 
 def load_known_for(graph_dir: pathlib.Path) -> tuple[dict[str, list[tuple[int, int, int, float]]], pa.Table, pa.Table]:
-    kf = pq.read_table(graph_dir / "known_for.parquet")
+    kf = pq.read_table(graph_dir / "known_for.parquet").sort_by([("did", "ascending"), ("rank", "ascending")])
     comm_tbl = pq.read_table(graph_dir / "communities.parquet")
     by_did: dict[str, list[tuple[int, int, int, float]]] = {}
     dids = kf["did"].to_pylist()
@@ -94,40 +104,32 @@ def eval_subcultures_and_traps(
     primary_comms: set[int] = set()
     primary_scenes: set[int] = set()
 
-    # Global community weights across subcultures to compute TF-IDF specificity
-    global_comm_w: dict[int, float] = collections.Counter()
     for sc_id, dids in subcultures.items():
         cdist, sdist, matched = cohort_distribution(dids, by_did)
         sc_comm_dists[sc_id] = cdist
         sc_scene_dists[sc_id] = sdist
-        for c, w in cdist.items():
-            global_comm_w[c] += w
-
-    used_primary: set[int] = set()
-    # Order subcultures by peak specificity so each claims its signature community
-    for sc_id in sorted(
-        subcultures.keys(),
-        key=lambda s: max((w / math.sqrt(global_comm_w[c]) for c, w in sc_comm_dists[s].items()), default=0.0),
-        reverse=True,
-    ):
+    # Every cohort gets its actual highest-weight community, independently.
+    # Reserving already-used communities for other cohorts inflated separation.
+    merged: dict[int, list[str]] = collections.defaultdict(list)
+    for sc_id in sorted(subcultures):
         dids = subcultures[sc_id]
         cdist = sc_comm_dists[sc_id]
         sdist = sc_scene_dists[sc_id]
         matched = sum(1 for d in dids if d in by_did)
         top_comms = sorted(
             cdist.items(),
-            key=lambda kv: (kv[0] not in used_primary, kv[1] / math.sqrt(max(global_comm_w[kv[0]], 1e-6))),
-            reverse=True,
+            key=lambda kv: (-kv[1], kv[0]),
         )[:3]
         top_scenes = sorted(sdist.items(), key=lambda kv: -kv[1])[:3]
         if top_comms:
-            used_primary.add(top_comms[0][0])
             primary_comms.add(top_comms[0][0])
+            merged[top_comms[0][0]].append(sc_id)
         if top_scenes:
             primary_scenes.add(top_scenes[0][0])
         sc_results[sc_id] = {
             "seed_dids": len(dids),
             "matched_in_known_for": matched,
+            "missing_seed_dids": sorted(set(dids) - by_did.keys()),
             "top_communities": [{"community": c, "weight": round(w, 3)} for c, w in top_comms],
             "top_scenes": [{"scene_id": s, "weight": round(w, 3)} for s, w in top_scenes],
         }
@@ -137,7 +139,8 @@ def eval_subcultures_and_traps(
     jsds = []
     for i in range(len(sc_ids)):
         for j in range(i + 1, len(sc_ids)):
-            jsds.append(js_divergence(sc_comm_dists[sc_ids[i]], sc_comm_dists[sc_ids[j]]))
+            if sc_comm_dists[sc_ids[i]] and sc_comm_dists[sc_ids[j]]:
+                jsds.append(js_divergence(sc_comm_dists[sc_ids[i]], sc_comm_dists[sc_ids[j]]))
 
     trap_results: dict[str, Any] = {}
     traps_separated = 0
@@ -163,6 +166,7 @@ def eval_subcultures_and_traps(
             pole_info[pname] = {
                 "dids": len(dids),
                 "matched": matched,
+                "missing_seed_dids": sorted(set(dids) - by_did.keys()),
                 "top_community": top_c,
                 "top_communities": [
                     {"community": c, "weight": round(w, 3)}
@@ -176,8 +180,9 @@ def eval_subcultures_and_traps(
         for i in range(len(pole_names)):
             for j in range(i + 1, len(pole_names)):
                 pa_name, pb_name = pole_names[i], pole_names[j]
-                pair_jsds.append(js_divergence(pole_dists[pa_name], pole_dists[pb_name]))
-                pair_cos.append(cosine_dict(pole_dists[pa_name], pole_dists[pb_name]))
+                if pole_dists[pa_name] and pole_dists[pb_name]:
+                    pair_jsds.append(js_divergence(pole_dists[pa_name], pole_dists[pb_name]))
+                    pair_cos.append(cosine_dict(pole_dists[pa_name], pole_dists[pb_name]))
 
         distinct_top = len(set(pole_top_comm.values())) == len(pole_names) and (-1 not in pole_top_comm.values())
         min_jsd = min(pair_jsds) if pair_jsds else 0.0
@@ -218,6 +223,14 @@ def eval_subcultures_and_traps(
 
         trap_results[trap_id] = {
             "separated": separated,
+            "status": "pass" if separated else "fail",
+            "evaluated_accounts": total_eval,
+            "correct_loo_accounts": correct,
+            "merged_poles": [
+                {"community": c, "poles": [p for p, top in pole_top_comm.items() if top == c]}
+                for c in sorted(set(pole_top_comm.values()))
+                if c >= 0 and sum(top == c for top in pole_top_comm.values()) > 1
+            ],
             "distinct_top_communities": distinct_top,
             "min_pairwise_jsd": round(min_jsd, 4),
             "max_pairwise_cosine": round(max_cos, 4),
@@ -230,6 +243,8 @@ def eval_subcultures_and_traps(
         "subcultures_with_matches": sum(1 for v in sc_results.values() if v["matched_in_known_for"] > 0),
         "distinct_primary_communities_across_26": len(primary_comms),
         "distinct_primary_scenes_across_26": len(primary_scenes),
+        "merged_subcultures": [{"community": c, "subcultures": names} for c, names in sorted(merged.items()) if len(names) > 1],
+        "pairwise_jsd_evaluable_pairs": len(jsds),
         "pairwise_jsd_median": round(float(np.median(jsds)), 4) if jsds else 0.0,
         "pairwise_jsd_mean": round(float(np.mean(jsds)), 4) if jsds else 0.0,
         "traps_total": len(traps),
@@ -240,95 +255,83 @@ def eval_subcultures_and_traps(
 
 
 def eval_pack_comembership(
-    events_dir: pathlib.Path,
-    manifest: dict[str, Any],
+    event_files: list[pathlib.Path],
     by_did: dict[str, list[tuple[int, int, int, float]]],
     n_communities: int,
 ) -> dict[str, Any]:
-    """Compare starter-pack & curated-list co-membership recovery under KnownFor
-    vs. a 503-cluster degree/hash baseline (representing the 503-cluster pack partition)."""
-    lists: dict[str, set[str]] = collections.defaultdict(set)
-    # 1. Curated listitems from decoded archive events (predicate pushdown skips follow rows)
-    for pf in sorted(events_dir.glob("*.parquet")):
+    """Measure real archive starter-pack pairs without injecting seed cohorts.
+
+    The former "503 baseline" was a Python hash/rank proxy, not A Blue Start.
+    No comparison is reported until the actual published partition is provided.
+    Latest revisions are folded for listitems, parent lists and starter packs.
+    """
+    latest: dict[tuple[str, str, str], tuple[str, bool, str, str]] = {}
+    for index, pf in enumerate(event_files):
         tbl = pq.read_table(
-            pf,
-            columns=["collection", "operation", "list_uri", "subject"],
-            filters=[("collection", "==", "app.bsky.graph.listitem")],
+            pf, columns=["collection", "did", "rkey", "rev", "operation", "list_uri", "subject"],
+            filters=[("collection", "in", ["app.bsky.graph.listitem", "app.bsky.graph.list", "app.bsky.graph.starterpack"])],
         )
-        if tbl.num_rows == 0:
-            continue
-        ops = tbl["operation"].to_pylist()
-        luris = tbl["list_uri"].to_pylist()
-        subjs = tbl["subject"].to_pylist()
-        for op, luri, subj in zip(ops, luris, subjs):
-            if op != "delete" and luri and subj.startswith("did:"):
-                lists[luri].add(subj)
-
-    # 2. Subculture packs from onboarding packs
-    for sc_id, dids in manifest["subcultures"].items():
-        lists[f"pack:{sc_id}"].update(dids)
-
-    # Filter to packs/lists with >= 3 members in KnownFor
+        for collection, did, rkey, rev, op, luri, subj in zip(*(tbl[c].to_pylist() for c in tbl.column_names)):
+            key = (collection, did, rkey)
+            value = (rev or "", op == "delete", luri or "", subj or "")
+            if key not in latest or value[:2] > latest[key][:2]:
+                latest[key] = value
+        if (index + 1) % 100 == 0:
+            print(f"pack evaluation: scanned {index + 1}/{len(event_files)} shards", flush=True)
+    lists: dict[str, set[str]] = collections.defaultdict(set)
+    deleted_lists = {f"at://{did}/{collection}/{rkey}" for (collection, did, rkey), value in latest.items()
+                     if collection == "app.bsky.graph.list" and value[1]}
+    pack_lists = [value[2] for (collection, _did, _rkey), value in latest.items()
+                  if collection == "app.bsky.graph.starterpack" and not value[1] and value[2] not in deleted_lists]
+    for (collection, _did, _rkey), (_rev, deleted, luri, subj) in latest.items():
+        if collection == "app.bsky.graph.listitem" and not deleted and luri and luri not in deleted_lists and subj.startswith("did:"):
+            lists[luri].add(subj)
+    del latest
     eval_packs: list[list[str]] = []
-    for luri, members in lists.items():
-        present = [d for d in sorted(members) if d in by_did]
+    too_small = too_large = 0
+    for luri in pack_lists:
+        members = lists.get(luri, set())
+        present = sorted(members & by_did.keys())
         if 3 <= len(present) <= 200:
             eval_packs.append(present)
-
-    # Compute pair co-membership recall (top-1 community, top-3 overlap, scene overlap)
-    # and compare against a 503-cluster partition baseline.
-    all_dids = sorted(by_did.keys())
-    # 503-cluster baseline: group producers into 503 clusters along follower-rank / list-degree buckets
-    baseline_503: dict[str, set[int]] = {}
-    for idx, d in enumerate(all_dids):
-        c0 = (idx * 503) // max(len(all_dids), 1)
-        c1 = int(hash(d) % 503)
-        baseline_503[d] = {c0, c1}
-
-    total_pairs = 0
-    kf_top1_hits = 0
-    kf_top3_hits = 0
-    kf_scene_hits = 0
-    base503_top1_hits = 0
-    base503_top2_hits = 0
-
+        elif len(present) < 3:
+            too_small += 1
+        else:
+            too_large += 1
+    total_pairs = top1_hits = top3_hits = scene_hits = 0
     for pack in eval_packs:
-        m = len(pack)
-        for i in range(m):
-            di = pack[i]
-            ei = by_did[di]
-            ci_top1 = ei[0][0]
-            ci_top3 = {x[0] for x in ei}
-            si_top3 = {x[1] for x in ei}
-            bi_top1 = min(baseline_503[di])
-            bi_top2 = baseline_503[di]
-            for j in range(i + 1, m):
-                dj = pack[j]
-                ej = by_did[dj]
-                total_pairs += 1
-                if ci_top1 == ej[0][0]:
-                    kf_top1_hits += 1
-                if ci_top3 & {x[0] for x in ej}:
-                    kf_top3_hits += 1
-                if si_top3 & {x[1] for x in ej}:
-                    kf_scene_hits += 1
-                if bi_top1 == min(baseline_503[dj]):
-                    base503_top1_hits += 1
-                if bi_top2 & baseline_503[dj]:
-                    base503_top2_hits += 1
-
-    denom = max(total_pairs, 1)
+        # Bitsets count every pair once, even if it shares multiple memberships.
+        # This is exact, unlike summing per-community pair counts for top-3.
+        top1_counts = collections.Counter(by_did[d][0][0] for d in pack)
+        total_pairs += len(pack) * (len(pack) - 1) // 2
+        top1_hits += sum(count * (count - 1) // 2 for count in top1_counts.values())
+        community_bits: dict[int, int] = collections.defaultdict(int)
+        scene_bits: dict[int, int] = collections.defaultdict(int)
+        for i, did in enumerate(pack):
+            for community, scene, _domain, _weight in by_did[did]:
+                community_bits[community] |= 1 << i
+                scene_bits[scene] |= 1 << i
+        for i, did in enumerate(pack):
+            communities = scenes = 0
+            for community, scene, _domain, _weight in by_did[did]:
+                communities |= community_bits[community]
+                scenes |= scene_bits[scene]
+            top3_hits += (communities >> (i + 1)).bit_count()
+            scene_hits += (scenes >> (i + 1)).bit_count()
     return {
-        "packs_evaluated": len(eval_packs),
-        "co_member_pairs": total_pairs,
-        "communities_count": n_communities,
-        "known_for_top1_pair_recall": round(kf_top1_hits / denom, 4),
-        "known_for_top3_pair_recall": round(kf_top3_hits / denom, 4),
-        "known_for_scene_pair_recall": round(kf_scene_hits / denom, 4),
-        "baseline_503_top1_pair_recall": round(base503_top1_hits / denom, 4),
-        "baseline_503_top2_pair_recall": round(base503_top2_hits / denom, 4),
-        "lift_over_503_top3": round((kf_top3_hits / denom) / max(base503_top2_hits / denom, 1e-6), 2),
-        "beats_503_baseline": (kf_top3_hits > base503_top2_hits) and (kf_top1_hits > base503_top1_hits),
+        "source": "archive starterpack records joined to current listitems; seed cohorts excluded",
+        "pair_weighting": "each starter pack contributes all pairs; a pair in multiple packs counts multiple times",
+        "starterpacks_evaluated": len(eval_packs), "starterpacks_too_small": too_small, "starterpacks_too_large": too_large,
+        "live_starterpack_records": len(pack_lists), "live_curated_lists": len(lists),
+        "co_member_pairs": total_pairs, "communities_count": n_communities,
+        "known_for_top1_pair_hits": top1_hits, "known_for_top3_pair_hits": top3_hits,
+        "known_for_scene_pair_hits": scene_hits,
+        "known_for_top1_pair_recall": top1_hits / total_pairs if total_pairs else None,
+        "known_for_top3_pair_recall": top3_hits / total_pairs if total_pairs else None,
+        "known_for_scene_pair_recall": scene_hits / total_pairs if total_pairs else None,
+        "a_blue_start_503_partition_available": False,
+        "beats_a_blue_start_503_partition": None,
+        "baseline_status": "not measured: previous hash/rank stand-in removed; real partition unavailable",
     }
 
 
@@ -343,47 +346,45 @@ STOPWORDS = {
 
 
 def enrich_and_label_communities(
-    events_dir: pathlib.Path,
+    event_files: list[pathlib.Path],
     graph_dir: pathlib.Path,
-    manifest: dict[str, Any],
     by_did: dict[str, list[tuple[int, int, int, float]]],
     comm_tbl: pa.Table,
 ) -> pa.Table:
-    """Enrich top 500+ communities with profile bios, handle suffixes, starter-pack
-    titles, and seed subculture overlaps, producing community_labels.parquet and
-    Colab LLM prompt bundle."""
-    profiles: dict[str, tuple[str, str, str]] = {}  # did -> (name, description, handle)
-    for d, m in manifest.get("profiles", {}).items():
-        profiles[d] = (m.get("display_name", ""), m.get("description", ""), m.get("handle", ""))
+    """Create heuristic profile-term labels and prompts for 500 communities.
 
-    for pf in sorted(events_dir.glob("*.parquet")):
+    These labels are not LLM- or human-reviewed. Seed identities are never used.
+    The archive projection does not provide profile handles or starter-pack titles
+    here, so no claim of either enrichment is made.
+    """
+    profiles: dict[str, tuple[str, str, str]] = {}  # did -> (name, description, handle)
+    latest_profile: dict[str, tuple[str, bool]] = {}
+    for pf in event_files:
         tbl = pq.read_table(
             pf,
-            columns=["collection", "operation", "did", "name", "description", "extra"],
+            columns=["collection", "operation", "did", "rev", "name", "description", "extra"],
             filters=[("collection", "==", "app.bsky.actor.profile")],
         )
         if tbl.num_rows == 0:
             continue
-        for op, d, name, desc, extra in zip(
+        for op, d, rev, name, desc, extra in zip(
             tbl["operation"].to_pylist(),
             tbl["did"].to_pylist(),
+            tbl["rev"].to_pylist(),
             tbl["name"].to_pylist(),
             tbl["description"].to_pylist(),
             tbl["extra"].to_pylist(),
         ):
-            if op != "delete" and (name or desc):
-                prev_handle = profiles.get(d, ("", "", ""))[2]
-                profiles[d] = (name or "", desc or "", extra or prev_handle)
-
-    # Reverse map DID -> seed subculture / collision trap pole
-    did_tags: dict[str, list[str]] = collections.defaultdict(list)
-    for sc_id, dids in manifest.get("subcultures", {}).items():
-        for d in dids:
-            did_tags[d].append(sc_id)
-    for _trap_id, poles in manifest.get("collision_traps", {}).items():
-        for pole_id, dids in poles.items():
-            for d in dids:
-                did_tags[d].append(pole_id)
+            if d not in by_did:
+                continue
+            version = (rev or "", op == "delete")
+            if d in latest_profile and version <= latest_profile[d]:
+                continue
+            latest_profile[d] = version
+            if op == "delete":
+                profiles.pop(d, None)
+            else:
+                profiles[d] = (name or "", desc or "", extra or "")
 
     # Group members by primary community
     comm_members: dict[int, list[tuple[str, float]]] = collections.defaultdict(list)
@@ -395,16 +396,12 @@ def enrich_and_label_communities(
     # Global term frequency across profiles for TF-IDF
     global_df: dict[str, int] = collections.Counter()
     comm_tf: dict[int, collections.Counter] = {}
-    comm_tags: dict[int, collections.Counter] = {}
     comm_tlds: dict[int, collections.Counter] = {}
 
     for c, mlist in comm_members.items():
         tf: collections.Counter = collections.Counter()
-        tags: collections.Counter = collections.Counter()
         tlds: collections.Counter = collections.Counter()
         for d, _w in mlist:
-            for t in did_tags.get(d, []):
-                tags[t] += 1
             name, desc, handle = profiles.get(d, ("", "", ""))
             if handle and "." in handle and not handle.endswith(".bsky.social"):
                 tld = "." + handle.rsplit(".", 1)[-1].lower()
@@ -415,7 +412,6 @@ def enrich_and_label_communities(
                     tf[w] += 1
                     global_df[w] += 1
         comm_tf[c] = tf
-        comm_tags[c] = tags
         comm_tlds[c] = tlds
 
     total_profiles = max(sum(len(v) for v in comm_members.values()), 1)
@@ -441,21 +437,15 @@ def enrich_and_label_communities(
             scored_terms.append((cnt * idf, term))
         scored_terms.sort(reverse=True)
         top_terms = [t for _, t in scored_terms[:8]]
-        tags = comm_tags.get(c, collections.Counter()).most_common(2)
-        seed_tag = tags[0][0] if tags else ""
-
-        if seed_tag:
-            human_label = seed_tag.replace("_", " ").title()
-            if top_terms:
-                human_label += f" ({', '.join(top_terms[:3])})"
-        elif top_terms:
+        if top_terms:
             human_label = " / ".join(t.title() for t in top_terms[:3])
         else:
             human_label = f"Community #{c} (Scene {s_id})"
 
         labels.append(human_label)
         keywords_col.append(top_terms)
-        seed_match_col.append(seed_tag)
+        # Empty legacy schema field; evaluation seeds are not labeling features.
+        seed_match_col.append("")
 
         if len(prompt_rows) < 500:
             sample_Wait = []
@@ -471,7 +461,7 @@ def enrich_and_label_communities(
                     "size": int(sz),
                     "heuristic_label": human_label,
                     "top_terms": top_terms,
-                    "seed_match": seed_tag,
+                    "label_source": "unreviewed archive profile term heuristic",
                     "enriched_tlds": [k for k, _ in comm_tlds.get(c, collections.Counter()).most_common(3)],
                     "top_producers": sample_Wait,
                 }
@@ -561,27 +551,61 @@ def ship_to_netcup(graph_dir: pathlib.Path, version: str) -> dict[str, Any]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--events-dir", default="/Users/joshlacalamito/catbird-lake-local/archive-graph/events")
+    ap.add_argument("--events-dir", action="append", required=True, help="Archive-only directory; repeat for each archive")
     ap.add_argument("--graph-dir", default="/Users/joshlacalamito/catbird-lake-local/graph-build/out")
     ap.add_argument("--manifest", default="/Users/joshlacalamito/catbird-lake-local/graph-build/seed_and_traps_manifest.json")
     ap.add_argument("--ship-netcup", action="store_true")
     ap.add_argument("--version", default="v20261019")
     args = ap.parse_args()
 
-    events_dir = pathlib.Path(args.events_dir)
+    event_files = sorted({p.resolve() for directory in args.events_dir
+                          for p in pathlib.Path(directory).glob("events-*.parquet")})
+    if not event_files:
+        raise SystemExit("No archive events-*.parquet files found")
+    if any("supplemental" in str(p).lower() or "quarantine" in str(p).lower() for p in event_files):
+        raise SystemExit("Supplemental/quarantined input is forbidden")
     graph_dir = pathlib.Path(args.graph_dir)
     manifest = json.loads(pathlib.Path(args.manifest).read_text())
 
     by_did, kf, comm_tbl = load_known_for(graph_dir)
     sep = eval_subcultures_and_traps(manifest, by_did)
-    pack_eval = eval_pack_comembership(events_dir, manifest, by_did, comm_tbl.num_rows)
-    enrich_and_label_communities(events_dir, graph_dir, manifest, by_did, comm_tbl)
+    inventory = []
+    for index, path in enumerate(event_files):
+        before = path.stat()
+        digest = sha256_file(path)
+        after = path.stat()
+        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+            raise SystemExit(f"Archive file changed while hashing; retry after it seals: {path}")
+        inventory.append({"path": str(path), "size": after.st_size, "mtime_ns": after.st_mtime_ns, "sha256": digest})
+        if (index + 1) % 100 == 0:
+            print(f"evaluation input hashes: {index + 1}/{len(event_files)}", flush=True)
+    (graph_dir / "evaluation_input_manifest.json").write_text(json.dumps({
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "purpose": "exact evaluation file list; does not retroactively freeze graph fold input",
+        "files": inventory,
+    }, indent=2))
+    producer_dids = {line.split("\t")[1] for line in (graph_dir / "producers.tsv").read_text().splitlines()}
+    for name, dids in manifest["subcultures"].items():
+        sep["subcultures"][name]["matched_as_producers"] = len(set(dids) & producer_dids)
+    for trap, poles in manifest["collision_traps"].items():
+        for name, dids in poles.items():
+            sep["collision_traps"][trap]["poles"][name]["matched_as_producers"] = len(set(dids) & producer_dids)
+    pack_eval = eval_pack_comembership(event_files, by_did, comm_tbl.num_rows)
+    enrich_and_label_communities(event_files, graph_dir, by_did, comm_tbl)
+    for item in inventory:
+        current = pathlib.Path(item["path"]).stat()
+        if current.st_size != item["size"] or current.st_mtime_ns != item["mtime_ns"]:
+            raise SystemExit(f"Archive input changed during evaluation: {item['path']}")
 
     ship_res = None
     if args.ship_netcup:
         ship_res = ship_to_netcup(graph_dir, args.version)
 
     report = {
+        "graph_version": "phase1-v1",
+        "known_for_sha256": sha256_file(graph_dir / "known_for.parquet"),
+        "evaluation_input_manifest_sha256": sha256_file(graph_dir / "evaluation_input_manifest.json"),
+        "seed_manifest_use": "evaluation only; never clustering or labeling",
         "cluster_stats": json.loads((graph_dir / "cluster_stats.json").read_text()),
         "separation_summary": {
             k: v for k, v in sep.items() if k not in ("subcultures", "collision_traps")

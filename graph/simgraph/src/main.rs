@@ -21,6 +21,7 @@ use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 struct Args {
@@ -34,7 +35,15 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { dir: ".".into(), sample: 1000, cap: 500, min_cos: 0.02, top_k: 400, min_support: 2, seed: 42 };
+    let mut a = Args {
+        dir: ".".into(),
+        sample: 1000,
+        cap: 500,
+        min_cos: 0.02,
+        top_k: 400,
+        min_support: 2,
+        seed: 42,
+    };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < argv.len() {
@@ -104,7 +113,13 @@ fn main() {
     let (u_off, u_tgt) = read_edges(&format!("{}/edges.bin", a.dir));
     let n_users = u_off.len() - 1;
     let n_prod = deg.len();
-    eprintln!("loaded {} users, {} producers, {} edges in {:.1}s", n_users, n_prod, u_tgt.len(), t0.elapsed().as_secs_f32());
+    eprintln!(
+        "loaded {} users, {} producers, {} edges in {:.1}s",
+        n_users,
+        n_prod,
+        u_tgt.len(),
+        t0.elapsed().as_secs_f32()
+    );
 
     // Per-user capped follow lists and reweighting factor len / cap.
     let mut rng = SmallRng::seed_from_u64(a.seed);
@@ -149,11 +164,17 @@ fn main() {
     drop(u_off);
     eprintln!("indexes built in {:.1}s", t0.elapsed().as_secs_f32());
 
+    let completed = AtomicUsize::new(0);
     let results: Vec<Vec<(u32, f32)>> = (0..n_prod)
         .into_par_iter()
         .map_init(
-            || (vec![0f32; n_prod], vec![0u32; n_prod], Vec::<u32>::new(), SmallRng::from_entropy()),
-            |(acc, support, touched, rng), p| {
+            || (vec![0f32; n_prod], vec![0u32; n_prod], Vec::<u32>::new()),
+            |(acc, support, touched), p| {
+                // A producer's sample must be invariant to Rayon scheduling.
+                let mut rng = SmallRng::seed_from_u64(
+                    a.seed
+                        .wrapping_add((p as u64).wrapping_mul(0x9E3779B97F4A7C15)),
+                );
                 let fol = &p_fol[p_off[p] as usize..p_off[p + 1] as usize];
                 if fol.is_empty() {
                     return Vec::new();
@@ -161,7 +182,9 @@ fn main() {
                 let s = fol.len().min(a.sample);
                 let scale = fol.len() as f32 / s as f32;
                 // Partial Fisher-Yates over an index window to sample s followers.
-                let mut idx: Vec<u32> = if s == fol.len() { fol.to_vec() } else {
+                let mut idx: Vec<u32> = if s == fol.len() {
+                    fol.to_vec()
+                } else {
                     let mut v = fol.to_vec();
                     for i in 0..s {
                         let j = rng.gen_range(i..v.len());
@@ -202,15 +225,28 @@ fn main() {
                 }
                 touched.clear();
                 if out.len() > a.top_k {
-                    out.select_nth_unstable_by(a.top_k, |x, y| y.1.partial_cmp(&x.1).unwrap());
+                    out.select_nth_unstable_by(a.top_k, |x, y| {
+                        y.1.total_cmp(&x.1).then_with(|| x.0.cmp(&y.0))
+                    });
                     out.truncate(a.top_k);
+                }
+                out.sort_unstable_by(|x, y| y.1.total_cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
+                let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                if done.is_multiple_of(10_000) {
+                    eprintln!(
+                        "similarities {}/{} producers in {:.1}s",
+                        done,
+                        n_prod,
+                        t0.elapsed().as_secs_f32()
+                    );
                 }
                 out
             },
         )
         .collect();
 
-    let mut w = BufWriter::with_capacity(1 << 24, File::create(format!("{}/sim.bin", a.dir)).unwrap());
+    let mut w =
+        BufWriter::with_capacity(1 << 24, File::create(format!("{}/sim.bin", a.dir)).unwrap());
     let mut n_edges = 0u64;
     let mut with_nbrs = 0u64;
     for (p, nbrs) in results.iter().enumerate() {

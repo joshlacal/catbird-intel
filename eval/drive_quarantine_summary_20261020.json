@@ -1,0 +1,19 @@
+{
+  "verified_at": "2026-10-20T06:58:46.653155+00:00",
+  "moved_count": 23,
+  "moved_bytes": 976037311,
+  "vector_shards_preserved": 8,
+  "absent_requested_model_names": [
+    "phase6_eval_report.json"
+  ],
+  "quarantine": {
+    "id": "1KDAHX3mBnmJeHy7vTAnwso6nBWFpkhR8",
+    "name": "_quarantine_invalidated_20261019",
+    "mimeType": "application/vnd.google-apps.folder",
+    "parents": [
+      "19n0W_MnOGeaxisZqsO5_wjmSq9rp_Bvy"
+    ],
+    "webViewLink": "https://drive.google.com/drive/folders/1KDAHX3mBnmJeHy7vTAnwso6nBWFpkhR8"
+  },
+  "remaining_source_targets": []
+}

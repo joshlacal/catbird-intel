@@ -1,0 +1,1019 @@
+{
+  "batches": {
+    "msgbatch_sim_1e995130ebdda8d7_3": {
+      "client_submission_id": "sub_batch_pilot_opus_1e995130ebdd_2ec929c2",
+      "created_at": "2026-10-20T14:46:03Z",
+      "custom_ids": [
+        "pilot_opus_txt_a1_a4adc13af68c_a3758998bc761523"
+      ],
+      "ended_at": "2026-10-20T14:46:03Z",
+      "processing_status": "ended",
+      "provider_batch_id": "msgbatch_sim_1e995130ebdda8d7_3",
+      "request_counts": {
+        "canceled": 0,
+        "errored": 0,
+        "expired": 0,
+        "processing": 0,
+        "succeeded": 1
+      },
+      "results": [
+        {
+          "custom_id": "pilot_opus_txt_a1_a4adc13af68c_a3758998bc761523",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"quoted_or_reported\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_opus_txt_a1_a4adc1",
+              "model": "claude-opus-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 475,
+                "output_tokens": 380
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        }
+      ]
+    },
+    "msgbatch_sim_81fe4a4e29075070_1": {
+      "client_submission_id": "sub_batch_pilot_haiku_81fe4a4e2907_108c7c54",
+      "created_at": "2026-10-20T14:45:59Z",
+      "custom_ids": [
+        "pilot_haiku_txt_a1_05d2e3997d7a_49e84e9d1c0956c6",
+        "pilot_haiku_txt_a1_11e1ea616931_670007be225e9bf6",
+        "pilot_haiku_txt_a1_121987f32095_bdd416986de7f77d",
+        "pilot_haiku_txt_a1_3ef56dd2bd18_b9dd80dc43d4be4e",
+        "pilot_haiku_txt_a1_4bbf219ca8d8_433046bf11505220",
+        "pilot_haiku_txt_a1_4c10e1408907_a9b6c8987a7eb77c",
+        "pilot_haiku_txt_a1_5d5550e07b78_bf53efccf91801db",
+        "pilot_haiku_txt_a1_63663bec262b_01c80ea53e8a4586",
+        "pilot_haiku_txt_a1_6e56d8e9aa5d_ebfafca5405d7aed",
+        "pilot_haiku_txt_a1_7321e5970b66_367f639b2f04475a",
+        "pilot_haiku_txt_a1_761572c396d4_24de50f966ee2f7f",
+        "pilot_haiku_txt_a1_7719c4256d6c_9b6f748d6d2712fd",
+        "pilot_haiku_txt_a1_84bef177e1de_280effa86674e618",
+        "pilot_haiku_txt_a1_87cde8ebd371_0a409f7479b2b8a6",
+        "pilot_haiku_txt_a1_a4adc13af68c_0a5bc0f53188f555",
+        "pilot_haiku_txt_a1_a4f958839ec3_94fef9c7c9f303c3",
+        "pilot_haiku_txt_a1_af3dcfd6834e_0baccd1de1c46e71",
+        "pilot_haiku_txt_a1_bebd8d350a3c_baf1344dcbd83fb6",
+        "pilot_haiku_txt_a1_c3544d809a1b_fa1afc2736f716af",
+        "pilot_haiku_txt_a1_c560671aece6_aaa054e05ed1fd87",
+        "pilot_haiku_txt_a1_d109b5413fcc_32ba9b0f4d17dfc8",
+        "pilot_haiku_txt_a1_db1a4a39c270_54569cf7b1fcc763",
+        "pilot_haiku_txt_a1_f8aaef8e9978_60c48be54ce0bd36"
+      ],
+      "ended_at": "2026-10-20T14:45:59Z",
+      "processing_status": "ended",
+      "provider_batch_id": "msgbatch_sim_81fe4a4e29075070_1",
+      "request_counts": {
+        "canceled": 0,
+        "errored": 0,
+        "expired": 0,
+        "processing": 0,
+        "succeeded": 23
+      },
+      "results": [
+        {
+          "custom_id": "pilot_haiku_txt_a1_f8aaef8e9978_60c48be54ce0bd36",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_f8aae",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 455,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_db1a4a39c270_54569cf7b1fcc763",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_db1a4",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 455,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_d109b5413fcc_32ba9b0f4d17dfc8",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_d109b",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 459,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_c560671aece6_aaa054e05ed1fd87",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"quoted_or_reported\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_c5606",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 451,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_c3544d809a1b_fa1afc2736f716af",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_c3544",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 477,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_bebd8d350a3c_baf1344dcbd83fb6",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_bebd8",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 544,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_af3dcfd6834e_0baccd1de1c46e71",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"election security and machinery. They asked CISA\", \"insufficient_evidence\": false, \"reason_code\": \"DIRECT_POLICY_OR_CIVIC_REF\", \"score\": 2}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"politics_policy\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_af3dc",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 545,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_a4f958839ec3_94fef9c7c9f303c3",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_a4f95",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 501,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_a4adc13af68c_0a5bc0f53188f555",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"quoted_or_reported\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_a4adc",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 475,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_87cde8ebd371_0a409f7479b2b8a6",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_87cde",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 491,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_84bef177e1de_280effa86674e618",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_84bef",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 518,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_7719c4256d6c_9b6f748d6d2712fd",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_7719c",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 471,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_761572c396d4_24de50f966ee2f7f",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_76157",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 454,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_7321e5970b66_367f639b2f04475a",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_7321e",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 485,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_6e56d8e9aa5d_ebfafca5405d7aed",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"If they're hell bent on making voting im\", \"insufficient_evidence\": false, \"reason_code\": \"NONPOLITICAL_CRITICISM\", \"score\": 1}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_6e56d",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 479,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_63663bec262b_01c80ea53e8a4586",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_63663",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 454,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_5d5550e07b78_bf53efccf91801db",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_5d555",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 463,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_4c10e1408907_a9b6c8987a7eb77c",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_4c10e",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 450,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_4bbf219ca8d8_433046bf11505220",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_4bbf2",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 474,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_3ef56dd2bd18_b9dd80dc43d4be4e",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"heinous tts lol\", \"insufficient_evidence\": false, \"reason_code\": \"NONPOLITICAL_CRITICISM\", \"score\": 2}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"heinous tts lol\", \"insufficient_evidence\": false, \"reason_code\": \"EXPRESSED_INDIGNATION\", \"score\": 2}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_3ef56",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 452,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_121987f32095_bdd416986de7f77d",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_12198",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 457,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_11e1ea616931_670007be225e9bf6",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"bad has played this hand before \\u2014 full conversat\", \"insufficient_evidence\": false, \"reason_code\": \"NONPOLITICAL_CRITICISM\", \"score\": 2}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_11e1e",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 487,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_haiku_txt_a1_05d2e3997d7a_49e84e9d1c0956c6",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"Glad it's not just me \\ud83d\\ude2d He hasn't washed\", \"insufficient_evidence\": false, \"reason_code\": \"NONPOLITICAL_CRITICISM\", \"score\": 1}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_haiku_txt_a1_05d2e",
+              "model": "claude-haiku-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 471,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        }
+      ]
+    },
+    "msgbatch_sim_e0999355485b47a1_2": {
+      "client_submission_id": "sub_batch_pilot_sonnet_e0999355485b_2355e667",
+      "created_at": "2026-10-20T14:46:01Z",
+      "custom_ids": [
+        "pilot_sonnet_txt_a1_11e1ea616931_276fd80395480074",
+        "pilot_sonnet_txt_a1_3ef56dd2bd18_e6492bef954a00d7",
+        "pilot_sonnet_txt_a1_7321e5970b66_eece0ed7fc9cb688",
+        "pilot_sonnet_txt_a1_761572c396d4_de9a073cfa7a4ce8",
+        "pilot_sonnet_txt_a1_7719c4256d6c_78a411b3f1620ce0",
+        "pilot_sonnet_txt_a1_a4adc13af68c_0ba75fa12f40b9de",
+        "pilot_sonnet_txt_a1_c560671aece6_d159944a549851df",
+        "pilot_sonnet_txt_a1_d109b5413fcc_306d954da5bb2273",
+        "pilot_sonnet_txt_a1_f8aaef8e9978_bbeb36d05033ca04"
+      ],
+      "ended_at": "2026-10-20T14:46:01Z",
+      "processing_status": "ended",
+      "provider_batch_id": "msgbatch_sim_e0999355485b47a1_2",
+      "request_counts": {
+        "canceled": 0,
+        "errored": 0,
+        "expired": 0,
+        "processing": 0,
+        "succeeded": 9
+      },
+      "results": [
+        {
+          "custom_id": "pilot_sonnet_txt_a1_f8aaef8e9978_bbeb36d05033ca04",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_f8aa",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 455,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_d109b5413fcc_306d954da5bb2273",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_d109",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 459,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_c560671aece6_d159944a549851df",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"quoted_or_reported\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_c560",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 451,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_a4adc13af68c_0ba75fa12f40b9de",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": false, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"none\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"quoted_or_reported\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_a4ad",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 475,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_7719c4256d6c_78a411b3f1620ce0",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_7719",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 471,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_761572c396d4_de9a073cfa7a4ce8",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_7615",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 454,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_7321e5970b66_eece0ed7fc9cb688",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_7321",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 485,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_3ef56dd2bd18_e6492bef954a00d7",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"heinous tts lol\", \"insufficient_evidence\": false, \"reason_code\": \"NONPOLITICAL_CRITICISM\", \"score\": 2}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"heinous tts lol\", \"insufficient_evidence\": false, \"reason_code\": \"EXPRESSED_INDIGNATION\", \"score\": 2}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_3ef5",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 452,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        },
+        {
+          "custom_id": "pilot_sonnet_txt_a1_11e1ea616931_276fd80395480074",
+          "not_for_model_training": true,
+          "result": {
+            "message": {
+              "content": [
+                {
+                  "text": "{\"context_dependent\": true, \"critical\": {\"evidence_span\": \"bad has played this hand before \\u2014 full conversat\", \"insufficient_evidence\": false, \"reason_code\": \"NONPOLITICAL_CRITICISM\", \"score\": 2}, \"engagement_bait\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"missing_context_kind\": \"reply_parent\", \"outraged\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"politicalness\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"spam\": {\"evidence_span\": \"\", \"insufficient_evidence\": false, \"reason_code\": \"ABSENT_IN_TEXT\", \"score\": 0}, \"stance_ambiguity\": \"none\", \"topic\": \"none_or_everyday\"}",
+                  "type": "text"
+                }
+              ],
+              "id": "msg_sim_pilot_sonnet_txt_a1_11e1",
+              "model": "claude-sonnet-5-5",
+              "role": "assistant",
+              "stop_details": null,
+              "stop_reason": "end_turn",
+              "type": "message",
+              "usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 487,
+                "output_tokens": 220
+              }
+            },
+            "type": "succeeded"
+          },
+          "simulated": true
+        }
+      ]
+    }
+  },
+  "crash_after_accept_once": false,
+  "out_of_order_results": true,
+  "rate_limit_next_create": null,
+  "timeout_before_accept_once": false
+}

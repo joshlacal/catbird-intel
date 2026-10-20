@@ -1,0 +1,123 @@
+{
+  "author_overlap_across_splits": 0,
+  "canonical_bank_matched": true,
+  "canonical_bank_sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538",
+  "corpus_size_assumption": "actual_validated_local_rows_only; never assumes 500k rows exist",
+  "export_manifest_sha256": "18230128db1ba0347e9a3050a25a25bf14faf09944a458247d7955a1e71a5117",
+  "holdout_authors_isolated": 600,
+  "holdout_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/phase3_holdout_600_unlabeled.jsonl",
+  "holdout_rows_isolated": 600,
+  "holdout_sha256": "fd57d61c490cf11860c74341f4c5d16d884d65ae0a0b9dd200b867c52b6b9792",
+  "input_path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k_v1_unlabeled.parquet",
+  "input_sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538",
+  "language_audit": {
+    "eligible_declared_english_rows": 29,
+    "rows": 48,
+    "unscored_reasons": {
+      "missing_language_metadata": 8,
+      "unsupported_language": 11
+    },
+    "unscored_rows": 19
+  },
+  "leakage_quarantine_counts": {},
+  "manifest_sha256": "7d0b099e8a55e98c30374b26fa64b473cad297f304210c4ad27be0ff450d4b8f",
+  "moderation_join_audit": {
+    "account_scoped_active": 581,
+    "active_at_cutoff": 4647,
+    "cutoff_utc": "2026-10-20T23:59:59+00:00",
+    "distinct_matched_authors": 0,
+    "distinct_src_uri_cid_val_tuples": 5000,
+    "eligible_text_examples_matched": 0,
+    "events_after_cutoff_ignored": 0,
+    "exact_uri_and_cid_matches": 0,
+    "expired_at_cutoff": 42,
+    "invariants_enforced": {
+      "absence_of_label_is_never_negative": true,
+      "account_labels_never_label_posts": true,
+      "cid_mismatch_or_missing_post_cid_kept_unresolved": true,
+      "incomplete_moderation_never_blocks_text_only_lane": true,
+      "negation_retracts_only_and_is_not_certified_negative": true
+    },
+    "per_source_raw_counts": {
+      "did:plc:ar7c4by46qjdydhdevvrndac": 5000
+    },
+    "per_value_raw_counts": {
+      "!hide": 1,
+      "!suspend": 4,
+      "!takedown": 481,
+      "!warn": 1,
+      "graphic-media": 24,
+      "intolerant": 2,
+      "needs-review": 366,
+      "nudity": 74,
+      "porn": 3157,
+      "rude": 1,
+      "sexual": 878,
+      "sexual-figurative": 4,
+      "spam": 7
+    },
+    "raw_label_events": 5000,
+    "record_scoped_active": 4066,
+    "retracted_by_negation": 311,
+    "schema": "catbird-moderation-join-audit-v1",
+    "unknown_training_permission_events": 5000,
+    "unmatched_subject_records": 4066,
+    "unresolved_cid_version_matches": 0,
+    "unverified_signature_events": 5000,
+    "uri_only_record_matches": 0
+  },
+  "sampling_seed": "catbird-teacher-selection-v1",
+  "sampling_strata": {
+    "editorial_boundary": {
+      "candidate_pool": 5,
+      "requested": 3,
+      "sampling_method": "heuristic_enrichment",
+      "selected": 3,
+      "shortfall": 0
+    },
+    "moderation_enrichment": {
+      "candidate_pool": 8,
+      "requested": 3,
+      "sampling_method": "heuristic_enrichment",
+      "selected": 3,
+      "shortfall": 0
+    },
+    "natural_probability": {
+      "candidate_pool": 24,
+      "requested": 9,
+      "sampling_method": "probability",
+      "selected": 9,
+      "shortfall": 0
+    },
+    "post_type_community_balanced": {
+      "candidate_pool": 15,
+      "requested": 6,
+      "sampling_method": "probability",
+      "selected": 5,
+      "shortfall": 1
+    },
+    "robustness_drift": {
+      "candidate_pool": 4,
+      "requested": 3,
+      "sampling_method": "probability",
+      "selected": 3,
+      "shortfall": 0
+    }
+  },
+  "schema": "catbird-teacher-preparation-manifest-v1",
+  "split_author_counts": {
+    "dev": 6,
+    "holdout": 600,
+    "human_final": 1,
+    "later_time_test": 1,
+    "train": 40
+  },
+  "split_row_counts": {
+    "dev": 6,
+    "human_final": 1,
+    "later_time_test": 1,
+    "train": 40
+  },
+  "total_loaded_rows": 48,
+  "total_selected_train_items": 23
+}

@@ -1,0 +1,138 @@
+{
+  "schema": "catbird-anthropic-pricing-and-budget-v1",
+  "version": "1.0.0",
+  "pricing_checked_date": "2026-10-20",
+  "pricing_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "currency_unit": "microdollars",
+  "microdollars_per_usd": 1000000,
+  "batch_api_only": true,
+  "cache_savings_assumed": false,
+  "allow_tools": false,
+  "allow_fast_or_premium_mode": false,
+  "allow_automatic_sync_fallback": false,
+  "tax_fee_multiplier": "1.00",
+  "input_safety_margin": {
+    "min_tokens": 256,
+    "proportional_fraction": "0.10"
+  },
+  "ceilings_microdollars": {
+    "total_cash_ceiling": 200000000,
+    "generation_allocation_ceiling": 180000000,
+    "contingency_reserve": 20000000,
+    "stages": {
+      "pilot": 8000000,
+      "haiku_bulk": 80000000,
+      "sonnet_review": 70000000,
+      "opus_review": 22000000
+    },
+    "outstanding_liability_limits": {
+      "pilot": 2000000,
+      "haiku_bulk": 5000000,
+      "sonnet_review": 5000000,
+      "opus_review": 5000000
+    }
+  },
+  "models": {
+    "haiku": {
+      "model_id": "claude-haiku-5-5",
+      "standard_input_microdollars_per_mtok": 100000,
+      "standard_output_microdollars_per_mtok": 500000,
+      "batch_input_microdollars_per_mtok": 50000,
+      "batch_output_microdollars_per_mtok": 250000,
+      "long_prompt_threshold_tokens": 100000,
+      "long_prompt_batch_input_microdollars_per_mtok": 250000,
+      "long_prompt_batch_output_microdollars_per_mtok": 1250000,
+      "input_bucket_ceiling_tokens": 2000,
+      "max_output_tokens": 640,
+      "planning_mean_input_tokens": 1200,
+      "planning_mean_output_tokens": 400,
+      "thinking_mode": "adaptive_effort_controlled",
+      "thinking_disabled_supported_by_default": false,
+      "effort": "low"
+    },
+    "sonnet": {
+      "model_id": "claude-sonnet-5-5",
+      "standard_input_microdollars_per_mtok": 2000000,
+      "standard_output_microdollars_per_mtok": 10000000,
+      "batch_input_microdollars_per_mtok": 1000000,
+      "batch_output_microdollars_per_mtok": 5000000,
+      "long_prompt_threshold_tokens": 1000000,
+      "input_bucket_ceiling_tokens": 3500,
+      "max_output_tokens": 800,
+      "planning_mean_input_tokens": 1500,
+      "planning_mean_output_tokens": 400,
+      "thinking_mode": "adaptive_effort_controlled",
+      "thinking_disabled_supported_by_default": false,
+      "effort": "low"
+    },
+    "opus": {
+      "model_id": "claude-opus-5-5",
+      "standard_input_microdollars_per_mtok": 4000000,
+      "standard_output_microdollars_per_mtok": 20000000,
+      "batch_input_microdollars_per_mtok": 2000000,
+      "batch_output_microdollars_per_mtok": 10000000,
+      "long_prompt_threshold_tokens": 1000000,
+      "input_bucket_ceiling_tokens": 6000,
+      "max_output_tokens": 1500,
+      "planning_mean_input_tokens": 2000,
+      "planning_mean_output_tokens": 700,
+      "thinking_mode": "always_on_adaptive",
+      "thinking_disabled_supported_by_default": false,
+      "effort": "medium"
+    }
+  },
+  "pilot_plan": {
+    "haiku_total_items": 2000,
+    "sonnet_paired_items": 1000,
+    "opus_preregistered_items": 300,
+    "estimated_pilot_cost_microdollars": 7120000,
+    "pilot_ceiling_microdollars": 8000000
+  },
+  "routing_quotas": {
+    "sonnet_review": {
+      "max_calls": 20000,
+      "shares": {
+        "difficult_or_disagreement": "0.50",
+        "rare_or_source_policy": "0.25",
+        "random_audit": "0.25"
+      }
+    },
+    "opus_review": {
+      "max_calls": 2000,
+      "shares": {
+        "unresolved_high_value": "0.70",
+        "rare_rubric_boundary": "0.20",
+        "random_control": "0.10"
+      }
+    }
+  },
+  "sampling_strata_shares": {
+    "natural_probability": "0.40",
+    "post_type_community_balanced": "0.25",
+    "moderation_enrichment": "0.15",
+    "editorial_boundary": "0.15",
+    "robustness_drift": "0.05"
+  },
+  "retry_policy": {
+    "max_attempts": 2,
+    "retryable_outcomes": [
+      "errored_transient",
+      "expired"
+    ],
+    "non_retryable_outcomes": [
+      "succeeded",
+      "refused",
+      "errored_invalid_request",
+      "canceled",
+      "submission_ambiguous",
+      "unresolved"
+    ],
+    "insufficient_evidence_is_retryable": false
+  },
+  "expansion_waves": [
+    "pilot",
+    "wave_25k",
+    "wave_150k",
+    "wave_500k"
+  ]
+}

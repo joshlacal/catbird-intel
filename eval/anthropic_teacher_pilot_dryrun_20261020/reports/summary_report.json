@@ -1,0 +1,231 @@
+{
+  "budget_summary": {
+    "budget_halted": false,
+    "contingency_reserve_ceiling_microdollars": 20000000,
+    "generation_allocation_ceiling_microdollars": 180000000,
+    "halt_reason": null,
+    "ledger_entries": 36,
+    "remaining_total_cash_microdollars": 199979338,
+    "remaining_total_cash_usd": "$199.979338",
+    "stages": {
+      "haiku_bulk": {
+        "ceiling_microdollars": 80000000,
+        "outstanding_limit_microdollars": 5000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 80000000,
+        "settled_microdollars": 0
+      },
+      "opus_review": {
+        "ceiling_microdollars": 22000000,
+        "outstanding_limit_microdollars": 5000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 22000000,
+        "settled_microdollars": 0
+      },
+      "pilot": {
+        "ceiling_microdollars": 8000000,
+        "outstanding_limit_microdollars": 2000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 7979338,
+        "settled_microdollars": 20662
+      },
+      "sonnet_review": {
+        "ceiling_microdollars": 70000000,
+        "outstanding_limit_microdollars": 5000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 70000000,
+        "settled_microdollars": 0
+      }
+    },
+    "total_cash_ceiling_microdollars": 200000000,
+    "total_cash_ceiling_usd": "$200.000000",
+    "total_contingency_used_microdollars": 0,
+    "total_outstanding_reserved_microdollars": 0,
+    "total_outstanding_reserved_usd": "$0.000000",
+    "total_settled_microdollars": 20662,
+    "total_settled_usd": "$0.020662"
+  },
+  "commands": {
+    "collect_results": "PYTHONDONTWRITEBYTECODE=1 /tmp/catbird-teacher-venv/bin/python catbird-intel/ops/anthropic_teacher_harness.py collect --run-dir /Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/anthropic_teacher_pilot_dryrun_20261020",
+    "future_authorized_pilot_launch_capped_at_8_usd": "PYTHONDONTWRITEBYTECODE=1 /tmp/catbird-teacher-venv/bin/python catbird-intel/ops/anthropic_teacher_harness.py submit --run-dir /Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/anthropic_teacher_pilot_dryrun_20261020 --stage pilot --model-tier haiku --transport live --no-offline --authorize-paid-submission --authorize-corpus-transmission",
+    "reconcile_and_recover": "PYTHONDONTWRITEBYTECODE=1 /tmp/catbird-teacher-venv/bin/python catbird-intel/ops/anthropic_teacher_harness.py reconcile --run-dir /Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/anthropic_teacher_pilot_dryrun_20261020",
+    "recover_interrupted_partials": "PYTHONDONTWRITEBYTECODE=1 /tmp/catbird-teacher-venv/bin/python catbird-intel/ops/anthropic_teacher_harness.py recover-partials --run-dir /Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/anthropic_teacher_pilot_dryrun_20261020"
+  },
+  "component_score_distributions": {
+    "haiku": {
+      "critical": {
+        "0": 19,
+        "1": 2,
+        "2": 2
+      },
+      "engagement_bait": {
+        "0": 23
+      },
+      "outraged": {
+        "0": 22,
+        "2": 1
+      },
+      "politicalness": {
+        "0": 22,
+        "2": 1
+      },
+      "spam": {
+        "0": 23
+      }
+    },
+    "opus": {
+      "critical": {
+        "0": 1
+      },
+      "engagement_bait": {
+        "0": 1
+      },
+      "outraged": {
+        "0": 1
+      },
+      "politicalness": {
+        "0": 1
+      },
+      "spam": {
+        "0": 1
+      }
+    },
+    "sonnet": {
+      "critical": {
+        "0": 7,
+        "2": 2
+      },
+      "engagement_bait": {
+        "0": 9
+      },
+      "outraged": {
+        "0": 8,
+        "2": 1
+      },
+      "politicalness": {
+        "0": 9
+      },
+      "spam": {
+        "0": 9
+      }
+    }
+  },
+  "disagreement_summary": {
+    "multi_teacher_evaluated_items": 9,
+    "opus_or_majority_treated_as_ground_truth": false,
+    "overall_status_counts": {
+      "resolved_or_single_teacher": 9
+    },
+    "per_component_status_counts": {
+      "critical": {
+        "exact_agreement": 9
+      },
+      "engagement_bait": {
+        "exact_agreement": 9
+      },
+      "outraged": {
+        "exact_agreement": 9
+      },
+      "politicalness": {
+        "exact_agreement": 9
+      },
+      "spam": {
+        "exact_agreement": 9
+      }
+    }
+  },
+  "generated_at": "2026-10-20T14:46:05.252546+00:00",
+  "ledger_hash_chain_verified": true,
+  "moderation_join_audit": {
+    "account_scoped_active": 581,
+    "active_at_cutoff": 4647,
+    "cutoff_utc": "2026-10-20T23:59:59+00:00",
+    "distinct_matched_authors": 0,
+    "distinct_src_uri_cid_val_tuples": 5000,
+    "eligible_text_examples_matched": 0,
+    "events_after_cutoff_ignored": 0,
+    "exact_uri_and_cid_matches": 0,
+    "expired_at_cutoff": 42,
+    "invariants_enforced": {
+      "absence_of_label_is_never_negative": true,
+      "account_labels_never_label_posts": true,
+      "cid_mismatch_or_missing_post_cid_kept_unresolved": true,
+      "incomplete_moderation_never_blocks_text_only_lane": true,
+      "negation_retracts_only_and_is_not_certified_negative": true
+    },
+    "per_source_raw_counts": {
+      "did:plc:ar7c4by46qjdydhdevvrndac": 5000
+    },
+    "per_value_raw_counts": {
+      "!hide": 1,
+      "!suspend": 4,
+      "!takedown": 481,
+      "!warn": 1,
+      "graphic-media": 24,
+      "intolerant": 2,
+      "needs-review": 366,
+      "nudity": 74,
+      "porn": 3157,
+      "rude": 1,
+      "sexual": 878,
+      "sexual-figurative": 4,
+      "spam": 7
+    },
+    "raw_label_events": 5000,
+    "record_scoped_active": 4066,
+    "retracted_by_negation": 311,
+    "schema": "catbird-moderation-join-audit-v1",
+    "unknown_training_permission_events": 5000,
+    "unmatched_subject_records": 4066,
+    "unresolved_cid_version_matches": 0,
+    "unverified_signature_events": 5000,
+    "uri_only_record_matches": 0
+  },
+  "operational_quality": {
+    "insufficient_component_requests": 0,
+    "operational_gate_passed": true,
+    "provisional_gate_threshold": 0.99,
+    "refused_requests": 0,
+    "schema_valid_non_truncated_rate": 1.0
+  },
+  "paid_api_calls_made": 0,
+  "recorded_stage_gates": [],
+  "remaining_gates_and_blockers": [
+    "Paid Anthropic Batch API execution is not authorized in this task; all current responses in dry-run are simulated (FakeAnthropicTransport).",
+    "Exact remote token counting (client.messages.count_tokens) requires explicit transmission authorization before live submission.",
+    "Human development (~1,000 items) and human final (~2,000 items, >=400 positives per principal target, double-labeled >=200 with Krippendorff alpha >= 0.80) remain mandatory before student qualification.",
+    "Only politicalness has a locked final lower-bound F1 gate (>=0.90); outraged, critical, engagement_bait, and spam remain diagnostic/unqualified until their own gates are preregistered."
+  ],
+  "request_status_counts": {
+    "succeeded": 33
+  },
+  "routing_summary": {
+    "by_stage_and_bucket": {
+      "pilot/opus:rare_rubric_boundary": 1,
+      "pilot/sonnet:difficult_or_disagreement": 6,
+      "pilot/sonnet:random_audit": 3
+    },
+    "total_routed_items": 10
+  },
+  "run_metadata": {
+    "budget_halted": 0,
+    "config_bundle_sha256": "73b188e20a0eb953e923d2b58e2cff4621f16bd8498d7b29c8dd1e15a44dd644",
+    "created_at": "2026-10-20T14:45:58.049421+00:00",
+    "generation_id": "gen-20261020-v1",
+    "halt_reason": null,
+    "id": 1,
+    "input_manifest_sha256": "7d0b099e8a55e98c30374b26fa64b473cad297f304210c4ad27be0ff450d4b8f",
+    "pricing_sha256": "6dfdb11d8384b4075a13e3746caee150aaff42888244581d9e48276877be53a2",
+    "rubric_sha256": "3aac23d5ff0382750b2b3018d12a45b88730ab5f7e8a0becd9084f72f74e1cf4",
+    "run_id": "catbird-anthropic-teacher-run-v1",
+    "schema_sha256": "219ecd9526454ffa6aa1d773f3a3acc678691aae3308747b52477f865b8780a7",
+    "updated_at": "2026-10-20T14:45:58.049421+00:00"
+  },
+  "schema": "catbird-anthropic-teacher-report-v1",
+  "simulated_dry_run_responses_present": true,
+  "stage_model_status_counts": {
+    "pilot/haiku:succeeded": 23,
+    "pilot/opus:succeeded": 1,
+    "pilot/sonnet:succeeded": 9
+  }
+}

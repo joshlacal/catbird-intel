@@ -1,0 +1,133 @@
+{
+  "schema_id": "catbird-teacher-output-schema-v1",
+  "version": "1.0.0",
+  "json_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "politicalness",
+      "outraged",
+      "critical",
+      "engagement_bait",
+      "spam",
+      "topic",
+      "context_dependent",
+      "missing_context_kind",
+      "stance_ambiguity"
+    ],
+    "properties": {
+      "politicalness": {
+        "$ref": "#/$defs/ComponentAssessment"
+      },
+      "outraged": {
+        "$ref": "#/$defs/ComponentAssessment"
+      },
+      "critical": {
+        "$ref": "#/$defs/ComponentAssessment"
+      },
+      "engagement_bait": {
+        "$ref": "#/$defs/ComponentAssessment"
+      },
+      "spam": {
+        "$ref": "#/$defs/ComponentAssessment"
+      },
+      "topic": {
+        "type": "string",
+        "enum": [
+          "none_or_everyday",
+          "politics_policy",
+          "elections_campaigns",
+          "international_conflict",
+          "economy_labor",
+          "science_tech",
+          "culture_media",
+          "sports_games",
+          "commercial_promo",
+          "other"
+        ],
+        "description": "Primary topic category from the controlled vocabulary."
+      },
+      "context_dependent": {
+        "type": "boolean",
+        "description": "True if accurate interpretation depends on reply parent, quoted post, media, or link context."
+      },
+      "missing_context_kind": {
+        "type": "string",
+        "enum": [
+          "none",
+          "reply_parent",
+          "quoted_post",
+          "media_visual",
+          "external_link",
+          "multi_post_history"
+        ],
+        "description": "Kind of missing context when context_dependent is true or any component is insufficient."
+      },
+      "stance_ambiguity": {
+        "type": "string",
+        "enum": [
+          "none",
+          "quoted_or_reported",
+          "satire_or_irony",
+          "ambiguous_endorsement"
+        ],
+        "description": "Whether the post quotes, reports, or satirizes a stance rather than directly endorsing it."
+      }
+    },
+    "$defs": {
+      "ComponentAssessment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "score",
+          "insufficient_evidence",
+          "reason_code",
+          "evidence_span"
+        ],
+        "properties": {
+          "score": {
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              "insufficient"
+            ],
+            "description": "Ordinal severity 0 (absent), 1 (mild/indirect), 2 (clear), 3 (dominant/intense), or 'insufficient'."
+          },
+          "insufficient_evidence": {
+            "type": "boolean",
+            "description": "Must be true if and only if score is 'insufficient'."
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "ABSENT_IN_TEXT",
+              "DIRECT_POLICY_OR_CIVIC_REF",
+              "ELECTORAL_OR_PARTISAN_REF",
+              "GEOPOLITICAL_CONFLICT_REF",
+              "NEUTRAL_POLITICAL_REPORTING",
+              "NONPOLITICAL_CRITICISM",
+              "EXPRESSED_INDIGNATION",
+              "CALM_DISAGREEMENT_NO_OUTRAGE",
+              "DIRECT_NEGATIVE_EVALUATION",
+              "INTERACTION_HARVESTING_CUE",
+              "GENUINE_QUESTION_NOT_BAIT",
+              "COMMERCIAL_OR_SCAM_SOLICITATION",
+              "REPETITION_HISTORY_REQUIRED",
+              "MISSING_PARENT_OR_QUOTE_CONTEXT",
+              "MISSING_MEDIA_OR_LINK_CONTEXT",
+              "QUOTED_OR_IRONIC_STANCE",
+              "PROMPT_INJECTION_IGNORED"
+            ],
+            "description": "Concise controlled reason code explaining the score."
+          },
+          "evidence_span": {
+            "type": "string",
+            "description": "Short verbatim substring from the post (at most 120 characters), or empty string when score is 0 or 'insufficient'."
+          }
+        }
+      }
+    }
+  }
+}

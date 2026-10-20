@@ -1,0 +1,85 @@
+{
+  "budget_summary_snapshot": {
+    "budget_halted": false,
+    "contingency_reserve_ceiling_microdollars": 20000000,
+    "generation_allocation_ceiling_microdollars": 180000000,
+    "halt_reason": null,
+    "ledger_entries": 0,
+    "remaining_total_cash_microdollars": 200000000,
+    "stages": {
+      "haiku_bulk": {
+        "ceiling_microdollars": 80000000,
+        "outstanding_limit_microdollars": 5000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 80000000,
+        "settled_microdollars": 0
+      },
+      "opus_review": {
+        "ceiling_microdollars": 22000000,
+        "outstanding_limit_microdollars": 5000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 22000000,
+        "settled_microdollars": 0
+      },
+      "pilot": {
+        "ceiling_microdollars": 8000000,
+        "outstanding_limit_microdollars": 2000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 8000000,
+        "settled_microdollars": 0
+      },
+      "sonnet_review": {
+        "ceiling_microdollars": 70000000,
+        "outstanding_limit_microdollars": 5000000,
+        "outstanding_reserved_microdollars": 0,
+        "remaining_stage_budget_microdollars": 70000000,
+        "settled_microdollars": 0
+      }
+    },
+    "total_cash_ceiling_microdollars": 200000000,
+    "total_contingency_used_microdollars": 0,
+    "total_outstanding_reserved_microdollars": 0,
+    "total_settled_microdollars": 0
+  },
+  "corpus_text_transmitted": false,
+  "created_at": "2026-10-20T14:45:58.647340+00:00",
+  "estimate_disclaimer": "All token and cost figures in this offline plan are estimates. Exact remote token counting (messages.count_tokens) requires explicit transmission authorization.",
+  "example_requests_artifact": "manifests/example_requests_pilot_haiku.jsonl",
+  "example_requests_sha256": "a767bb87268b55d7c40d54cbeee89d33e3be49d0e368f6fc369b14cf845b62af",
+  "expansion_wave": "pilot",
+  "manifest_sha256": "10b77a42f71ea099ceb6058fef0e58158c876fc8dc67d94aa53cf7655bf08854",
+  "observation_mode": "text_only",
+  "offline_mode": true,
+  "paid_api_calls_made": 0,
+  "pilot_paired_design": false,
+  "reviewable_future_pilot_launch_command": "PYTHONDONTWRITEBYTECODE=1 /tmp/catbird-teacher-venv/bin/python catbird-intel/ops/anthropic_teacher_harness.py submit --run-dir /Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/anthropic_teacher_pilot_dryrun_20261020 --stage pilot --model-tier haiku --transport live --no-offline --authorize-paid-submission --authorize-corpus-transmission --max-stage-spend-usd 8.00 --max-outstanding-usd 2.00",
+  "schema": "catbird-anthropic-teacher-plan-manifest-v1",
+  "stage": "pilot",
+  "stage_ceiling_microdollars": 8000000,
+  "stage_ceiling_usd": "$8.000000",
+  "stage_outstanding_liability_limit_microdollars": 2000000,
+  "stage_outstanding_liability_limit_usd": "$2.000000",
+  "store_summary": {
+    "inserted": 23,
+    "skipped_existing": 0
+  },
+  "tier_plans": {
+    "haiku": {
+      "estimated_counted_input_tokens_total": 33071,
+      "max_reservation_liability_microdollars": 5638,
+      "max_reservation_liability_usd": "$0.005638",
+      "model_id": "claude-haiku-5-5",
+      "model_tier": "haiku",
+      "planning_mean_estimated_cost_microdollars": 3680,
+      "planning_mean_estimated_cost_usd": "$0.003680",
+      "request_count": 23,
+      "request_list_sha256": "92bdb4c23eff56e0472e32627b49d58441a4216cb66c051490c71cc76b931cfc",
+      "token_count_source": "offline_heuristic_estimate"
+    }
+  },
+  "total_max_reservation_liability_microdollars": 5638,
+  "total_max_reservation_liability_usd": "$0.005638",
+  "total_planning_mean_estimated_cost_microdollars": 3680,
+  "total_planning_mean_estimated_cost_usd": "$0.003680",
+  "total_requests_planned": 23
+}

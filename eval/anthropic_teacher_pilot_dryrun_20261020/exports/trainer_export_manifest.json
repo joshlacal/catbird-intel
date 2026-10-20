@@ -1,0 +1,99 @@
+{
+  "artifacts": {
+    "annotation_bank_jsonl": {
+      "path": "annotation_bank.jsonl",
+      "sha256": "8229aab3b4241d24a8a462a7c1132d112b53dd690c09f22000b0780f2d9a7318"
+    },
+    "trainer_exclusions_jsonl": {
+      "path": "trainer_exclusions.jsonl",
+      "sha256": "3d512f1a1bdabafb252b013e64cbb0c95b701bb3bcc4b27d3c1c27e7276b1103"
+    },
+    "trainer_targets_jsonl": {
+      "path": "trainer_targets.jsonl",
+      "sha256": "70eb2531af7a4ffb7b8d13e5048b2497196c19db9ef81d84f40eeee47afba3ba"
+    },
+    "trainer_targets_parquet": {
+      "path": "trainer_targets.parquet",
+      "sha256": "c8d29d593ebc21ffba39ea3de27916e089b9d31b8c1c95ca6da456c77c53ce86"
+    }
+  },
+  "component_order": [
+    "politicalness",
+    "outraged",
+    "critical",
+    "engagement_bait",
+    "spam"
+  ],
+  "counts": {
+    "annotation_bank_rows": 48,
+    "exclusion_reasons": {
+      "no_teacher_request_for_observation_mode": 1,
+      "non_train_split:dev": 6,
+      "non_train_split:human_final": 1,
+      "non_train_split:later_time_test": 1,
+      "unsupported_language:missing_language_metadata": 7,
+      "unsupported_language:unsupported_language": 9
+    },
+    "total_corpus_rows": 48,
+    "trainer_accepted_rows": 23,
+    "trainer_excluded_rows": 25
+  },
+  "incomplete_row_policy": "whole_row_excluded_from_trainer_targets_and_preserved_in_annotation_bank",
+  "insufficient_coerced_to_zero": false,
+  "language_contract": {
+    "downstream_health_filter": "neutral_no_model_based_penalty; never coerce null to zero or a probability",
+    "eligible": "nonempty valid langs list whose every primary subtag is en",
+    "evidence": "post-declared metadata; actual text language is not independently verified",
+    "missing_invalid_non_english_or_mixed": "unscored",
+    "other_eligibility_rules": "moderation, visibility and deletion rules still apply",
+    "schema": "catbird-declared-english-scope-v3",
+    "unscored_value": null
+  },
+  "manifest_sha256": "f983f4cef4fa50e189b6ece39ffa3029857027f266435b27ec69dea86a6aebdf",
+  "masked_loss_in_current_trainer": false,
+  "ordinal_mapping": {
+    "calibration_status": "uncalibrated_linear_ordinal_anchors; neither ordinal/3 nor model rationale is a calibrated probability",
+    "human_calibration_gate_required": true,
+    "insufficient_policy": "exclude_whole_row_by_default; never coerce insufficient or null to 0.0",
+    "mapping": {
+      "0": 0.0,
+      "1": 0.33333333,
+      "2": 0.66666667,
+      "3": 1.0
+    },
+    "schema": "catbird-ordinal-to-unit-target-v1",
+    "version": "1.0.0"
+  },
+  "qualification_note": "A future pass on politicalness never qualifies outraged, critical, engagement_bait, or spam. Human calibration and independent human final labels remain mandatory.",
+  "qualification_status_by_component": {
+    "critical": "diagnostic_unqualified_no_preregistered_f1_gate",
+    "engagement_bait": "diagnostic_unqualified_no_preregistered_f1_gate",
+    "outraged": "diagnostic_unqualified_no_preregistered_f1_gate",
+    "politicalness": "unqualified_requires_human_final_set_and_alpha_gate",
+    "spam": "diagnostic_unqualified_no_preregistered_f1_gate"
+  },
+  "qualified_for_real_student_training": false,
+  "schema": "catbird-anthropic-trainer-export-v1",
+  "simulated_responses_present": true,
+  "student_contract": {
+    "embedding_dimensions": [
+      256,
+      128,
+      64
+    ],
+    "embedding_output": "matryoshka_emb",
+    "health_output": "health_component_logits",
+    "health_output_order": [
+      "politicalness",
+      "outraged",
+      "critical",
+      "engagement_bait",
+      "spam"
+    ],
+    "heat": "not a trained output; requires separately frozen serving aggregation and calibration",
+    "hostility": "not trained; no independent hostility targets exist",
+    "legacy_checkpoint_policy": "four-output checkpoints are incompatible; no implicit weight or target migration",
+    "schema": "catbird-ettin-components-v3"
+  },
+  "student_observation_mode": "text_only"
+}

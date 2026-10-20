@@ -1,0 +1,138 @@
+{
+  "allow_automatic_sync_fallback": false,
+  "allow_fast_or_premium_mode": false,
+  "allow_tools": false,
+  "batch_api_only": true,
+  "cache_savings_assumed": false,
+  "ceilings_microdollars": {
+    "contingency_reserve": 20000000,
+    "generation_allocation_ceiling": 180000000,
+    "outstanding_liability_limits": {
+      "haiku_bulk": 5000000,
+      "opus_review": 5000000,
+      "pilot": 2000000,
+      "sonnet_review": 5000000
+    },
+    "stages": {
+      "haiku_bulk": 80000000,
+      "opus_review": 22000000,
+      "pilot": 8000000,
+      "sonnet_review": 70000000
+    },
+    "total_cash_ceiling": 200000000
+  },
+  "currency_unit": "microdollars",
+  "expansion_waves": [
+    "pilot",
+    "wave_25k",
+    "wave_150k",
+    "wave_500k"
+  ],
+  "input_safety_margin": {
+    "min_tokens": 256,
+    "proportional_fraction": "0.10"
+  },
+  "microdollars_per_usd": 1000000,
+  "models": {
+    "haiku": {
+      "batch_input_microdollars_per_mtok": 50000,
+      "batch_output_microdollars_per_mtok": 250000,
+      "effort": "low",
+      "input_bucket_ceiling_tokens": 2000,
+      "long_prompt_batch_input_microdollars_per_mtok": 250000,
+      "long_prompt_batch_output_microdollars_per_mtok": 1250000,
+      "long_prompt_threshold_tokens": 100000,
+      "max_output_tokens": 640,
+      "model_id": "claude-haiku-5-5",
+      "planning_mean_input_tokens": 1200,
+      "planning_mean_output_tokens": 400,
+      "standard_input_microdollars_per_mtok": 100000,
+      "standard_output_microdollars_per_mtok": 500000,
+      "thinking_disabled_supported_by_default": false,
+      "thinking_mode": "adaptive_effort_controlled"
+    },
+    "opus": {
+      "batch_input_microdollars_per_mtok": 2000000,
+      "batch_output_microdollars_per_mtok": 10000000,
+      "effort": "medium",
+      "input_bucket_ceiling_tokens": 6000,
+      "long_prompt_threshold_tokens": 1000000,
+      "max_output_tokens": 1500,
+      "model_id": "claude-opus-5-5",
+      "planning_mean_input_tokens": 2000,
+      "planning_mean_output_tokens": 700,
+      "standard_input_microdollars_per_mtok": 4000000,
+      "standard_output_microdollars_per_mtok": 20000000,
+      "thinking_disabled_supported_by_default": false,
+      "thinking_mode": "always_on_adaptive"
+    },
+    "sonnet": {
+      "batch_input_microdollars_per_mtok": 1000000,
+      "batch_output_microdollars_per_mtok": 5000000,
+      "effort": "low",
+      "input_bucket_ceiling_tokens": 3500,
+      "long_prompt_threshold_tokens": 1000000,
+      "max_output_tokens": 800,
+      "model_id": "claude-sonnet-5-5",
+      "planning_mean_input_tokens": 1500,
+      "planning_mean_output_tokens": 400,
+      "standard_input_microdollars_per_mtok": 2000000,
+      "standard_output_microdollars_per_mtok": 10000000,
+      "thinking_disabled_supported_by_default": false,
+      "thinking_mode": "adaptive_effort_controlled"
+    }
+  },
+  "pilot_plan": {
+    "estimated_pilot_cost_microdollars": 7120000,
+    "haiku_total_items": 2000,
+    "opus_preregistered_items": 300,
+    "pilot_ceiling_microdollars": 8000000,
+    "sonnet_paired_items": 1000
+  },
+  "pricing_checked_date": "2026-10-20",
+  "pricing_source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+  "retry_policy": {
+    "insufficient_evidence_is_retryable": false,
+    "max_attempts": 2,
+    "non_retryable_outcomes": [
+      "succeeded",
+      "refused",
+      "errored_invalid_request",
+      "canceled",
+      "submission_ambiguous",
+      "unresolved"
+    ],
+    "retryable_outcomes": [
+      "errored_transient",
+      "expired"
+    ]
+  },
+  "routing_quotas": {
+    "opus_review": {
+      "max_calls": 2000,
+      "shares": {
+        "random_control": "0.10",
+        "rare_rubric_boundary": "0.20",
+        "unresolved_high_value": "0.70"
+      }
+    },
+    "sonnet_review": {
+      "max_calls": 20000,
+      "shares": {
+        "difficult_or_disagreement": "0.50",
+        "random_audit": "0.25",
+        "rare_or_source_policy": "0.25"
+      }
+    }
+  },
+  "sampling_strata_shares": {
+    "editorial_boundary": "0.15",
+    "moderation_enrichment": "0.15",
+    "natural_probability": "0.40",
+    "post_type_community_balanced": "0.25",
+    "robustness_drift": "0.05"
+  },
+  "schema": "catbird-anthropic-pricing-and-budget-v1",
+  "tax_fee_multiplier": "1.00",
+  "version": "1.0.0"
+}

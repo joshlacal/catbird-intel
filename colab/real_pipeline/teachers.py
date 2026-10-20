@@ -10,7 +10,8 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from .common import MODELS, POLITICAL_HYPOTHESIS, RUBRICS, environment, sha256, write_json
+from .common import (MODELS, POLITICAL_HYPOTHESIS, RUBRICS, environment, selected_uri_sha256,
+                     sha256, validate_input, validate_labeled, validate_teacher_identity, write_json)
 
 
 def release(model):
@@ -107,12 +108,13 @@ def qwen_scores(rows, batch_size=32, max_length=1024):
 
 
 def label_stage(args, rows):
+    validate_input(args, rows)
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
     stage_model = "political" if args.teacher == "political" else args.teacher
     identity = {"schema": "catbird-real-teacher-v1", "teacher": args.teacher,
                 "model": list(MODELS[stage_model]), "input_sha256": sha256(args.input),
-                "selected_uri_sha256": __import__('hashlib').sha256("\n".join(r['uri'] for r in rows).encode()).hexdigest(),
+                "selected_uri_sha256": selected_uri_sha256(rows),
                 "rows": len(rows), "mode": args.mode, "max_length": args.max_length,
                 "rubrics": {"politicalness": POLITICAL_HYPOTHESIS} if args.teacher == "political" else RUBRICS}
     manifest_path = destination / "manifest.json"
@@ -171,6 +173,7 @@ def label_stage(args, rows):
 
 
 def merge_labels(args, rows):
+    seal = validate_input(args, rows)
     merged = {row["uri"]: dict(row) for row in rows}
     provenance = []
     for stage_dir, expected in ((Path(args.political), "political"), (Path(args.behavior), args.behavior_teacher)):
@@ -178,6 +181,7 @@ def merge_labels(args, rows):
         identity = manifest["identity"]
         if manifest.get("status") != "complete" or identity["teacher"] != expected or identity["input_sha256"] != sha256(args.input):
             raise ValueError("Teacher stage source/provenance mismatch")
+        validate_teacher_identity(identity, expected, sha256(args.input), rows, args.mode)
         covered = set()
         for name, digest in manifest["files"].items():
             path = stage_dir / name
@@ -200,6 +204,16 @@ def merge_labels(args, rows):
     for row in merged.values():
         row["teacher_heat"] = max(row["teacher_outraged"], row["teacher_critical"])
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    if Path(args.output).exists() or Path(str(args.output) + ".manifest.json").exists():
+        existing = validate_labeled(args.output, list(merged.values()), seal, args.split, args.mode)
+        source_identity = lambda stages: {
+            stage["identity"]["teacher"]: (stage["identity"], stage["files"]) for stage in stages
+        }
+        if source_identity(existing["teacher_provenance"]) != source_identity(provenance):
+            raise ValueError("Existing merged bank uses different teacher shards; use a new versioned output path")
+        print(json.dumps({"stage": "merge", "status": "verified_existing", "rows": len(merged),
+                          "sha256": existing["sha256"], "output": str(args.output)}), flush=True)
+        return
     pq.write_table(pa.Table.from_pylist(list(merged.values())), args.output, compression="zstd")
     write_json(str(args.output) + ".manifest.json", {"schema": "catbird-real-labeled-v1", "sha256": sha256(args.output),
                "source_sha256": sha256(args.input), "rows": len(merged), "teacher_provenance": provenance,

@@ -81,7 +81,7 @@ def build_triplets(posts: list[dict], memberships: dict[str, list[dict]], limit:
             "negative_kind": negative_kind,
         }
         for prefix, post in [("anchor", anchor), ("positive", positive), ("negative", negative)]:
-            for field in ["uri", "text", "author_did"]:
+            for field in ["uri", "text", "author_did", "author_split_bucket"]:
                 row[f"{prefix}_{field}"] = post[field]
         pairs.append(row)
         same_scene += negative_kind == "same_scene_disjoint_memberships"
@@ -173,8 +173,13 @@ def main() -> None:
     posts = pq.read_table(source).to_pylist()
     if len({p["uri"] for p in posts}) != len(posts):
         raise SystemExit("Source URI duplicates found; refusing ambiguous triplets")
-    if any(p["author_split_bucket"] == 0 for p in posts):
-        raise SystemExit("Source contains reserved holdout bucket 0")
+    if any(type(p["author_split_bucket"]) is not int or not 1 <= p["author_split_bucket"] <= 19 for p in posts):
+        raise SystemExit("Source author split buckets must be integers 1..19")
+    for post in posts:
+        author = post["author_did"]
+        prefix = f"at://{author}/app.bsky.feed.post/"
+        if not author.startswith("did:") or not post["uri"].startswith(prefix) or post["uri"] == prefix:
+            raise SystemExit("Source post URI does not identify its author DID and record key")
     overlap = {p["author_did"] for p in posts} & holdout_authors
     if overlap:
         raise SystemExit(f"Source contains {len(overlap)} holdout authors; refusing export")
@@ -195,7 +200,7 @@ def main() -> None:
         "sha256": output_hash, "holdout_sha256": holdout_hash,
         "holdout_author_overlap": 0, "holdout_bucket_excluded": 0,
         "source_author_split_buckets": dict(sorted(collections.Counter(p["author_split_bucket"] for p in posts).items())),
-        "source_unique_uris": len(posts), "deletion_ledger_enforced": True,
+        "source_rows": len(posts), "source_unique_uris": len(posts), "deletion_ledger_enforced": True,
         "rows": len(rows), "requested_rows": args.limit, "shortfall": max(0, args.limit - len(rows)),
         "source_posts_sha256": source_receipt["sha256"], "source_posts": str(source),
         "seed": args.seed, "supervision": "weak graph membership, not verified co-engagement",

@@ -1,0 +1,31 @@
+{
+  "account_balance_delta": 0,
+  "allocated": true,
+  "allocation_attempted": true,
+  "allocation_outcome_uncertain": false,
+  "automatic_allocation_retry_allowed": false,
+  "budget_accounting_scope": "account-wide; may include other sessions; conservative, not exact pilot billing",
+  "elapsed_seconds": 11.259873500006506,
+  "error": "RuntimeError('Remote bootstrap did not verify GPU/input identities')",
+  "integrated_account_rate_units": 0.0,
+  "outputs": {
+    "status": "failed_before_inference"
+  },
+  "prepared_sha256": "24d6d019670d46dbf9626cd1c4b709eccb990cb51c0927015ea9c0958b399099",
+  "schema": "catbird-colab-teacher-pilot-execution-v1",
+  "session": "catbird-intel-qwen32-20261020T073445Z-e8274cbf",
+  "status": "failed_or_incomplete",
+  "stop_confirmed": true,
+  "usage_after": {
+    "assignments": 0,
+    "balance": 4997.64,
+    "rate_per_hour": 0.0
+  },
+  "usage_before": {
+    "assignments": 0,
+    "balance": 4997.64,
+    "rate_per_hour": 0.0
+  },
+  "watchdog_reason": null,
+  "wrapper_sha256": "612369ebaa2ddc8f74094ce3bac3bb9857f0885591e14e69689707633114d1e8"
+}

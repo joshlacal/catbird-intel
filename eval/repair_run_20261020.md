@@ -21,6 +21,8 @@ The existing Phase 1 follow fold remains owned by its original process. The loca
 
 At **07:19:10Z**, the fold had run for 30m45s and its temporary follow-state table contained **315,366,621 observed rows**. This is an intermediate progress counter, not a final edge count. Final producer/edge/stat files were absent and the continuation driver was waiting. About **154.7 GiB** remained free. Community merges, seed-producer coverage, collision-trap failures and pack recall cannot yet be reported.
 
+A follow-up attached to this conversation, **Finish Catbird Intel archive-only rebuild**, checks every 15 minutes and continues through verified graph results, pair-bank upload and reporting. It must reuse the existing driver, preserve failed evidence, and stop once delivery is complete or a new user decision is required. It does not authorize production changes or GPU allocation. [Resume instructions](../graph/PHASE1_V1_RUN.md).
+
 ## Validation completed so far
 
 - 20 upload/provenance/isolation regression tests pass, with mocked network calls and no synthetic post/evaluation text.
@@ -36,6 +38,10 @@ FP32 ONNX is 273,555,140 bytes and passes numerical parity over all 32 posts plu
 
 The [Colab launch guide](../colab/README_REAL_MODELS.md) supplies runtime requirements, exact Drive paths, ordered notebook cells, a 32-row GPU pilot and checkpoint-resume commands. The source bundle is checksummed. Original local training preceded the final source inventory; receipts explicitly distinguish delivered source identity from that earlier execution.
 
-The initial [real-model notebook on Drive](https://drive.google.com/file/d/1giCfXAv8n93d4kggO4fuuetgMIHOpcLj/view?usp=drivesdk) and its [implementation bundle](https://drive.google.com/drive/folders/1kiYqtro-NKsl0hcAccLOV3tfV_JgwsgV) were uploaded and read back with matching checksums. Upload is not GPU execution. A separate A100 pilot on the same 32 posts, bounded to 30 minutes or 25 existing compute units, awaits the requested spending authorization; no GPU has been allocated for this repair.
+Use the [revised V1_1 notebook on Drive](https://drive.google.com/file/d/1eAdDcRabEtBbgQKxXz9DwZLdUYKNjC_I/view?usp=drivesdk) and its [revision-2 implementation bundle](https://drive.google.com/drive/folders/1tq6CNMODz4R0EK9E_GFLRSqF7G0068iw). Both were uploaded and read back with matching checksums. Source-manifest SHA-256 is `08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592`; notebook SHA-256 is `67c82274ce540869e367bb1e004a8237e8ca42eaff4f240201bf1639d984a042`. The initial delivery remains preserved, locally under `colab/archive-bundles/initial/` and on Drive; it is not the current launch target.
+
+Revision 2 adds sealed export/holdout checks to CLI execution, validates actual author buckets and URI/DID consistency, preserves human review files, supports verified cached merges, and makes checkpoints recoverable with integrity sidecars. **27 structural tests pass**, with no extra model inference or training. Local filesystem recovery was tested; hosted Drive durability remains unverified.
+
+Josh explicitly approved a separate A100 pilot on the same 32 posts, bounded to **30 minutes or 25 existing compute units**, whichever comes first, including setup/download time and without purchases. **Attempt 1 failed before inference** after `11.259874` seconds: the runtime Python version differed from the prepared Python 3.12 lock. Its precise Python version was not captured before that assertion. Runtime shutdown was confirmed; account balance displayed `4,997.64` units before and after, which is not proof of zero charge below the display precision. [Retained attempt receipt](colab_gpu_pilot_20261020_attempt1.json). A reviewed retry is being prepared with matching runtime-specific locks and a reduced ceiling of **29 minutes / 24 units** within the original approval.
 
 Full Qwen CUDA inference, full 150k teacher labels, 600 holdout labels/human review, graph-pair social training, int8 parity, representative CPU serving measurements and measured GPU credit use remain open. The pipeline refuses to tune thresholds on teacher outputs or fabricate benchmark numbers.

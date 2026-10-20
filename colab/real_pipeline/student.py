@@ -13,7 +13,9 @@ from torch import nn
 from torch.nn import functional as F
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-from .common import HEALTH, MODELS, environment, read_rows, require_disjoint, sha256, validate_pairs, write_json
+from .common import (HEALTH, MODELS, environment, sha256, validate_input,
+                     validate_labeled, validate_pairs, write_json)
+from .checkpoints import recover_checkpoint, save_checkpoint
 
 
 class Student(nn.Module):
@@ -60,30 +62,19 @@ def matryoshka_loss(anchor, positive, negative, community_ids, negative_communit
     return torch.stack(losses).mean()
 
 
-def validate_labeled(path):
-    manifest = json.loads(Path(str(path) + ".manifest.json").read_text())
-    if manifest.get("schema") != "catbird-real-labeled-v1" or manifest["sha256"] != sha256(path):
-        raise ValueError("Labeled bank lacks real-teacher provenance or changed")
-    teachers = {p["identity"]["teacher"] for p in manifest["teacher_provenance"]}
-    if teachers not in ({"political", "qwen"}, {"political", "nli"}):
-        raise ValueError("Unexpected teachers")
-    return manifest
-
-
 def train(args, rows):
     torch.set_num_threads(args.threads)
     torch.manual_seed(1729)
     random.seed(1729)
     np.random.seed(1729)
-    manifest = validate_labeled(args.input)
-    holdout = read_rows(args.holdout)
-    require_disjoint(rows, holdout)
+    seal = validate_input(args, rows)
+    manifest = validate_labeled(args.input, rows, seal, args.split, args.mode)
     for row in rows:
         for label in HEALTH:
             value = row[f"teacher_{label}"]
             if not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError("Invalid real teacher target")
-    pairs, pair_manifest = validate_pairs(args.pairs, args.holdout) if args.pairs else ([], None)
+    pairs, pair_manifest = validate_pairs(args.pairs, args.holdout, args.export_manifest) if args.pairs else ([], None)
     if args.mode != "smoke" and not pairs:
         raise ValueError("Full dual-head training requires verified v1 graph pairs")
     if args.mode == "smoke" and pairs:
@@ -104,14 +95,13 @@ def train(args, rows):
             raise ValueError("Existing student configuration differs")
     elif any(destination.iterdir()):
         raise ValueError("Student output directory is nonempty without run identity")
+    recovery = None
     if args.resume:
-        available = sorted(destination.glob("checkpoint-*.pt"))
-        if available and Path(args.resume).resolve() != available[-1].resolve():
-            raise ValueError("Resume must use the latest durable checkpoint to avoid overwriting later work")
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        # Validate all identity before changing any existing run file.
-        if json.loads(json.dumps(checkpoint["config"])) != run_config:
-            raise ValueError("Checkpoint configuration/data identity differs")
+        recovery = recover_checkpoint(
+            destination, config=run_config, requested=args.resume,
+            loader=lambda path: torch.load(path, map_location="cpu", weights_only=False),
+        )
+        checkpoint = recovery.payload
     if not run_path.exists():
         write_json(run_path, {"config": run_config, "environment": environment(),
                    "teacher_provenance": manifest["teacher_provenance"], "thresholds_locked": False})
@@ -120,9 +110,6 @@ def train(args, rows):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     start = 0
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        if json.loads(json.dumps(checkpoint["config"])) != run_config:
-            raise ValueError("Checkpoint configuration/data identity differs")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         for state in optimizer.state.values():
@@ -135,7 +122,7 @@ def train(args, rows):
             torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
         if args.device == "mps" and checkpoint.get("mps_rng") is not None:
             torch.mps.set_rng_state(checkpoint["mps_rng"])
-        start = checkpoint["step"]
+        start = recovery.step
     # Fixed real batch measures fitting progress only. It is never called an eval.
     probe = rows if args.mode == "smoke" else rows[:min(32, len(rows))]
     probe_inputs = tokenize(tokenizer, [r["text"] for r in probe], args.device, args.max_length)
@@ -181,17 +168,19 @@ def train(args, rows):
         with (destination / "steps.jsonl").open("a") as handle:
             handle.write(json.dumps(record) + "\n")
         if (step + 1) % args.save_every == 0 or step + 1 == args.steps:
-            torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step + 1,
-                        "config": run_config, "torch_rng": torch.get_rng_state(), "python_rng": random.getstate(),
-                        "cuda_rng": torch.cuda.get_rng_state_all() if args.device.startswith("cuda") else None,
-                        "mps_rng": torch.mps.get_rng_state() if args.device == "mps" else None},
-                       destination / f"checkpoint-{step+1:07d}.pt")
+            save_checkpoint(destination / f"checkpoint-{step+1:07d}.pt",
+                            {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step + 1,
+                             "config": run_config, "torch_rng": torch.get_rng_state(), "python_rng": random.getstate(),
+                             "cuda_rng": torch.cuda.get_rng_state_all() if args.device.startswith("cuda") else None,
+                             "mps_rng": torch.mps.get_rng_state() if args.device == "mps" else None},
+                            step=step + 1, config=run_config, serializer=torch.save)
     final, _, _ = probe_loss()
     receipt = {"mode": args.mode, "rows": len(rows), "health_logits_shape": logit_shape,
                "matryoshka_emb_shape": embedding_shape, "initial_training_probe_bce": initial,
                "final_training_probe_bce": final, "training_probe_loss_decreased": final < initial,
                "social_training_pairs_available": len(pairs), "social_head_trained": bool(pairs),
                "completed_steps_this_invocation": len(losses), "seconds": time.monotonic() - started,
+               "checkpoint_recovery": recovery.info if recovery else None,
                "parameter_count": sum(p.numel() for p in model.parameters()),
                "F1": None, "credits": None, "human_reviewed_quality": False}
     receipt_path = destination / "training_receipt.json"

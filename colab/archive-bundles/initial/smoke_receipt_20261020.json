@@ -1,0 +1,400 @@
+{
+  "status": "partial_smoke_int8_parity_failed",
+  "unique_real_posts": 32,
+  "additional_training_during_export_repairs": 0,
+  "local_environment": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-venv/bin/python",
+  "output_directory": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1",
+  "source_snapshot_for_original_training": null,
+  "source_snapshot_note": "Original training predated final source inventory; no retrospective source attribution. Export receipt records the source bytes used at export time.",
+  "training": {
+    "F1": null,
+    "completed_steps_this_invocation": 8,
+    "credits": null,
+    "final_training_probe_bce": 0.3554862439632416,
+    "health_logits_shape": [
+      32,
+      4
+    ],
+    "human_reviewed_quality": false,
+    "initial_training_probe_bce": 2.0155529975891113,
+    "matryoshka_emb_shape": [
+      32,
+      256
+    ],
+    "mode": "smoke",
+    "parameter_count": 68278020,
+    "rows": 32,
+    "seconds": 5.144841250003083,
+    "social_head_trained": false,
+    "social_training_pairs_available": 0,
+    "training_probe_loss_decreased": true
+  },
+  "final_export": {
+    "artifacts": [
+      {
+        "bytes": 273555140,
+        "cases": [
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 2.4586915969848633e-07,
+            "embedding_min_cosine": 1.0,
+            "health_logits_max_abs_error": 4.291534423828125e-06,
+            "health_probability_max_abs_error": 6.556510925292969e-07,
+            "padding": "longest_in_batch",
+            "sequence": 82,
+            "uris": [
+              "at://did:plc:4m7h42lvyi2utmhq7frazgn6/app.bsky.feed.post/3mybsa3lsyc2d",
+              "at://did:plc:ulo7ofuepf4y6hwlbgilp6gc/app.bsky.feed.post/3myb3n2gtps2s",
+              "at://did:plc:iflhzft4fp4piwgdkpxkn2dw/app.bsky.feed.post/3myaitka5l52p",
+              "at://did:plc:4gjna7xsjigqf5ip3xkxoejq/app.bsky.feed.post/3mybayuslts2w",
+              "at://did:plc:swhavnqrtvhstcm275j242my/app.bsky.feed.post/f6rwyvikbnkgz",
+              "at://did:plc:6o6fo4xou6o6iqa4hhsj2hqn/app.bsky.feed.post/3mybzltypqc2s",
+              "at://did:plc:pevy7q6o6dwp5a5bhhuukp6e/app.bsky.feed.post/3myarqobbgc2x",
+              "at://did:plc:lc3ec62pnl3gwiluslu7h5ir/app.bsky.feed.post/3myatkohxac2h"
+            ]
+          },
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 4.172325134277344e-07,
+            "embedding_min_cosine": 0.9999998807907104,
+            "health_logits_max_abs_error": 9.059906005859375e-06,
+            "health_probability_max_abs_error": 8.195638656616211e-07,
+            "padding": "longest_in_batch",
+            "sequence": 111,
+            "uris": [
+              "at://did:plc:ndmo46tikxkjugw73bllvhyr/app.bsky.feed.post/3mybfn6kr622g",
+              "at://did:plc:ypsazx7gr5pzfmg7r4cu4j52/app.bsky.feed.post/3myacjui7z22o",
+              "at://did:plc:wk4yzktljzxq7useuy6ovrkl/app.bsky.feed.post/3mybjpvlafc2w",
+              "at://did:plc:guk5or6an3zxsfxm7dbwrxfx/app.bsky.feed.post/3myabbgl7322q",
+              "at://did:plc:ut67tdxisulkzco74cpxuisv/app.bsky.feed.post/3myagqa747k2i",
+              "at://did:plc:f4z2nftgrn75h7h3wucdyzaf/app.bsky.feed.post/3myahvxrl6l2j",
+              "at://did:plc:uygbkkl3w772u644vky4u7iw/app.bsky.feed.post/3mybawkwy422t",
+              "at://did:plc:yuwu72ct4sj42lyfzpcbxfhg/app.bsky.feed.post/3mybci3wgks2h"
+            ]
+          },
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 2.5331974029541016e-07,
+            "embedding_min_cosine": 0.9999998807907104,
+            "health_logits_max_abs_error": 6.67572021484375e-06,
+            "health_probability_max_abs_error": 1.5497207641601562e-06,
+            "padding": "longest_in_batch",
+            "sequence": 128,
+            "uris": [
+              "at://did:plc:saoif63uo65jxpirxkirdav6/app.bsky.feed.post/3mybvkkwfzf26",
+              "at://did:plc:65r3dy2t6xfuwidxmzvctvsh/app.bsky.feed.post/3myai5tnykx2v",
+              "at://did:plc:7ka2hcwnnkdgurrvoutz4jb3/app.bsky.feed.post/3mybjbjjq7v2p",
+              "at://did:plc:jz4ltamu5gu6z6ehr7ccylsw/app.bsky.feed.post/3mybvcw23pk2a",
+              "at://did:plc:xajzz6h7aurf4llr356w2fnd/app.bsky.feed.post/3myaz7tfznc2g",
+              "at://did:plc:ti4sibugwofz5gzx6xwrjemw/app.bsky.feed.post/3mybvjiehrs27",
+              "at://did:plc:5y7k7i32xyo6ky3hshum3ubs/app.bsky.feed.post/3myb4eg56cc2e",
+              "at://did:plc:wsajfpa2ivb26j65j55gqtpc/app.bsky.feed.post/3myaf37e7mk2z"
+            ]
+          },
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 2.998858690261841e-07,
+            "embedding_min_cosine": 0.9999999403953552,
+            "health_logits_max_abs_error": 2.86102294921875e-06,
+            "health_probability_max_abs_error": 4.76837158203125e-07,
+            "padding": "longest_in_batch",
+            "sequence": 76,
+            "uris": [
+              "at://did:plc:w23i6wxhyheqrwevgb4ukncb/app.bsky.feed.post/3myabr72n6a2v",
+              "at://did:plc:tzfxsn7tzq6rpzopu5brndpg/app.bsky.feed.post/3myazccg3422t",
+              "at://did:plc:zrj6yrgszoyjfpdktl2if5dz/app.bsky.feed.post/3mybjuy6i2b23",
+              "at://did:plc:nlvhbcpp4g7pk7zyhxefwuis/app.bsky.feed.post/3myadn3ihoc2h",
+              "at://did:plc:qqlyohbza675keaeokmcnqml/app.bsky.feed.post/3mybcf33mhc2l",
+              "at://did:plc:rvarwdtleiyxm334divg7veu/app.bsky.feed.post/3myaavbgiqk2c",
+              "at://did:plc:4idj567kdvs33kzrfftqpwyw/app.bsky.feed.post/3myaqfczt2k2v",
+              "at://did:plc:upr3owqxjzfwri7eaw6zlppm/app.bsky.feed.post/3myawia2e522f"
+            ]
+          },
+          {
+            "batch": 1,
+            "embedding_max_abs_error": 2.123415470123291e-07,
+            "embedding_min_cosine": 1.0,
+            "health_logits_max_abs_error": 3.0994415283203125e-06,
+            "health_probability_max_abs_error": 5.066394805908203e-07,
+            "padding": "max_length",
+            "sequence": 64,
+            "uris": [
+              "at://did:plc:4m7h42lvyi2utmhq7frazgn6/app.bsky.feed.post/3mybsa3lsyc2d"
+            ]
+          },
+          {
+            "batch": 2,
+            "embedding_max_abs_error": 2.998858690261841e-07,
+            "embedding_min_cosine": 1.0,
+            "health_logits_max_abs_error": 3.337860107421875e-06,
+            "health_probability_max_abs_error": 4.76837158203125e-07,
+            "padding": "max_length",
+            "sequence": 128,
+            "uris": [
+              "at://did:plc:4idj567kdvs33kzrfftqpwyw/app.bsky.feed.post/3myaqfczt2k2v",
+              "at://did:plc:upr3owqxjzfwri7eaw6zlppm/app.bsky.feed.post/3myawia2e522f"
+            ]
+          }
+        ],
+        "numerical_parity_passed": true,
+        "path": "ettin_health_social_fp32.onnx",
+        "sha256": "b54f91e117b57fb719e86c04198cf66c93dac053b4a6ebc1252610b716d7e21a"
+      },
+      {
+        "bytes": 69433199,
+        "cases": [
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 0.013321246951818466,
+            "embedding_min_cosine": 0.9971600770950317,
+            "health_logits_max_abs_error": 0.21883296966552734,
+            "health_probability_max_abs_error": 0.033017873764038086,
+            "padding": "longest_in_batch",
+            "sequence": 82,
+            "uris": [
+              "at://did:plc:4m7h42lvyi2utmhq7frazgn6/app.bsky.feed.post/3mybsa3lsyc2d",
+              "at://did:plc:ulo7ofuepf4y6hwlbgilp6gc/app.bsky.feed.post/3myb3n2gtps2s",
+              "at://did:plc:iflhzft4fp4piwgdkpxkn2dw/app.bsky.feed.post/3myaitka5l52p",
+              "at://did:plc:4gjna7xsjigqf5ip3xkxoejq/app.bsky.feed.post/3mybayuslts2w",
+              "at://did:plc:swhavnqrtvhstcm275j242my/app.bsky.feed.post/f6rwyvikbnkgz",
+              "at://did:plc:6o6fo4xou6o6iqa4hhsj2hqn/app.bsky.feed.post/3mybzltypqc2s",
+              "at://did:plc:pevy7q6o6dwp5a5bhhuukp6e/app.bsky.feed.post/3myarqobbgc2x",
+              "at://did:plc:lc3ec62pnl3gwiluslu7h5ir/app.bsky.feed.post/3myatkohxac2h"
+            ]
+          },
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 0.019376760348677635,
+            "embedding_min_cosine": 0.995316207408905,
+            "health_logits_max_abs_error": 0.2395339012145996,
+            "health_probability_max_abs_error": 0.0392642617225647,
+            "padding": "longest_in_batch",
+            "sequence": 111,
+            "uris": [
+              "at://did:plc:ndmo46tikxkjugw73bllvhyr/app.bsky.feed.post/3mybfn6kr622g",
+              "at://did:plc:ypsazx7gr5pzfmg7r4cu4j52/app.bsky.feed.post/3myacjui7z22o",
+              "at://did:plc:wk4yzktljzxq7useuy6ovrkl/app.bsky.feed.post/3mybjpvlafc2w",
+              "at://did:plc:guk5or6an3zxsfxm7dbwrxfx/app.bsky.feed.post/3myabbgl7322q",
+              "at://did:plc:ut67tdxisulkzco74cpxuisv/app.bsky.feed.post/3myagqa747k2i",
+              "at://did:plc:f4z2nftgrn75h7h3wucdyzaf/app.bsky.feed.post/3myahvxrl6l2j",
+              "at://did:plc:uygbkkl3w772u644vky4u7iw/app.bsky.feed.post/3mybawkwy422t",
+              "at://did:plc:yuwu72ct4sj42lyfzpcbxfhg/app.bsky.feed.post/3mybci3wgks2h"
+            ]
+          },
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 0.013177994638681412,
+            "embedding_min_cosine": 0.9972704648971558,
+            "health_logits_max_abs_error": 0.25009918212890625,
+            "health_probability_max_abs_error": 0.02870631217956543,
+            "padding": "longest_in_batch",
+            "sequence": 128,
+            "uris": [
+              "at://did:plc:saoif63uo65jxpirxkirdav6/app.bsky.feed.post/3mybvkkwfzf26",
+              "at://did:plc:65r3dy2t6xfuwidxmzvctvsh/app.bsky.feed.post/3myai5tnykx2v",
+              "at://did:plc:7ka2hcwnnkdgurrvoutz4jb3/app.bsky.feed.post/3mybjbjjq7v2p",
+              "at://did:plc:jz4ltamu5gu6z6ehr7ccylsw/app.bsky.feed.post/3mybvcw23pk2a",
+              "at://did:plc:xajzz6h7aurf4llr356w2fnd/app.bsky.feed.post/3myaz7tfznc2g",
+              "at://did:plc:ti4sibugwofz5gzx6xwrjemw/app.bsky.feed.post/3mybvjiehrs27",
+              "at://did:plc:5y7k7i32xyo6ky3hshum3ubs/app.bsky.feed.post/3myb4eg56cc2e",
+              "at://did:plc:wsajfpa2ivb26j65j55gqtpc/app.bsky.feed.post/3myaf37e7mk2z"
+            ]
+          },
+          {
+            "batch": 8,
+            "embedding_max_abs_error": 0.01832074113190174,
+            "embedding_min_cosine": 0.9962624907493591,
+            "health_logits_max_abs_error": 0.2924010753631592,
+            "health_probability_max_abs_error": 0.06676512956619263,
+            "padding": "longest_in_batch",
+            "sequence": 76,
+            "uris": [
+              "at://did:plc:w23i6wxhyheqrwevgb4ukncb/app.bsky.feed.post/3myabr72n6a2v",
+              "at://did:plc:tzfxsn7tzq6rpzopu5brndpg/app.bsky.feed.post/3myazccg3422t",
+              "at://did:plc:zrj6yrgszoyjfpdktl2if5dz/app.bsky.feed.post/3mybjuy6i2b23",
+              "at://did:plc:nlvhbcpp4g7pk7zyhxefwuis/app.bsky.feed.post/3myadn3ihoc2h",
+              "at://did:plc:qqlyohbza675keaeokmcnqml/app.bsky.feed.post/3mybcf33mhc2l",
+              "at://did:plc:rvarwdtleiyxm334divg7veu/app.bsky.feed.post/3myaavbgiqk2c",
+              "at://did:plc:4idj567kdvs33kzrfftqpwyw/app.bsky.feed.post/3myaqfczt2k2v",
+              "at://did:plc:upr3owqxjzfwri7eaw6zlppm/app.bsky.feed.post/3myawia2e522f"
+            ]
+          },
+          {
+            "batch": 1,
+            "embedding_max_abs_error": 0.011319486424326897,
+            "embedding_min_cosine": 0.9978876113891602,
+            "health_logits_max_abs_error": 0.031699180603027344,
+            "health_probability_max_abs_error": 0.006281346082687378,
+            "padding": "max_length",
+            "sequence": 64,
+            "uris": [
+              "at://did:plc:4m7h42lvyi2utmhq7frazgn6/app.bsky.feed.post/3mybsa3lsyc2d"
+            ]
+          },
+          {
+            "batch": 2,
+            "embedding_max_abs_error": 0.013004876673221588,
+            "embedding_min_cosine": 0.9970311522483826,
+            "health_logits_max_abs_error": 0.255875825881958,
+            "health_probability_max_abs_error": 0.05812886357307434,
+            "padding": "max_length",
+            "sequence": 128,
+            "uris": [
+              "at://did:plc:4idj567kdvs33kzrfftqpwyw/app.bsky.feed.post/3myaqfczt2k2v",
+              "at://did:plc:upr3owqxjzfwri7eaw6zlppm/app.bsky.feed.post/3myawia2e522f"
+            ]
+          }
+        ],
+        "numerical_parity_passed": false,
+        "path": "ettin_health_social_int8.onnx",
+        "sha256": "ca9149743a4fd695e96ec2cb5d37798ec492064f6fe54fee3911c44021e2122a"
+      }
+    ],
+    "execution_environment": {
+      "implementation_source_sha256": {
+        "real_pipeline.py": "669506e4d321256cc552faf17315ed0cc4654f8d701e66ed4574ac5cd3f37379",
+        "real_pipeline/__init__.py": "6c41619880be4625c1f654440c71c70edf755d3d72f1158ebc43e57b8f62d64e",
+        "real_pipeline/common.py": "98c2d089cc1c9b7a7916e9c0acb319fc57d0729a19c4c48a584e415b4f6d7e10",
+        "real_pipeline/student.py": "83a0e9a995d04dc428768cfafc9674adeb90fd2c7c144fd56f9804848c3be6f7",
+        "real_pipeline/teachers.py": "85ed8b6b270fd0a7122f79e3a145819bc3d19dd71a9625ce6d1ded2545901bf4",
+        "requirements-colab.txt": "978e939cfcfbbb2ff72b77f1ecc54b30f1608e13abe773b9a43289d9c36bbe9c",
+        "requirements-local.txt": "82e2a6d744a725665d343f3a3ecb8744b5187f2ea04b9b44728f226037afaf50"
+      },
+      "packages": {
+        "onnx": "1.23.2",
+        "onnxruntime": "1.31.0",
+        "pyarrow": "26.0.0",
+        "torch": "2.9.1",
+        "transformers": "4.57.3"
+      },
+      "platform": "macOS-27.0.1-arm64-arm-64bit"
+    },
+    "human_quality_validation": false,
+    "int8_target_bytes_approx": [
+      65000000,
+      70000000
+    ],
+    "output_contract": {
+      "health_logits": [
+        "politicalness",
+        "heat",
+        "engagement_bait",
+        "spam"
+      ],
+      "matryoshka_emb": 256,
+      "prefixes": "L2-normalize each 128/64 prefix after slicing"
+    },
+    "quantization": "onnxruntime.quantization.quantize_dynamic QInt8 MatMul+Gather per_channel=True",
+    "target_is_expectation_not_measurement": true,
+    "unique_real_posts_checked": 32
+  },
+  "prior_exports": [
+    {
+      "receipt": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792479937416517000/onnx_receipt.json",
+      "quantization": "onnxruntime.quantization.quantize_dynamic QInt8 MatMul+Gather",
+      "unique_real_posts_checked": 6,
+      "artifacts": [
+        {
+          "path": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792479937416517000/ettin_health_social_fp32.onnx",
+          "bytes": 273555140,
+          "sha256": "b54f91e117b57fb719e86c04198cf66c93dac053b4a6ebc1252610b716d7e21a",
+          "numerical_parity_passed": true,
+          "max_health_probability_error": 7.152557373046875e-07,
+          "min_embedding_cosine": 1.0
+        },
+        {
+          "path": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792479937416517000/ettin_health_social_int8.onnx",
+          "bytes": 69042395,
+          "sha256": "0f3094b71917c99fe80c2a4afda618ee71a50a491315d74ac3bd5a5fc83d62cb",
+          "numerical_parity_passed": false,
+          "max_health_probability_error": 0.0790574848651886,
+          "min_embedding_cosine": 0.9904931783676147
+        }
+      ]
+    },
+    {
+      "receipt": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792480115074281000/onnx_receipt.json",
+      "quantization": "onnxruntime.quantization.quantize_dynamic QInt8 MatMul+Gather per_channel=True",
+      "unique_real_posts_checked": 6,
+      "artifacts": [
+        {
+          "path": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792480115074281000/ettin_health_social_fp32.onnx",
+          "bytes": 273555140,
+          "sha256": "b54f91e117b57fb719e86c04198cf66c93dac053b4a6ebc1252610b716d7e21a",
+          "numerical_parity_passed": true,
+          "max_health_probability_error": 7.152557373046875e-07,
+          "min_embedding_cosine": 1.0
+        },
+        {
+          "path": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792480115074281000/ettin_health_social_int8.onnx",
+          "bytes": 69433199,
+          "sha256": "ca9149743a4fd695e96ec2cb5d37798ec492064f6fe54fee3911c44021e2122a",
+          "numerical_parity_passed": false,
+          "max_health_probability_error": 0.05695781111717224,
+          "min_embedding_cosine": 0.9967684149742126
+        }
+      ]
+    },
+    {
+      "receipt": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792480181304334000/onnx_receipt.json",
+      "quantization": "onnxruntime.quantization.quantize_dynamic QInt8 MatMul per_channel=True; Gather embedding weights retained FP32",
+      "unique_real_posts_checked": 32,
+      "artifacts": [
+        {
+          "path": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792480181304334000/ettin_health_social_fp32.onnx",
+          "bytes": 273555140,
+          "sha256": "b54f91e117b57fb719e86c04198cf66c93dac053b4a6ebc1252610b716d7e21a",
+          "numerical_parity_passed": true,
+          "max_health_probability_error": 1.5497207641601562e-06,
+          "min_embedding_cosine": 0.9999998807907104
+        },
+        {
+          "path": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/student/export-previous-1792480181304334000/ettin_health_social_int8.onnx",
+          "bytes": 146797996,
+          "sha256": "80b53d59015a0a2cd52ab336c510a81686b175fc153609e1593a6a60a731c3a6",
+          "numerical_parity_passed": false,
+          "max_health_probability_error": 0.07467007637023926,
+          "min_embedding_cosine": 0.996391773223877
+        }
+      ]
+    }
+  ],
+  "guards": [
+    {
+      "case": "nli_resume_same32",
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "seconds": 4.421865082986187,
+      "stdout": "{\"stage\": \"nli\", \"rows\": 32, \"seconds\": 0.0003865000035148114, \"output\": \"/Users/joshlacalamito/catbird-lake-local/real-model-smoke-v1/nli\"}\n",
+      "stderr": ""
+    },
+    {
+      "case": "reject_nonempty_train_without_resume",
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "passed": true,
+      "seconds": 2.2514291660045274,
+      "stdout": "",
+      "stderr": "Traceback (most recent call last):\n  File \"/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline.py\", line 85, in <module>\n    main()\n  File \"/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline.py\", line 70, in main\n    train(args, rows)\n  File \"/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/student.py\", line 102, in train\n    raise ValueError(\"Existing student run requires explicit --resume; choose a new directory for a new run\")\nValueError: Existing student run requires explicit --resume; choose a new directory for a new run\n"
+    },
+    {
+      "case": "reject_local_holdout",
+      "exit_code": 2,
+      "expected_exit_code": 2,
+      "passed": true,
+      "seconds": 0.06627912502153777,
+      "stdout": "",
+      "stderr": "usage: real_pipeline.py [-h] {label,merge,train,review-sheet} ...\nreal_pipeline.py: error: Local smoke cannot label or inspect held-out examples\n"
+    }
+  ],
+  "pending": [
+    "Qwen CUDA execution",
+    "full teacher labels",
+    "v1 graph-pair social training",
+    "human review",
+    "int8 numerical parity",
+    "representative CPU serving measurements",
+    "GPU throughput and credit accounting"
+  ]
+}

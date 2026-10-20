@@ -4,24 +4,26 @@ This pipeline labels real Bluesky posts with pretrained teachers and trains a re
 
 ## Launch in Colab
 
-1. Open `CatbirdCommunity/catbird-lake/Catbird_Intel_Real_Teachers_Ettin_V1.ipynb` from Google Drive using **Open with → Google Colaboratory**. Choose a **separate runtime**, not the archive downloader session. Choose **Python 3, A100 GPU** (40 GB or more), or H100 if available. The Qwen 32B AWQ teacher is not supported by this notebook on a T4. An L4 may have insufficient headroom; choose A100 or explicitly use the NLI fallback.
-2. Run cells **1–3** to mount Drive, install requirements and verify the real banks. The notebook expects its sources under `/content/drive/MyDrive/CatbirdCommunity/catbird-lake/colab-v1/`. Installation/runtime versions and an exact SHA-256 inventory of implementation sources are recorded. Earlier smoke execution receipts without a source inventory are not retroactively attributed to the current files. If Colab asks for a runtime restart after installing vLLM, restart and rerun cells 1 and 3.
+1. Open `CatbirdCommunity/catbird-lake/Catbird_Intel_Real_Teachers_Ettin_V1_1.ipynb` from Google Drive using **Open with → Google Colaboratory**. Choose a **separate runtime**, not the archive downloader session. Choose **Python 3, A100 GPU** (40 GB or more), or H100 if available. The Qwen 32B AWQ teacher is not supported by this notebook on a T4. An L4 may have insufficient headroom; choose A100 or explicitly use the NLI fallback.
+2. Run cells **1–3** to mount Drive, install requirements and verify the real banks. The notebook expects its sources under `/content/drive/MyDrive/CatbirdCommunity/catbird-lake/colab-v1/revision-2/`. Installation/runtime versions and an exact SHA-256 inventory of implementation sources are recorded. Earlier smoke execution receipts without a source inventory are not retroactively attributed to the current files. If Colab asks for a runtime restart after installing vLLM, restart and rerun cells 1 and 3.
 3. Set `BEHAVIOR_TEACHER = "qwen"` in cell 3. The explicit fallback is `"nli"`, which uses `MoritzLaurer/deberta-v3-large-zeroshot-v2.0`; its outputs remain identified as NLI rather than Qwen. No automatic fallback can disguise a failed Qwen run. Read the GPU name/memory and input hashes printed by cell 3.
 4. Run cells **4–5** to label the 150k training bank and 600-post holdout, then create Josh's review sheet. Every teacher is pinned to an immutable Hugging Face revision. Each stage runs in a separate process so its GPU memory is released before the next stage. Label shards on Drive support resume; rerun the same cells with the same input/model/rubric. A failed or partial shard produces a hard error; archive that shard and rerun it.
 5. Run cell **6** only after the archive-only v1 pair bank exists. The validator checks its KnownFor digest, file digest, `graph_version=phase1-v1`, supplemental-edge exclusion and holdout digest. It refuses old v0 pairs. Pairs currently represent **weak same-community supervision**, not verified co-engagement.
-6. Run cell **7** to train 5,000 optimizer steps and export the actual two-head ONNX model. Change steps/batch size only before starting a new run. Checkpoints save every 250 steps to Drive; set `RESUME` to one of those paths after a disconnect and keep configuration unchanged. This is an initial training schedule, not a quality or convergence guarantee.
+6. Run cell **7** to train 5,000 optimizer steps and export the actual two-head ONNX model. Change steps/batch size only before starting a new run. Checkpoints save every 250 steps using a temporary file, filesystem sync and rename, followed by a SHA-256/size/configuration integrity sidecar. Set `RESUME` to the latest checkpoint path after a disconnect and keep configuration unchanged. Recovery chooses the latest intact checkpoint, archives damaged/partial files and log records beyond that step, and records the recovery. Legacy v1 checkpoints without integrity sidecars are not silently trusted. This is an initial training schedule, not a quality or convergence guarantee.
 7. Read the actual `training_receipt.json` and `onnx_receipt.json` printed by cell **8**. These contain measured loss, shapes, parameter count, elapsed time, model sizes, hashes and torch/ONNX numerical parity. No F1, posts/credit or credit burn is invented. Record the Colab account balance before/after separately; disconnect the GPU after the run.
 
-All outputs go to `catbird-lake/runs/real-v1-qwen/` or `real-v1-nli/`, never to live production. Uploading source and data does not launch or pay for a GPU session.
+All outputs go to `catbird-lake/runs/real-v1.1-qwen/` or `real-v1.1-nli/`, never to live production. Uploading source and data does not launch or pay for a GPU session.
 
 ## Exact data paths
 
 - `training-banks/phase3_health_training_150k_v1_unlabeled.parquet` and `.manifest.json` with the `.parquet` suffix replaced
 - `eval/phase3_holdout_600_unlabeled.jsonl` and `phase3_v1_export_manifest.json`
 - `training-banks/phase5_social_encoder_pairs_v1.parquet` and adjacent `.manifest.json` with the `.parquet` suffix replaced
-- `colab-v1/real_pipeline.py`, `colab-v1/real_pipeline/`, `colab-v1/requirements-colab.txt`
+- `colab-v1/revision-2/real_pipeline.py`, `colab-v1/revision-2/real_pipeline/`, `colab-v1/revision-2/requirements-colab.txt`
 
-The holdout gets teacher labels and empty human-review fields. Josh reviews those fields before thresholds can be locked. The code does not compute quality against its own teacher predictions or tune on this final holdout. A separate future engagement retrieval benchmark and an independent reviewed quality set are still needed for Phase 5/Phase 3 qualification.
+The audited export manifest is pinned in source. Every CLI stage verifies its SHA-256 and the canonical holdout SHA-256, exact integer split buckets and original URI/author correspondence. Raw inputs must match the sealed bank or holdout; labeled inputs must retain their sealed source hash and teacher selection/model/rubric identity. A different export requires an audited source revision. Pair validation requires all three author DIDs, their non-holdout buckets, row counts and the source bucket audit.
+
+The holdout gets teacher labels and empty human-review fields. Review-sheet creation refuses an existing output or status sidecar, preserving human edits on rerun. Josh reviews those fields before thresholds can be locked. The code does not compute quality against its own teacher predictions or tune on this final holdout. A separate future engagement retrieval benchmark and an independent reviewed quality set are still needed for Phase 5/Phase 3 qualification.
 
 ## Model semantics and output contract
 
@@ -52,12 +54,12 @@ Run `python real_pipeline.py --help` and each subcommand's `--help` for exact fl
 After a separately approved GPU allocation, run notebook cells 1–3, then paste this in a new cell before starting the 150k labels. It uses the same first 32 training posts, Qwen on CUDA, eight student steps and a separate output directory. It does not access a new paid runtime automatically or label the holdout. Record the actual account balance/usage before and after through the Colab CLI; the pipeline leaves credit fields null.
 
 ```python
-PILOT = LAKE / 'runs/gpu-pilot-real-v1-qwen'
-common = ['--input', BANK, '--holdout', HOLDOUT, '--mode', 'smoke', '--device', 'cuda']
+PILOT = LAKE / 'runs/gpu-pilot-real-v1.1-qwen'
+common = ['--input', BANK, '--holdout', HOLDOUT, '--export-manifest', EXPORT_MANIFEST, '--mode', 'smoke', '--device', 'cuda']
 run('label', *common, '--teacher', 'political', '--max-length', 512, '--batch-size', 4, '--output', PILOT / 'political')
 run('label', *common, '--teacher', 'qwen', '--max-length', 1024, '--batch-size', 4, '--output', PILOT / 'qwen')
 run('merge', *common, '--political', PILOT / 'political', '--behavior', PILOT / 'qwen', '--behavior-teacher', 'qwen', '--output', PILOT / 'train-labeled.parquet')
-run('train', '--input', PILOT / 'train-labeled.parquet', '--holdout', HOLDOUT, '--mode', 'smoke', '--device', 'cuda', '--steps', 8, '--save-every', 8, '--batch-size', 8, '--max-length', 128, '--learning-rate', 0.0001, '--output', PILOT / 'student')
+run('train', '--input', PILOT / 'train-labeled.parquet', '--holdout', HOLDOUT, '--export-manifest', EXPORT_MANIFEST, '--mode', 'smoke', '--device', 'cuda', '--steps', 8, '--save-every', 8, '--batch-size', 8, '--max-length', 128, '--learning-rate', 0.0001, '--output', PILOT / 'student')
 ```
 
 A GPU pilot without real v1 pairs fits only the health head; the social head is explicitly untrained. Stop on a failed numerical parity check and read its measured receipt. Do not relax a gate to make the report green.
@@ -73,3 +75,7 @@ The compact int8 candidate remains unqualified and the training command exits wi
 Local environment: `~/catbird-lake-local/real-model-smoke-venv/bin/python`. Outputs: `~/catbird-lake-local/real-model-smoke-v1/`. The repository's `smoke_receipt_20261020.json` summarizes exact artifact paths and measurements. Original smoke execution predated the final source inventory; the inventory identifies the delivered implementation, not a retroactively reconstructed training-source snapshot.
 
 Bulk Qwen labeling, full dual-head training, GPU throughput/credit use, human quality review and representative serving CPU measurements remain unperformed. Labels can be generated before v1 pairs arrive, but the full training command refuses a missing or invalid pair bank.
+
+## Revision 2 structural verification
+
+This source revision hardens dataset validation, review preservation and disconnect recovery. It does not replace or retroactively reattribute the original measured smoke results. The immutable initial delivery is retained under `colab/archive-bundles/initial/`; the Drive source lives in `colab-v1/revision-2/`. Run `python -m unittest discover -s colab/tests -v` from the repository with the existing sealed files available. These checks use existing real-row metadata and tiny checkpoint objects; they run no model inference or optimizer steps. The approved CLI pilot wrapper is `ops/run_colab_teacher_pilot.py`. Its prepare mode packages the full canonical bank/holdout and their seals plus a separate 32-row selection audit; inference still uses exactly the first 32 rows through the ordinary smoke CLI.

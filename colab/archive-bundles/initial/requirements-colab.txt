@@ -1,0 +1,8 @@
+# vLLM selects its compatible CUDA torch. Exact installed versions are receipted.
+vllm>=0.11,<0.12
+transformers==4.57.3
+onnx>=1.17,<2
+onnxruntime>=1.20,<2
+pyarrow>=20,<27
+sentencepiece>=0.2,<0.3
+protobuf>=5,<8

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 
-from real_pipeline.common import local_guard, read_rows, require_disjoint, validate_posts, write_json
+from real_pipeline.common import create_review_sheet, local_guard, read_rows, validate_input
 
 
 def main():
@@ -21,6 +20,7 @@ def main():
         item.add_argument("--device", default="cuda")
         item.add_argument("--threads", type=int, default=2)
         item.add_argument("--holdout", type=Path)
+        item.add_argument("--export-manifest", type=Path, help="Audited v1 seal; defaults beside the canonical holdout")
         item.add_argument("--split", choices=("train", "holdout"), default="train")
         if command == "label":
             item.add_argument("--teacher", choices=("political", "qwen", "nli"), required=True)
@@ -50,15 +50,10 @@ def main():
         if args.command == "train" and args.steps > 12:
             parser.error("Local smoke is limited to at most 12 optimizer steps on the same 32 posts")
     local_guard(args.mode, rows, args.device)
-    validate_posts(rows, allow_teachers=args.command in ("train", "review-sheet"))
-    if args.split == "train":
-        if any(row.get("author_split_bucket") == 0 for row in rows):
-            parser.error("Reserved holdout author bucket cannot enter training")
-        if not args.holdout:
-            parser.error("Training-bank operations require --holdout to enforce author isolation")
-        require_disjoint(rows, read_rows(args.holdout))
-    elif args.command == "train":
-        parser.error("Held-out posts can never train the student")
+    validate_input(args, rows)
+    if args.command == "review-sheet":
+        create_review_sheet(args.output, rows)
+        return
     import torch
     torch.set_num_threads(args.threads)
     if args.command == "label":
@@ -70,18 +65,5 @@ def main():
     elif args.command == "train":
         from real_pipeline.student import train
         train(args, rows)
-    elif args.command == "review-sheet":
-        # No labels/thresholds/F1 invented. Human fields stay null until reviewed.
-        fields = ("politicalness", "outraged", "critical", "engagement_bait", "spam")
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        with args.output.open("w") as handle:
-            for row in rows:
-                row.update({f"human_{name}": None for name in fields})
-                row.update(human_reviewed=False, reviewer=None, review_notes="")
-                handle.write(json.dumps(row, default=str, ensure_ascii=False) + "\n")
-        write_json(str(args.output) + ".status.json", {"rows": len(rows), "human_reviewed": False,
-                   "thresholds_locked": False, "F1": None})
-
-
 if __name__ == "__main__":
     main()

@@ -1,0 +1,60 @@
+{
+  "deployment_authorized": false,
+  "evidence_class": "offline_validation_of_reported_metrics",
+  "gates": {
+    "continuity": {
+      "required_window_hours": 72,
+      "status": "UNPERFORMED"
+    },
+    "controlled_create_delete": {
+      "required_window_hours": null,
+      "status": "UNPERFORMED"
+    },
+    "cross_archive": {
+      "required_window_hours": null,
+      "status": "UNPERFORMED"
+    },
+    "cursor_completeness": {
+      "required_window_hours": 72,
+      "status": "UNPERFORMED"
+    },
+    "delete_invariant": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    },
+    "disk": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    },
+    "final_24h_continuity": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    },
+    "lag": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    },
+    "merge_trend": {
+      "required_window_hours": 6,
+      "status": "UNPERFORMED"
+    },
+    "production_interference": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    },
+    "resource_pressure": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    },
+    "visibility_latency": {
+      "required_window_hours": 24,
+      "status": "UNPERFORMED"
+    }
+  },
+  "input_sha256": "e9b70ef2ef22de9111052852921bb2617310e68afe50d07c162c0f74b6ad5a82",
+  "qualification": "UNQUALIFIED",
+  "required_soak_end": "2026-10-22T13:00:00+00:00",
+  "required_soak_start": "2026-10-19T13:00:00+00:00",
+  "schema": "catbird_soak_evaluation_v2",
+  "thresholds_provisional": true
+}

@@ -1,0 +1,291 @@
+{
+  "schema": "catbird-independent-evaluation-contract-v3",
+  "status": "provisional",
+  "comparison_tolerances_status": "predeclared_provisional",
+  "data_quality_certified": false,
+  "governing_plan": "../../docs/execution-plans/2026-10-20-catbird-intelligence-review-remediation.md#5-evaluation-contract-before-new-labels",
+  "freeze": {
+    "by": null,
+    "frozen_at": null,
+    "record_sha256": null
+  },
+  "profile": {
+    "name": "health_only",
+    "required_targets": ["politicalness"],
+    "frozen": false,
+    "frozen_at": null,
+    "selection_record_sha256": null,
+    "policy": "Freeze the profile and required targets before final-data examination. health_only needs no social head or retrieval evidence. joint_health_retrieval additionally requires trained social embeddings and independent retrieval evidence. Optional diagnostics cannot replace required targets after inspection."
+  },
+  "scope": {
+    "operation": "metrics-only over externally supplied predictions and human labels",
+    "language_contract": "declared-English-only",
+    "evaluation_role": "final",
+    "output_head_order": [
+      "politicalness",
+      "outraged",
+      "critical",
+      "engagement_bait",
+      "spam"
+    ],
+    "annotation_protocol_sha256": null,
+    "sampling_design_sha256": null,
+    "natural_panel_minimum_days": 28,
+    "independent_authors_required": true,
+    "future_time_window_required": true,
+    "natural_probability_sampling_required_for_qualification": true,
+    "same_hardware_runtime_required_for_quantization": true
+  },
+  "bootstrap": {
+    "method": "paired_author_cluster_percentile",
+    "replicates": 10000,
+    "seed": 1729,
+    "confidence": 0.95,
+    "interval_scope": "Report central two-sided 95% intervals and one-sided 95% lower/upper bounds per metric. Directional gates use the one-sided bounds. The predeclared required gates form an intersection; successful targets cannot be selected after inspection.",
+    "degenerate_replicates": "retain undefined denominators as null; do not silently discard; an affected interval is not evaluable",
+    "decision_flip_acceptance_bound": "For one row per independent author, use an exact one-sided 95% binomial upper bound, including a positive upper bound when no flips are observed. Cross-author independence still requires design review. For repeated-author samples use the paired author-cluster percentile upper bound only away from zero/all-flip boundaries; boundary acceptance remains not_evaluable. Preserve the bootstrap interval separately as a diagnostic.",
+    "limitations": [
+      "Authors are resampled with replacement and all their evaluated rows remain together.",
+      "The same resampled author groups are used for reference, candidate and their paired difference.",
+      "This does not account for correlations between different authors, conversations, events or time blocks.",
+      "A design review must address remaining dependence before qualification.",
+      "Small or homogeneous samples can produce misleadingly narrow or degenerate intervals; planning counts do not certify coverage or power."
+    ]
+  },
+  "precision_plan": {
+    "status": "predeclared_provisional",
+    "minimum_author_clusters": null,
+    "minimum_eligible_final_rows": 2000,
+    "minimum_positives_per_target": 400,
+    "minimum_positives_per_claimed_slice": 150,
+    "maximum_candidate_f1_interval_width": null,
+    "power_or_precision_review_sha256": null,
+    "nullable_criteria_policy": "A frozen precision-review artifact must explain the chosen sample/author design and usable uncertainty. Null additional author-count or interval-width limits are not automatic passes; they are only not-applicable criteria when the predeclared review explicitly justifies the design. Without the review digest evaluation remains not_evaluable."
+  },
+  "annotation_agreement": {
+    "minimum_double_labeled_rows_per_target": 200,
+    "minimum_krippendorff_alpha": 0.8,
+    "revision_range_lower_bound": 0.67,
+    "policy": "An externally supplied agreement receipt must be based on a new independent pre-adjudication sample, include a rubric-independent annotator, raw agreement, class counts, missing/insufficient labels and uncertainty. This executor validates and records that receipt but does not recompute alpha without the original ratings."
+  },
+  "calibration": {
+    "bins": 10,
+    "maximum_paired_brier_increase": null,
+    "policy": "Brier score and fixed-bin expected calibration error are computed. A predeclared external calibration/slice regression review is required when no numeric Brier tolerance has been specified. Unknown regression evidence is not a pass."
+  },
+  "runtime_qualification": {
+    "architecture": "x86_64",
+    "actual_target_execution_required": true,
+    "hardware_instruction_set_required": true,
+    "latency_and_peak_rss_receipt_required": true,
+    "policy": "Predictions must identify actual execution on the intended x86 target instruction set/runtime. Metadata is recorded external evidence, not a performance measurement made by this evaluator."
+  },
+  "targets": {
+    "politicalness": {
+      "enabled": true,
+      "human_label": "politicalness",
+      "definition": "The text is about politics, government, elections, or public policy.",
+      "definition_frozen": false,
+      "score": {
+        "kind": "head",
+        "head": "politicalness"
+      },
+      "threshold": {
+        "value": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "minimum_f1_lower_bound": 0.9,
+      "maximum_f1_drop": 0.01,
+      "maximum_decision_flip_rate": 0.01
+    },
+    "outraged": {
+      "enabled": true,
+      "human_label": "outraged",
+      "definition": "The author expresses anger, indignation, or outrage.",
+      "definition_frozen": false,
+      "score": {
+        "kind": "head",
+        "head": "outraged"
+      },
+      "threshold": {
+        "value": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "minimum_f1_lower_bound": null,
+      "maximum_f1_drop": 0.01,
+      "maximum_decision_flip_rate": 0.01
+    },
+    "critical": {
+      "enabled": true,
+      "human_label": "critical",
+      "definition": "The author attacks, condemns, or disparages a person, group, or institution; neutral disagreement alone is insufficient.",
+      "definition_frozen": false,
+      "score": {
+        "kind": "head",
+        "head": "critical"
+      },
+      "threshold": {
+        "value": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "minimum_f1_lower_bound": null,
+      "maximum_f1_drop": 0.01,
+      "maximum_decision_flip_rate": 0.01
+    },
+    "engagement_bait": {
+      "enabled": true,
+      "human_label": "engagement_bait",
+      "definition": "The author manipulates readers into replying, liking, or sharing mainly to increase engagement.",
+      "definition_frozen": false,
+      "score": {
+        "kind": "head",
+        "head": "engagement_bait"
+      },
+      "threshold": {
+        "value": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "minimum_f1_lower_bound": null,
+      "maximum_f1_drop": 0.01,
+      "maximum_decision_flip_rate": 0.01
+    },
+    "spam": {
+      "enabled": true,
+      "human_label": "spam",
+      "definition": "The text is unsolicited or repetitive promotional spam, a scam, or deceptive advertising.",
+      "definition_frozen": false,
+      "score": {
+        "kind": "head",
+        "head": "spam"
+      },
+      "threshold": {
+        "value": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "minimum_f1_lower_bound": null,
+      "maximum_f1_drop": 0.01,
+      "maximum_decision_flip_rate": 0.01
+    },
+    "heat": {
+      "enabled": true,
+      "human_label": "heat",
+      "definition": null,
+      "definition_frozen": false,
+      "score": {
+        "kind": "aggregation",
+        "inputs": [
+          "outraged",
+          "critical"
+        ],
+        "method": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "threshold": {
+        "value": null,
+        "frozen": false,
+        "frozen_at": null,
+        "source_role": "development",
+        "source_dataset_sha256": null
+      },
+      "minimum_f1_lower_bound": 0.75,
+      "maximum_f1_drop": 0.01,
+      "maximum_decision_flip_rate": 0.01,
+      "condition": "No trained heat output exists in v3. Evaluation requires a frozen human heat definition, a direct independent human heat label, and an explicitly frozen aggregation on outraged and critical. No default max is implied."
+    }
+  },
+  "retrieval": {
+    "required_for_overall_qualification": false,
+    "dimensions": [
+      256,
+      128,
+      64
+    ],
+    "k_values": [
+      10,
+      50
+    ],
+    "embedding_cosine_p1_minimum": {
+      "256": 0.99,
+      "128": 0.99,
+      "64": 0.99
+    },
+    "maximum_recall_drop": {
+      "256": 0.01,
+      "128": 0.01,
+      "64": 0.01
+    },
+    "relevance_source": "independent_human_judgments",
+    "recall_definition": "Per query: distinct relevant IDs in the first K ranked IDs divided by all adjudicated relevant IDs; report the macro average across queries.",
+    "cosine_definition": "Re-normalize each 256, 128 or 64 prefix of the supplied 256-vector, compute paired cosine, and report the empirical first percentile using linear interpolation.",
+    "tail_caveat": "The empirical p1 cosine is a sample-tail diagnostic; its stability depends on sample size and dependence. It does not establish retrieval quality."
+  },
+  "planning_counts_not_power_certification": {
+    "development_starting_rows": 1000,
+    "final_initial_rows": 2000,
+    "required_final_positive_examples_per_principal_target": 400,
+    "required_positive_examples_per_claimed_slice": 150,
+    "double_labeled_starting_rows": 200,
+    "natural_sample_starting_rows": 2000,
+    "natural_sample_weeks": 4,
+    "certified_power": false,
+    "measured_model_evidence": false,
+    "design_notes": [
+      "The governing remediation plan adopts these provisional minimum design gates before new labels. They are not promises of a confidence-interval width, statistical power or a probability of passing.",
+      "The positive target may be unattainable in a natural sample for rare labels. Additional enriched review can study rare failures, but its unweighted precision and F1 describe the enriched pool rather than deployment prevalence.",
+      "This executable reports sample-pool metrics. It does not implement inverse-inclusion-probability survey estimators and will not qualify enriched or convenience samples as population evidence.",
+      "Precision depends on prevalence and the false-positive rate; positive counts alone do not determine F1 uncertainty.",
+      "Report positives, negatives, unique authors, repeated-author counts, effective resampling unit, time range and language exclusions for every run.",
+      "Repeated authors reduce independent information. Author-cluster resampling preserves within-author dependence but cannot remove shared-event or conversational dependence across authors.",
+      "Freeze thresholds and any heat aggregation using development data before inspecting final predictions or labels. A final set is not a threshold-tuning set.",
+      "Use the initial double-labeled sample to diagnose ambiguity, disagreement and adjudication rules; 200 double labels do not certify the whole label bank.",
+      "Record achieved intervals and prevalence after labeling. Expand or redesign the sample based on a predeclared precision review, without repeatedly peeking at a final acceptance set.",
+      "A natural four-week sample studies a bounded time period; it does not establish future drift robustness, all-language quality, or production user outcomes.",
+      "Any reviewer-provided synthetic calculations remain design illustrations and must never be recorded as measured model evidence."
+    ]
+  },
+  "historical_smoke": {
+    "policy": "Read-only historical diagnostic; this contract never changes earlier smoke gates or receipts.",
+    "max_absolute_probability_delta": "Always reported as a diagnostic. New acceptance uses frozen decisions, paired metric intervals and retrieval parity only after tolerances are explicitly approved.",
+    "new_comparison_tolerances_status": "predeclared_provisional_in_governing_plan"
+  },
+  "method_references": [
+    {
+      "title": "NIST Exact Binomial Confidence Limits",
+      "url": "https://itl.nist.gov/div898/software/dataplot/refman2/auxillar/exacbino.htm",
+      "use": "One-sided exact binomial CDF inversion for decision flips only when there is one row per independent author. Zero observed flips do not imply a zero upper confidence bound."
+    },
+    {
+      "title": "Statistical Significance Tests for Machine Translation Evaluation",
+      "url": "https://aclanthology.org/W04-3250/",
+      "use": "Paired resampling compares systems on the same sampled observations; this evaluator adapts the pairing to author clusters."
+    },
+    {
+      "title": "Bootstrap-Based Improvements for Inference with Clustered Errors",
+      "url": "https://www.nber.org/papers/t0344",
+      "use": "Clustered observations require resampling that respects the sampling unit; no claim is made that this percentile implementation has the paper's bootstrap-t refinements."
+    },
+    {
+      "title": "Precision/Recall on Imbalanced Test Data",
+      "url": "https://proceedings.mlr.press/v206/shang23a.html",
+      "use": "Prevalence and annotation sampling design affect precision/recall estimation; planning row counts alone are insufficient."
+    }
+  ]
+}

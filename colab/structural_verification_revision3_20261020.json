@@ -1,0 +1,100 @@
+{
+  "deployment_authorized": false,
+  "immutable_history": {
+    "archived_files_verified": 15,
+    "historical_smoke_receipt_unchanged": true,
+    "original_v1_1_notebook_unchanged": true,
+    "revision2_manifest_sha256": "08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592"
+  },
+  "language_audit": {
+    "actual_text_language_independently_verified": false,
+    "eligible_declared_english_rows": 90603,
+    "source_rows": 150000,
+    "unscored_rows": 59397
+  },
+  "metadata_only_cli": {
+    "evaluation_help_passed": true,
+    "human_label_values_created": 0,
+    "raw_holdout_blind_review_rows": 600,
+    "teacher_and_regex_columns_hidden": true,
+    "train_help_passed": true
+  },
+  "notebook": {
+    "code_cells_ast_passed": 8,
+    "executed_on_colab": false,
+    "name": "Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+    "sha256": "33f075c1e03040058808ed0c8f9b0686e9cdabf1b7dde0c136c61b663da6aba8"
+  },
+  "runtime": {
+    "packages": {
+      "numpy": "2.5.4",
+      "onnx": "1.23.2",
+      "onnxruntime": "1.31.0",
+      "pyarrow": "26.0.0",
+      "torch": "2.9.1",
+      "transformers": "4.57.3"
+    },
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "python": "3.12.14"
+  },
+  "schema": "catbird-real-pipeline-structural-verification-v3",
+  "scope": {
+    "actual_model_evaluation_rows": 0,
+    "actual_student_training_rows": 0,
+    "actual_teacher_inference_rows": 0,
+    "gpu_allocations": 0,
+    "large_weight_downloads": 0,
+    "mocked_teacher_dispatch_on_existing_real_row_metadata": true,
+    "model_forward_passes": 0,
+    "optimizer_steps": 0,
+    "pretrained_model_loads": 0,
+    "synthetic_numeric_metric_fixtures_are_not_model_evidence": true,
+    "tiny_local_linear_head_construction_without_forward": true
+  },
+  "source_files_sha256": {
+    "README_REAL_MODELS.md": "cac92b135d569a974123b274aee7ce6fca326c06b9719294ad72f93c23ecd06c",
+    "evaluation_contract_v3.json": "f8677bc8238f8b27470bb118a525e1890f4e4301de4737605669f0312d583c3e",
+    "language_audit_v3.json": "d951ab07591e9169526d8eb24ed81371c3162b8d331883f4cdba9bada7f4c631",
+    "model_licenses_v3.json": "566773e2e3ee5bf8ae2b83daaf0f0c75e8e52729901b7a7af8949017f6b3b9e1",
+    "real_pipeline.py": "c7d1be34a2977740849719d276fe655c0035dd38a6a1f6c3dfcd4dd5b02983d0",
+    "real_pipeline/__init__.py": "6c41619880be4625c1f654440c71c70edf755d3d72f1158ebc43e57b8f62d64e",
+    "real_pipeline/checkpoints.py": "5bd614b6da0d167ba85b9864d0a4127c62eeaf66763ad6b35fb4e969aac313e8",
+    "real_pipeline/common.py": "d1058b7fd3468586f2e131b8ab629b7f890b5fb3f61b23acea2c2e6335ffa5c9",
+    "real_pipeline/contracts.py": "d535110c32ef532daba1d5ce9046217479241bfb8823ba7b6d04cd96f42d4614",
+    "real_pipeline/evaluation.py": "4083ff9975fbbf07e80a08961f3a53bb265e5b0a4af35f0f2da729ff0adee69e",
+    "real_pipeline/language.py": "5a9e27052a7f700a4f61555805ef337bbfa6000b70d268ce44a37acebd777017",
+    "real_pipeline/student.py": "0420bce48f3e9b36416a8a4421422a96ca4726ba5e35d00091ef650c6c3aead9",
+    "real_pipeline/teachers.py": "b7da59f61095f7cac1cc11358b927fe2c018f47bacc8835df7878a9772605d2b",
+    "requirements-colab.txt": "978e939cfcfbbb2ff72b77f1ecc54b30f1608e13abe773b9a43289d9c36bbe9c",
+    "requirements-local.txt": "82e2a6d744a725665d343f3a3ecb8744b5187f2ea04b9b44728f226037afaf50",
+    "tests/test_checkpoint_durability.py": "66b24e077956564326456f605e9c89b4024980ce7a988f7440e82c0f8898d14d",
+    "tests/test_evaluation.py": "9c57411d2e19e35dd642a8799f2bc1b5c3e1d82081294031c826ffc5d838fedc",
+    "tests/test_revision3_contracts.py": "f54838282a8508511ee893724030091a61fb17986bac8ad1cca28a70878551a3",
+    "tests/test_sealed_contracts.py": "a3365822fa2c61930be95bbf9c4c2c26209066df2e63b51f01768b993e733c55"
+  },
+  "source_revision": "revision-3",
+  "status": "structural_checks_passed",
+  "test_command": "/Users/joshlacalamito/catbird-lake-local/real-model-smoke-venv/bin/python -m unittest discover -s colab/tests -p 'test_*.py' -v",
+  "tests": {
+    "failed": 0,
+    "passed": 80,
+    "seconds_reported_by_unittest": 5.613,
+    "skipped": 0,
+    "suites": {
+      "checkpoint_durability": 19,
+      "evaluation": 40,
+      "revision3_contracts": 13,
+      "sealed_contracts": 8
+    },
+    "total": 80
+  },
+  "unverified": [
+    "Revision-3 teacher inference, student training and ONNX export",
+    "Independent human-label model quality and quantization acceptance",
+    "Actual x86 CPU inference, latency and memory",
+    "Hosted Colab dependency installation and runtime execution for revision 3",
+    "Mounted Drive/FUSE interruption durability and actual optimizer-state recovery",
+    "Production serving and user-visible product behavior"
+  ],
+  "verified_at": "2026-10-20T10:46:50.311761+00:00"
+}

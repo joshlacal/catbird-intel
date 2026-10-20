@@ -13,11 +13,14 @@ import argparse
 import collections
 import datetime
 import hashlib
+import importlib.metadata
 import json
 import math
 import pathlib
+import platform
 import re
 import subprocess
+import sys
 from typing import Any
 
 import numpy as np
@@ -254,19 +257,256 @@ def eval_subcultures_and_traps(
     }
 
 
+def pair_count(n: int) -> int:
+    return n * (n - 1) // 2
+
+
+def pack_pair_hits(pack: list[str], by_did: dict[str, list[tuple[int, int, int, float]]]) -> dict[str, int]:
+    """Count each represented pair once per view, including overlapping views."""
+    primary = collections.Counter(by_did[d][0][0] for d in pack)
+    hits = {"top1": sum(pair_count(n) for n in primary.values()), "top3": 0, "scene": 0}
+    community_bits: dict[int, int] = collections.defaultdict(int)
+    scene_bits: dict[int, int] = collections.defaultdict(int)
+    for i, did in enumerate(pack):
+        for community, scene, _domain, _weight in by_did[did]:
+            community_bits[community] |= 1 << i
+            scene_bits[scene] |= 1 << i
+    for i, did in enumerate(pack):
+        communities = scenes = 0
+        for community, scene, _domain, _weight in by_did[did]:
+            communities |= community_bits[community]
+            scenes |= scene_bits[scene]
+        hits["top3"] += (communities >> (i + 1)).bit_count()
+        hits["scene"] += (scenes >> (i + 1)).bit_count()
+    return hits
+
+
+def primary_partition_null(
+    by_did: dict[str, list[tuple[int, int, int, float]]], excluded: set[str] | None = None,
+) -> dict[str, Any]:
+    """Uniformly permute the actual primary labels; preserve all cluster sizes."""
+    excluded = excluded or set()
+    counts = collections.Counter(entries[0][0] for did, entries in by_did.items() if entries and did not in excluded)
+    n = sum(counts.values())
+    same_pairs = sum(pair_count(size) for size in counts.values())
+    return {
+        "status": "computed" if n >= 2 else "unavailable",
+        "model": "uniform permutation of rank-first community labels over the represented DID universe",
+        "universe": "all nonempty KnownFor accounts, excluding removed hubs in the dehubbed view",
+        "accounts": n, "communities": len(counts),
+        "within_community_pairs": same_pairs, "all_account_pairs": pair_count(n),
+        "expected_same_primary_probability": same_pairs / pair_count(n) if n >= 2 else None,
+        "cluster_size_histogram": dict(sorted(collections.Counter(counts.values()).items())),
+        "limitations": [
+            "primary partition only; not a valid null for overlapping top-3 memberships or scenes",
+            "does not preserve account degree, pack popularity, language, or pack adoption",
+            "diagnostic expectation, not a significance test or independent quality gate",
+        ],
+    }
+
+
+class PackRecallAccumulator:
+    """Streaming summaries keep large pack tables out of evaluator memory."""
+
+    def __init__(self) -> None:
+        self.packs = self.raw_members = self.represented_members = 0
+        self.raw_pairs = self.represented_pairs = 0
+        self.raw_evaluable = self.represented_evaluable = 0
+        self.raw_weighted = self.represented_weighted = self.coverage_macro = 0.0
+        self.totals = {view: {"hits": 0, "macro_conditional": 0.0, "macro_end_to_end": 0.0, "weighted_hits": 0.0}
+                       for view in ("top1", "top3", "scene")}
+
+    def add(self, raw_n: int, represented_n: int, hits: dict[str, int]) -> None:
+        raw_pairs, represented_pairs = pair_count(raw_n), pair_count(represented_n)
+        weight = 1 / (raw_n - 1) if raw_n >= 2 else 0.0
+        self.packs += 1
+        self.raw_members += raw_n
+        self.represented_members += represented_n
+        self.raw_pairs += raw_pairs
+        self.represented_pairs += represented_pairs
+        self.raw_evaluable += raw_pairs > 0
+        self.represented_evaluable += represented_pairs > 0
+        self.raw_weighted += weight * raw_pairs
+        self.represented_weighted += weight * represented_pairs
+        self.coverage_macro += represented_pairs / raw_pairs if raw_pairs else 0.0
+        for view, count in hits.items():
+            total = self.totals[view]
+            total["hits"] += count
+            total["weighted_hits"] += weight * count
+            total["macro_conditional"] += count / represented_pairs if represented_pairs else 0.0
+            total["macro_end_to_end"] += count / raw_pairs if raw_pairs else 0.0
+
+    def report(self, null: dict[str, Any]) -> dict[str, Any]:
+        def ratio(numerator: float, denominator: float) -> float | None:
+            return numerator / denominator if denominator else None
+
+        metrics = {}
+        for view, totals in self.totals.items():
+            metrics[view] = {
+                "pair_hits": totals["hits"],
+                "micro_conditional_recall": ratio(totals["hits"], self.represented_pairs),
+                "micro_end_to_end_recall": ratio(totals["hits"], self.raw_pairs),
+                "per_pack_macro_conditional_recall": ratio(totals["macro_conditional"], self.represented_evaluable),
+                "per_pack_macro_end_to_end_recall": ratio(totals["macro_end_to_end"], self.raw_evaluable),
+                "inverse_size_pair_weighted_conditional_recall": ratio(totals["weighted_hits"], self.represented_weighted),
+                "inverse_size_pair_weighted_end_to_end_recall": ratio(totals["weighted_hits"], self.raw_weighted),
+            }
+        probability = null["expected_same_primary_probability"]
+        expected = {
+            "micro_conditional_recall": 1.0 if self.represented_pairs else None,
+            "micro_end_to_end_recall": ratio(self.represented_pairs, self.raw_pairs),
+            "per_pack_macro_conditional_recall": 1.0 if self.represented_evaluable else None,
+            "per_pack_macro_end_to_end_recall": ratio(self.coverage_macro, self.raw_evaluable),
+            "inverse_size_pair_weighted_conditional_recall": 1.0 if self.represented_weighted else None,
+            "inverse_size_pair_weighted_end_to_end_recall": ratio(self.represented_weighted, self.raw_weighted),
+        }
+        null_comparison = {}
+        for name, coverage in expected.items():
+            baseline = probability * coverage if probability is not None and coverage is not None else None
+            observed = metrics["top1"][name]
+            null_comparison[name] = {
+                "expected": baseline,
+                "observed_minus_expected": observed - baseline if observed is not None and baseline is not None else None,
+                "observed_over_expected": observed / baseline if observed is not None and baseline else None,
+            }
+        return {
+            "packs_in_base_population": self.packs,
+            "packs_with_raw_pairs": self.raw_evaluable, "packs_with_represented_pairs": self.represented_evaluable,
+            "raw_member_occurrences": self.raw_members, "represented_member_occurrences": self.represented_members,
+            "member_coverage": ratio(self.represented_members, self.raw_members),
+            "raw_pair_occurrences": self.raw_pairs, "represented_pair_occurrences": self.represented_pairs,
+            "pair_coverage": ratio(self.represented_pairs, self.raw_pairs),
+            "inverse_size_weighted_raw_pair_mass": self.raw_weighted,
+            "inverse_size_weighted_represented_pair_mass": self.represented_weighted,
+            "views": metrics, "primary_partition_same_size_null": null,
+            "primary_only_null_comparison": null_comparison,
+            "top3_minus_primary_micro_conditional_recall": (
+                metrics["top3"]["micro_conditional_recall"] - metrics["top1"]["micro_conditional_recall"]
+                if self.represented_pairs else None),
+        }
+
+
+def bulk_follow_diagnostic(projected_columns: set[str]) -> dict[str, Any]:
+    required = [
+        "source_kind", "source_instance", "segment_generation", "commit_cid", "repo_rev",
+        "record_operation", "operation_index", "commit_operation_count", "commit_complete",
+        "observed_at", "is_backfill", "repo_sync_state",
+    ]
+    return {
+        "status": "not_performed",
+        "reason": "current projection lacks verified live commit grouping and complete source/synchronization provenance",
+        "projected_columns_observed": sorted(projected_columns),
+        "required_revised_input_contract": required,
+        "missing_exact_contract_columns": [name for name in required if name not in projected_columns],
+        "classification_contract": [
+            "Group creates by repository DID and a verified complete live commit CID/revision; exclude snapshots and backfills.",
+            "Compare created subjects with the pack membership valid at the commit time; report overlap count and fraction.",
+            "Call this a pack-matching follow burst, not confirmed Follow All intent without client-action evidence.",
+            "Report recall separately by burst/adoption stratum with member and pair coverage; freeze thresholds before scoring.",
+            "Removing these edges requires a separate organic-graph ablation generation; never alter the current graph silently.",
+        ],
+        "rev_only_proxy_used": False,
+        "pack_follow_intent_inferred": False,
+    }
+
+
+def unperformed_edge_reconstruction() -> dict[str, Any]:
+    return {
+        "status": "not_performed",
+        "reason": "no pinned evaluation edge reference and compatible node universe were supplied",
+        "reference": "https://venusatuluri.github.io/KDD_SimClusters_paper.pdf",
+        "definition": {
+            "predicted_edge": "an unordered account pair sharing at least one community",
+            "precision": "observed input edges among predicted edges / all predicted edges",
+            "recall": "observed input edges among predicted edges / all input edges",
+        },
+        "required_inputs": [
+            "hashed undirected edge reference, deduplicated without self edges, plus exact node universe",
+            "declared input-similarity reconstruction or genuinely held-out follow-edge prediction task",
+            "compatible community memberships and explicit overlapping-pair deduplication",
+        ],
+        "limitations": [
+            "pack co-membership recall is not precision and pack nonmembership is not a verified negative",
+            "reconstructing fitted input edges is descriptive fit, not held-out generalization",
+            "the current directed follow graph cannot be substituted for the paper's undirected reference without defining a new task",
+        ],
+    }
+
+
+def eval_follow_edge_capture(graph_dir: pathlib.Path) -> dict[str, Any]:
+    """Count the frozen fold output; do not equate producer selection with community recall."""
+    required = ["stats.tsv", "producers.tsv", "edges.bin", "input_provenance.json"]
+    missing = [name for name in required if not (graph_dir / name).is_file()]
+    result: dict[str, Any] = {
+        "status": "unavailable", "missing_inputs": missing,
+        "metric": "joint consumer-filter and producer-selection edge retention",
+        "numerator_definition": "edges from followers with at most 20000 follows to producers with at least 200 eligible followers",
+        "denominator_definition": "deduplicated nonself follow edges retained by this fold's account-status filter, before the follower-degree cap",
+        "qualification": "counts describe this candidate fold, not authoritative current account state or complete network coverage",
+        "pure_producer_selection_capture": None,
+        "pure_producer_selection_missing_denominator": "all follow edges from eligible followers before the producer threshold",
+        "community_bipartite_edge_capture": {"status": "not_performed",
+            "reason": "consumer community memberships were not exported; producer filtering is not community edge capture"},
+    }
+    if missing:
+        return result
+    try:
+        lines = (graph_dir / "stats.tsv").read_text().strip().splitlines()
+        if len(lines) != 2 or len(lines[0].split("\t")) != len(lines[1].split("\t")):
+            raise ValueError("stats.tsv must have one header and one equally sized result row")
+        stats = dict(zip(lines[0].split("\t"), map(int, lines[1].split("\t"))))
+        if any(stats.get(key, -1) < 0 for key in ("follow_edges", "producer_edges", "producers")):
+            raise ValueError("required fold counts are missing or negative")
+        if stats["producer_edges"] > stats["follow_edges"]:
+            raise ValueError("selected edge count exceeds all follow edges")
+        producer_count = degree_sum = 0
+        with (graph_dir / "producers.tsv").open() as fh:
+            for line in fh:
+                pid, did, degree = line.rstrip("\n").split("\t")
+                if int(pid) != producer_count or not did.startswith("did:") or int(degree) < 0:
+                    raise ValueError("invalid dense producer row")
+                producer_count += 1
+                degree_sum += int(degree)
+        if producer_count != stats["producers"] or degree_sum != stats["producer_edges"]:
+            raise ValueError("producer rows/degrees disagree with fold counts")
+        if (graph_dir / "edges.bin").stat().st_size != stats["producer_edges"] * 8:
+            raise ValueError("binary edge bytes disagree with fold counts")
+        provenance = json.loads((graph_dir / "input_provenance.json").read_text())
+        if provenance["fold_stats"] != stats:
+            raise ValueError("provenance fold counts disagree with stats")
+        for name in ("stats.tsv", "producers.tsv"):
+            if provenance["artifacts"][name]["sha256"] != sha256_file(graph_dir / name):
+                raise ValueError(f"{name} differs from the frozen provenance receipt")
+        if provenance["artifacts"]["edges.bin"]["bytes"] != (graph_dir / "edges.bin").stat().st_size:
+            raise ValueError("binary edge length differs from provenance")
+        result.update({
+            "status": "computed", "follow_edges": stats["follow_edges"], "producer_edges": stats["producer_edges"],
+            "edge_retention_fraction": stats["producer_edges"] / stats["follow_edges"] if stats["follow_edges"] else None,
+            "input_provenance_sha256": sha256_file(graph_dir / "input_provenance.json"),
+            "verification": "stats and producer SHA256, dense producer rows, degree sum, binary byte count; binary edge SHA256 not re-read",
+            "comparison_to_paper_70_percent": "not comparable: the paper reports community capture of bipartite edges",
+        })
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        result.update({"status": "invalid_inputs", "reason": str(exc)})
+    return result
+
+
 def eval_pack_comembership(
     event_files: list[pathlib.Path],
     by_did: dict[str, list[tuple[int, int, int, float]]],
     n_communities: int,
+    *,
+    per_pack_path: pathlib.Path | None = None,
+    hub_min_pack_fraction: float = 0.10,
+    hub_min_pack_count: int = 2,
 ) -> dict[str, Any]:
-    """Measure real archive starter-pack pairs without injecting seed cohorts.
-
-    The former "503 baseline" was a Python hash/rank proxy, not A Blue Start.
-    No comparison is reported until the actual published partition is provided.
-    Latest revisions are folded for listitems, parent lists and starter packs.
-    """
+    """Preserve legacy recall and add coverage-aware, weighted pack diagnostics."""
+    if not 0 < hub_min_pack_fraction <= 1 or hub_min_pack_count < 2:
+        raise ValueError("hub fraction must be in (0,1] and hub count must be at least 2")
     latest: dict[tuple[str, str, str], tuple[str, bool, str, str]] = {}
+    projected_columns: set[str] = set()
     for index, pf in enumerate(event_files):
+        projected_columns.update(pq.read_schema(pf).names)
         tbl = pq.read_table(
             pf, columns=["collection", "did", "rkey", "rev", "operation", "list_uri", "subject"],
             filters=[("collection", "in", ["app.bsky.graph.listitem", "app.bsky.graph.list", "app.bsky.graph.starterpack"])],
@@ -281,57 +521,134 @@ def eval_pack_comembership(
     lists: dict[str, set[str]] = collections.defaultdict(set)
     deleted_lists = {f"at://{did}/{collection}/{rkey}" for (collection, did, rkey), value in latest.items()
                      if collection == "app.bsky.graph.list" and value[1]}
-    pack_lists = [value[2] for (collection, _did, _rkey), value in latest.items()
+    pack_lists = [(f"at://{did}/{collection}/{rkey}", value[2]) for (collection, did, rkey), value in latest.items()
                   if collection == "app.bsky.graph.starterpack" and not value[1] and value[2] not in deleted_lists]
     for (collection, _did, _rkey), (_rev, deleted, luri, subj) in latest.items():
         if collection == "app.bsky.graph.listitem" and not deleted and luri and luri not in deleted_lists and subj.startswith("did:"):
             lists[luri].add(subj)
     del latest
-    eval_packs: list[list[str]] = []
-    too_small = too_large = 0
-    for luri in pack_lists:
-        members = lists.get(luri, set())
-        present = sorted(members & by_did.keys())
-        if 3 <= len(present) <= 200:
-            eval_packs.append(present)
-        elif len(present) < 3:
-            too_small += 1
-        else:
-            too_large += 1
-    total_pairs = top1_hits = top3_hits = scene_hits = 0
-    for pack in eval_packs:
-        # Bitsets count every pair once, even if it shares multiple memberships.
-        # This is exact, unlike summing per-community pair counts for top-3.
-        top1_counts = collections.Counter(by_did[d][0][0] for d in pack)
-        total_pairs += len(pack) * (len(pack) - 1) // 2
-        top1_hits += sum(count * (count - 1) // 2 for count in top1_counts.values())
-        community_bits: dict[int, int] = collections.defaultdict(int)
-        scene_bits: dict[int, int] = collections.defaultdict(int)
-        for i, did in enumerate(pack):
-            for community, scene, _domain, _weight in by_did[did]:
-                community_bits[community] |= 1 << i
-                scene_bits[scene] |= 1 << i
-        for i, did in enumerate(pack):
-            communities = scenes = 0
-            for community, scene, _domain, _weight in by_did[did]:
-                communities |= community_bits[community]
-                scenes |= scene_bits[scene]
-            top3_hits += (communities >> (i + 1)).bit_count()
-            scene_hits += (scenes >> (i + 1)).bit_count()
+    frequency: collections.Counter[str] = collections.Counter()
+    for _pack_uri, luri in pack_lists:
+        frequency.update(lists.get(luri, set()))
+    hubs = {did for did, count in frequency.items()
+            if count >= hub_min_pack_count and count / len(pack_lists) >= hub_min_pack_fraction}
+    del frequency
+    accumulators = {"base": PackRecallAccumulator(), "dehubbed": PackRecallAccumulator()}
+    nulls = {"base": primary_partition_null(by_did), "dehubbed": primary_partition_null(by_did, hubs)}
+    legacy = PackRecallAccumulator()
+    too_small = too_large = raw_too_small = raw_too_large = missing_lists = 0
+    removed_occurrences = removed_represented = 0
+    writer = None
+    output_rows: list[dict[str, Any]] = []
+    output_schema = pa.schema([
+        ("pack_uri", pa.string()), ("list_uri", pa.string()), ("view", pa.string()),
+        ("raw_members", pa.int64()), ("represented_members", pa.int64()),
+        ("raw_pairs", pa.int64()), ("represented_pairs", pa.int64()),
+        ("top1_pair_hits", pa.int64()), ("top3_pair_hits", pa.int64()), ("scene_pair_hits", pa.int64()),
+    ])
+    if per_pack_path is not None:
+        writer = pq.ParquetWriter(per_pack_path, output_schema, compression="zstd")
+    try:
+        for pack_uri, luri in sorted(pack_lists):
+            members = lists.get(luri, set())
+            missing_lists += luri not in lists
+            present = sorted(did for did in members if by_did.get(did))
+            raw_eligible = 3 <= len(members) <= 200
+            legacy_eligible = 3 <= len(present) <= 200
+            raw_too_small += len(members) < 3
+            raw_too_large += len(members) > 200
+            too_small += len(present) < 3
+            too_large += len(present) > 200
+            if not raw_eligible and not legacy_eligible:
+                continue
+            hits = pack_pair_hits(present, by_did)
+            if legacy_eligible:
+                legacy.add(len(present), len(present), hits)
+            if not raw_eligible:
+                continue
+            trimmed = members - hubs
+            trimmed_present = sorted(did for did in trimmed if by_did.get(did))
+            removed_occurrences += len(members) - len(trimmed)
+            removed_represented += len(present) - len(trimmed_present)
+            for view, raw, represented, view_hits in [
+                ("base", members, present, hits),
+                ("dehubbed", trimmed, trimmed_present, pack_pair_hits(trimmed_present, by_did)),
+            ]:
+                accumulators[view].add(len(raw), len(represented), view_hits)
+                if writer is not None:
+                    output_rows.append({
+                        "pack_uri": pack_uri, "list_uri": luri, "view": view,
+                        "raw_members": len(raw), "represented_members": len(represented),
+                        "raw_pairs": pair_count(len(raw)), "represented_pairs": pair_count(len(represented)),
+                        **{f"{name}_pair_hits": count for name, count in view_hits.items()},
+                    })
+                    if len(output_rows) >= 4096:
+                        writer.write_table(pa.Table.from_pylist(output_rows, schema=output_schema))
+                        output_rows.clear()
+        if writer is not None and output_rows:
+            writer.write_table(pa.Table.from_pylist(output_rows, schema=output_schema))
+    finally:
+        if writer is not None:
+            writer.close()
+    reports = {view: accumulators[view].report(nulls[view]) for view in accumulators}
+    hub_counts: collections.Counter[str] = collections.Counter()
+    for _pack_uri, luri in pack_lists:
+        hub_counts.update(lists.get(luri, set()) & hubs)
+    hub_rows = [{"did": did, "pack_count": count, "pack_fraction": count / len(pack_lists)}
+                for did, count in sorted(hub_counts.items(), key=lambda item: (-item[1], item[0]))]
+    per_pack_artifact = None
+    if per_pack_path is not None:
+        per_pack_artifact = {"path": str(per_pack_path), "sha256": sha256_file(per_pack_path),
+                             "rows": accumulators["base"].packs * 2, "schema": str(output_schema)}
     return {
         "source": "archive starterpack records joined to current listitems; seed cohorts excluded",
-        "pair_weighting": "each starter pack contributes all pairs; a pair in multiple packs counts multiple times",
-        "starterpacks_evaluated": len(eval_packs), "starterpacks_too_small": too_small, "starterpacks_too_large": too_large,
+        "pair_weighting": "legacy keys: all represented pairs per pack; repeated pairs across packs count repeatedly",
+        "legacy_population": "3 to 200 represented members, irrespective of raw pack size",
+        "starterpacks_evaluated": legacy.packs, "starterpacks_too_small": too_small, "starterpacks_too_large": too_large,
         "live_starterpack_records": len(pack_lists), "live_curated_lists": len(lists),
-        "co_member_pairs": total_pairs, "communities_count": n_communities,
-        "known_for_top1_pair_hits": top1_hits, "known_for_top3_pair_hits": top3_hits,
-        "known_for_scene_pair_hits": scene_hits,
-        "known_for_top1_pair_recall": top1_hits / total_pairs if total_pairs else None,
-        "known_for_top3_pair_recall": top3_hits / total_pairs if total_pairs else None,
-        "known_for_scene_pair_recall": scene_hits / total_pairs if total_pairs else None,
+        "co_member_pairs": legacy.represented_pairs, "communities_count": n_communities,
+        **{f"known_for_{name}_pair_hits": values["hits"] for name, values in legacy.totals.items()},
+        **{f"known_for_{name}_pair_recall": values["hits"] / legacy.represented_pairs if legacy.represented_pairs else None
+           for name, values in legacy.totals.items()},
+        "diagnostics_version": "pack-diagnostics-v2",
+        "diagnostic_population": "3 to 200 raw observed members before KnownFor filtering; fixed across base and dehubbed views",
+        "coverage_qualification": "coverage of observed pack members only; archive completeness and current-state correctness remain unqualified",
+        "diagnostic_raw_too_small": raw_too_small, "diagnostic_raw_too_large": raw_too_large,
+        "packs_without_observed_live_items": missing_lists,
+        "metric_semantics": {
+            "conditional": "denominator contains pairs whose two accounts have KnownFor memberships",
+            "end_to_end": "denominator contains all raw observed pack pairs, so uncovered accounts cannot create successes",
+            "per_pack_macro": "equal weight per pack with a nonzero denominator; counts are reported for each view",
+            "inverse_size_pair_weighting": "each pair has weight 1/(raw pack size - 1), computed after hub removal in that view",
+            "repeated_pairs": "each occurrence in a distinct starter-pack record remains a separate observation",
+            "scene": "coarse scene overlap, not an independent primary community quality score",
+        },
+        "views": reports,
+        "dehub_policy": {
+            "scope": "metric-only removal; graph inputs and memberships are unchanged",
+            "definition": "accounts occurring in at least the minimum number and fraction of all live starter-pack records",
+            "minimum_pack_fraction": hub_min_pack_fraction, "minimum_pack_count": hub_min_pack_count,
+            "hub_accounts": len(hubs), "hubs": hub_rows,
+            "removed_member_occurrences_in_base_population": removed_occurrences,
+            "removed_represented_member_occurrences_in_base_population": removed_represented,
+            "threshold_status": "provisional diagnostic; frozen before quality results, not tuned to seed separation",
+        },
+        "per_pack_artifact": per_pack_artifact,
+        "bulk_follow_adoption": bulk_follow_diagnostic(projected_columns),
+        "edge_reconstruction": unperformed_edge_reconstruction(),
+        "a_blue_start_reference": {
+            "publication": "https://www.nature.com/articles/s41597-026-06920-1",
+            "full_text": "https://pmc.ncbi.nlm.nih.gov/articles/PMC13066036/",
+            "authors_code": "https://github.com/nwlandry/a-blue-start/blob/main/get_starterpack_clustering.py",
+            "reported_communities": 503,
+            "construction": "Leiden on the unweighted pairwise projection of the largest starter-pack component",
+            "replicated_here": False,
+            "independent_pack_recall_ground_truth": False,
+            "identity_limitation": "published deidentified node IDs cannot be joined to local DIDs; no reidentification attempted",
+        },
         "a_blue_start_503_partition_available": False,
         "beats_a_blue_start_503_partition": None,
-        "baseline_status": "not measured: previous hash/rank stand-in removed; real partition unavailable",
+        "baseline_status": "not measured: published pack-derived partition is not an independent pack-recall ground truth; compatible identity mapping unavailable",
     }
 
 
@@ -550,12 +867,22 @@ def ship_to_netcup(graph_dir: pathlib.Path, version: str) -> dict[str, Any]:
 
 
 def main() -> None:
+    observed_source = pathlib.Path(__file__).resolve()
+    source_observation = {
+        "observed_at_entry": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "path": str(observed_source), "sha256": sha256_file(observed_source),
+        "python": platform.python_version(), "argv": sys.argv,
+        "packages": {package: importlib.metadata.version(package) for package in ("numpy", "pyarrow")},
+        "qualification": "source file observed at evaluator entry and checked at exit; not a retroactive attestation of the waiting driver",
+    }
     ap = argparse.ArgumentParser()
     ap.add_argument("--events-dir", action="append", required=True, help="Archive-only directory; repeat for each archive")
     ap.add_argument("--graph-dir", default="/Users/joshlacalamito/catbird-lake-local/graph-build/out")
     ap.add_argument("--manifest", default="/Users/joshlacalamito/catbird-lake-local/graph-build/seed_and_traps_manifest.json")
     ap.add_argument("--ship-netcup", action="store_true")
     ap.add_argument("--version", default="v20261019")
+    ap.add_argument("--hub-min-pack-fraction", type=float, default=0.10)
+    ap.add_argument("--hub-min-pack-count", type=int, default=2)
     args = ap.parse_args()
 
     event_files = sorted({p.resolve() for directory in args.events_dir
@@ -590,12 +917,20 @@ def main() -> None:
     for trap, poles in manifest["collision_traps"].items():
         for name, dids in poles.items():
             sep["collision_traps"][trap]["poles"][name]["matched_as_producers"] = len(set(dids) & producer_dids)
-    pack_eval = eval_pack_comembership(event_files, by_did, comm_tbl.num_rows)
+    pack_eval = eval_pack_comembership(
+        event_files, by_did, comm_tbl.num_rows,
+        per_pack_path=graph_dir / "pack_recall_diagnostics.parquet",
+        hub_min_pack_fraction=args.hub_min_pack_fraction,
+        hub_min_pack_count=args.hub_min_pack_count,
+    )
+    follow_capture = eval_follow_edge_capture(graph_dir)
     enrich_and_label_communities(event_files, graph_dir, by_did, comm_tbl)
     for item in inventory:
         current = pathlib.Path(item["path"]).stat()
         if current.st_size != item["size"] or current.st_mtime_ns != item["mtime_ns"]:
             raise SystemExit(f"Archive input changed during evaluation: {item['path']}")
+    if sha256_file(observed_source) != source_observation["sha256"]:
+        raise SystemExit("Evaluator source changed during execution; result is not sealed")
 
     ship_res = None
     if args.ship_netcup:
@@ -605,6 +940,8 @@ def main() -> None:
         "graph_version": "phase1-v1",
         "known_for_sha256": sha256_file(graph_dir / "known_for.parquet"),
         "evaluation_input_manifest_sha256": sha256_file(graph_dir / "evaluation_input_manifest.json"),
+        "evaluator_source_observation": source_observation,
+        "seed_manifest_sha256": sha256_file(pathlib.Path(args.manifest)),
         "seed_manifest_use": "evaluation only; never clustering or labeling",
         "cluster_stats": json.loads((graph_dir / "cluster_stats.json").read_text()),
         "separation_summary": {
@@ -612,6 +949,7 @@ def main() -> None:
         },
         "collision_traps": sep["collision_traps"],
         "pack_comembership": pack_eval,
+        "follow_edge_capture": follow_capture,
         "netcup_ship": ship_res,
     }
     (graph_dir / "phase1_eval_report.json").write_text(json.dumps({**report, "subcultures": sep["subcultures"]}, indent=2))

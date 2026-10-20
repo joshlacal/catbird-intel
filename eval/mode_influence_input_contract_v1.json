@@ -1,0 +1,109 @@
+{
+  "schema_version": "mode-influence-input-v1",
+  "manifest_fields": {
+    "generation_id": "nonempty upstream snapshot identity",
+    "cutoff_at": "timezone-aware ISO8601; current-state snapshot and exclusive window end",
+    "window_start": "timezone-aware ISO8601; inclusive event window start, at most 90 days before cutoff",
+    "interests_cutoff_at": "at or before window_start; later interests would leak window outcomes",
+    "event_clock": "validated_observed_at",
+    "graph_generation": "nonempty graph identity shared by interests, communities, and producers",
+    "score_generation": "nonempty sealed scoring-run identity",
+    "score_dimensions": {
+      "dimension_name": {
+        "model_sha256": "64 lowercase hex characters",
+        "rubric_sha256": "64 lowercase hex characters",
+        "meaning": "explicit target definition; scores are numbers in [0,1] or null"
+      }
+    },
+    "artifacts": "each TABLES key plus validation_receipt: {path: relative path, sha256: hex, rows: integer for JSONL tables}"
+  },
+  "tables": {
+    "accounts": [
+      "did"
+    ],
+    "eligible_posts": [
+      "uri"
+    ],
+    "communities": [
+      "community (nonnegative integer)",
+      "sensitivity = non_sensitive",
+      "permitted_for_audience_aggregation = true"
+    ],
+    "producers": [
+      "did",
+      "primary_community (integer or null)",
+      "primary_score ([0,1] or null)",
+      "followers_est (nonnegative integer or null)"
+    ],
+    "posts": [
+      "uri",
+      "author_did",
+      "event_at",
+      "content_sha256",
+      "is_reply (boolean)",
+      "is_quote (boolean)",
+      "is_deleted = false"
+    ],
+    "post_scores": [
+      "uri",
+      "content_sha256",
+      "score_generation",
+      "scores {every dimension: [0,1] or null}",
+      "unscored_reasons {each null dimension: nonempty string}"
+    ],
+    "engagements": [
+      "uri",
+      "actor_did",
+      "subject_uri",
+      "kind = like|repost",
+      "event_at",
+      "is_deleted = false"
+    ],
+    "interests": [
+      "did",
+      "community",
+      "score ([0,1])",
+      "as_of (= interests_cutoff_at)",
+      "graph_generation"
+    ],
+    "deletions": [
+      "kind = account|post|engagement",
+      "key = corresponding DID or record URI"
+    ]
+  },
+  "validation_receipt": {
+    "schema_version": "current-state-validation-v1",
+    "status": "passed",
+    "generation_id": "matches manifest",
+    "cutoff_at": "matches manifest",
+    "input_sha256": "{every TABLES key: exact corresponding artifact SHA256}",
+    "checks": {
+      "latest_versions_folded": true,
+      "record_deletions_applied": true,
+      "account_status_applied": true,
+      "visibility_policy_applied": true
+    },
+    "account_state_generation": "nonempty pinned state identity",
+    "visibility_policy_generation": "nonempty pinned policy identity"
+  },
+  "rules": [
+    "All JSONL keys must be unique under their documented identity; this command is not a state-folding engine.",
+    "Eligible post URIs must belong to eligible accounts and cannot conflict with the deletion ledger.",
+    "Only explicitly permitted non-sensitive communities enter this bounded candidate.",
+    "Interest vectors may have missing/truncated mass but must sum to at most one; never renormalize each vector.",
+    "Posts can precede window_start for repost-subject resolution; no post or engagement event may reach cutoff_at.",
+    "Reply takes precedence over quote, so one authored post contributes to exactly one type.",
+    "A repost uses its eligible subject's score; missing/ineligible subjects stay unknown, while deleted entities are suppressed.",
+    "Source post content hash must match every joined score row; no post text is required or emitted.",
+    "Each producer's distinct eligible engagers contribute once to primary RI; weighted repeated interactions are a separately named comparison.",
+    "Producer-normalized observed interest shares are accompanied by complete-audience support and missing-mass bounds.",
+    "Popularity retains the legacy follower/engagement formula under an explicit name; absent inputs stay null.",
+    "Input validation receipt is an upstream assertion; all outputs remain offline candidates, never qualified follow gates."
+  ],
+  "bounds": {
+    "default_max_rows_per_table": 100000,
+    "default_max_bytes_per_artifact": 268435456,
+    "maximum_producer_type_dimension_cells": 100000,
+    "bootstrap_replicates": "0 or 100..2000; default 200, exploratory account-day resampling"
+  }
+}

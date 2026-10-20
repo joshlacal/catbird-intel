@@ -16,6 +16,8 @@ from transformers import AutoConfig, AutoModel, AutoTokenizer
 from .common import (HEALTH, MODELS, environment, sha256, validate_input,
                      validate_labeled, validate_pairs, write_json)
 from .checkpoints import recover_checkpoint, save_checkpoint
+from .contracts import STUDENT_CONTRACT, model_identity
+from .language import LANGUAGE_CONTRACT, language_histogram, language_scope
 
 
 class Student(nn.Module):
@@ -26,14 +28,14 @@ class Student(nn.Module):
         config.reference_compile = False
         self.encoder = AutoModel.from_pretrained(model_id, revision=revision, config=config,
                                                  attn_implementation="eager")
-        self.health_logits = nn.Linear(config.hidden_size, 4)
+        self.health_component_logits = nn.Linear(config.hidden_size, len(HEALTH))
         self.matryoshka_emb = nn.Linear(config.hidden_size, 256)
 
     def forward(self, input_ids, attention_mask):
         hidden = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
         mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
         pooled = (hidden * mask).sum(1) / mask.sum(1).clamp_min(1)
-        return self.health_logits(pooled), F.normalize(self.matryoshka_emb(pooled), dim=-1)
+        return self.health_component_logits(pooled), F.normalize(self.matryoshka_emb(pooled), dim=-1)
 
 
 def tokenize(tokenizer, texts, device, max_length):
@@ -69,20 +71,39 @@ def train(args, rows):
     np.random.seed(1729)
     seal = validate_input(args, rows)
     manifest = validate_labeled(args.input, rows, seal, args.split, args.mode)
+    language_audit = language_histogram(rows)
+    input_rows = len(rows)
+    # Null/unscored values are absence of model evidence, never zero-valued targets.
+    rows = [row for row in rows if language_scope(row)["in_scope"]]
+    if not rows:
+        raise ValueError("No declared-English scored rows are available for training")
     for row in rows:
         for label in HEALTH:
             value = row[f"teacher_{label}"]
             if not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError("Invalid real teacher target")
+    if args.objective == "health" and args.pairs:
+        raise ValueError("Health-only objective must not silently consume a social pair bank")
     pairs, pair_manifest = validate_pairs(args.pairs, args.holdout, args.export_manifest) if args.pairs else ([], None)
-    if args.mode != "smoke" and not pairs:
+    pair_input_rows = len(pairs)
+    pairs = [row for row in pairs if all(language_scope(row, prefix)["in_scope"]
+                                        for prefix in ("anchor", "positive", "negative"))]
+    pair_scope = {"input_rows": pair_input_rows, "eligible_declared_english_rows": len(pairs),
+                  "excluded_missing_mixed_or_unsupported_language_rows": pair_input_rows - len(pairs)}
+    if args.mode != "smoke" and args.objective == "joint" and not pairs:
         raise ValueError("Full dual-head training requires verified v1 graph pairs")
     if args.mode == "smoke" and pairs:
         permitted = {r["uri"] for r in rows}
         pairs = [r for r in pairs if all(r[f"{p}_uri"] in permitted for p in ("anchor", "positive", "negative"))]
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
-    run_config = {"student": list(MODELS["student"]), "bank_sha256": sha256(args.input),
+    software = environment()
+    run_config = {"student": list(MODELS["student"]), "student_provenance": model_identity("student"),
+                  "student_contract": STUDENT_CONTRACT, "language_contract": LANGUAGE_CONTRACT,
+                  "objective": args.objective, "input_rows": input_rows, "language_audit": language_audit,
+                  "pair_language_scope": pair_scope,
+                  "software_identity": {key: software[key] for key in ("packages", "implementation_source_sha256")},
+                  "bank_sha256": sha256(args.input),
                   "holdout_sha256": sha256(args.holdout), "pairs": pair_manifest,
                   "mode": args.mode, "rows": len(rows), "max_length": args.max_length,
                   "batch_size": args.batch_size, "learning_rate": args.learning_rate,
@@ -175,7 +196,9 @@ def train(args, rows):
                              "mps_rng": torch.mps.get_rng_state() if args.device == "mps" else None},
                             step=step + 1, config=run_config, serializer=torch.save)
     final, _, _ = probe_loss()
-    receipt = {"mode": args.mode, "rows": len(rows), "health_logits_shape": logit_shape,
+    receipt = {"mode": args.mode, "input_rows": input_rows, "rows": len(rows),
+               "language_audit": language_audit, "pair_language_scope": pair_scope,
+               "student_contract": STUDENT_CONTRACT, "health_component_logits_shape": logit_shape,
                "matryoshka_emb_shape": embedding_shape, "initial_training_probe_bce": initial,
                "final_training_probe_bce": final, "training_probe_loss_decreased": final < initial,
                "social_training_pairs_available": len(pairs), "social_head_trained": bool(pairs),
@@ -189,22 +212,26 @@ def train(args, rows):
     else:
         write_json(receipt_path, receipt)
     tokenizer.save_pretrained(destination / "tokenizer")
-    export_onnx(model.cpu().eval(), tokenizer, probe, destination, args.max_length, args.threads)
+    export_onnx(model.cpu().eval(), tokenizer, probe, destination, args.max_length, args.threads,
+                checkpoint_path=destination / f"checkpoint-{args.steps:07d}.pt")
     if args.mode == "smoke" and losses and not final < initial:
         raise RuntimeError("Measured smoke training probe loss did not decrease; see receipt")
 
 
-def export_onnx(model, tokenizer, rows, destination, max_length, threads):
+def export_onnx(model, tokenizer, rows, destination, max_length, threads, *, checkpoint_path):
     import onnx
     import onnxruntime as ort
     from onnxruntime.quantization import QuantType, quantize_dynamic
 
     destination = Path(destination)
+    export_identity = {"checkpoint_sha256": sha256(checkpoint_path), "student_contract": STUDENT_CONTRACT,
+                       "max_length": max_length, "language_contract": LANGUAGE_CONTRACT,
+                       "tokenizer": list(MODELS["student"]), "software_identity": environment()}
     example = tokenize(tokenizer, [r["text"] for r in rows[:2]], "cpu", max_length)
     previous_receipt = destination / "onnx_receipt.json"
     if previous_receipt.exists():
         prior = json.loads(previous_receipt.read_text())
-        if all(item["numerical_parity_passed"] and sha256(destination / item["path"]) == item["sha256"] for item in prior["artifacts"]):
+        if prior.get("export_identity") == export_identity and all(item["numerical_parity_passed"] and sha256(destination / item["path"]) == item["sha256"] for item in prior["artifacts"]):
             return
     stale = [path for path in destination.glob("*.onnx")]
     if previous_receipt.exists():
@@ -214,12 +241,12 @@ def export_onnx(model, tokenizer, rows, destination, max_length, threads):
         archived.mkdir()
         for path in stale:
             path.rename(archived / path.name)
-    fp32 = destination / "ettin_health_social_fp32.onnx"
-    int8 = destination / "ettin_health_social_int8.onnx"
+    fp32 = destination / "ettin_components_v3_social_fp32.onnx"
+    int8 = destination / "ettin_components_v3_social_int8.onnx"
     torch.onnx.export(model, (example["input_ids"], example["attention_mask"]), fp32,
-                      input_names=["input_ids", "attention_mask"], output_names=["health_logits", "matryoshka_emb"],
+                      input_names=["input_ids", "attention_mask"], output_names=["health_component_logits", "matryoshka_emb"],
                       dynamic_axes={"input_ids": {0: "batch", 1: "sequence"}, "attention_mask": {0: "batch", 1: "sequence"},
-                                    "health_logits": {0: "batch"}, "matryoshka_emb": {0: "batch"}},
+                                    "health_component_logits": {0: "batch"}, "matryoshka_emb": {0: "batch"}},
                       opset_version=17, dynamo=False)
     onnx.checker.check_model(str(fp32))
     quantize_dynamic(str(fp32), str(int8), weight_type=QuantType.QInt8,
@@ -254,11 +281,14 @@ def export_onnx(model, tokenizer, rows, destination, max_length, threads):
                      and c["embedding_min_cosine"] >= (0.98 if path == int8 else 0.9999) for c in cases)
         parity.append({"path": path.name, "bytes": path.stat().st_size, "sha256": sha256(path),
                        "cases": cases, "numerical_parity_passed": passed})
-    receipt = {"artifacts": parity, "int8_target_bytes_approx": [65_000_000, 70_000_000],
+    receipt = {"artifacts": parity, "export_identity": export_identity,
+               "qualification": "numerical diagnostic only; independent evaluation contract is separate",
+               "historical_max_error_gate_preserved": True,
+               "int8_target_bytes_approx": [65_000_000, 70_000_000],
                "target_is_expectation_not_measurement": True, "human_quality_validation": False, "execution_environment": environment(),
                "quantization": "onnxruntime.quantization.quantize_dynamic QInt8 MatMul+Gather per_channel=True",
                "unique_real_posts_checked": len({r["uri"] for r in rows}),
-               "output_contract": {"health_logits": list(HEALTH), "matryoshka_emb": 256,
+               "output_contract": {"health_component_logits": list(HEALTH), "matryoshka_emb": 256,
                                    "prefixes": "L2-normalize each 128/64 prefix after slicing"}}
     write_json(destination / "onnx_receipt.json", receipt)
     if not all(item["numerical_parity_passed"] for item in parity):

@@ -31,6 +31,8 @@ def main():
             item.add_argument("--behavior", type=Path, required=True)
             item.add_argument("--behavior-teacher", choices=("qwen", "nli"), required=True)
         if command == "train":
+            item.add_argument("--objective", choices=("health", "joint"), default="joint",
+                              help="Health-only is explicit; joint full runs require in-scope graph pairs")
             item.add_argument("--pairs", type=Path)
             item.add_argument("--resume", type=Path)
             item.add_argument("--steps", type=int, default=5000)
@@ -49,7 +51,8 @@ def main():
         rows = rows[:32]
         if args.command == "train" and args.steps > 12:
             parser.error("Local smoke is limited to at most 12 optimizer steps on the same 32 posts")
-    local_guard(args.mode, rows, args.device)
+    if args.command in ("label", "train"):
+        local_guard(args.mode, rows, args.device)
     validate_input(args, rows)
     if args.command == "review-sheet":
         create_review_sheet(args.output, rows)

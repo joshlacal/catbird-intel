@@ -1,0 +1,13 @@
+test_actual_cli_emits_candidate_hashes_and_never_overwrites (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_actual_cli_emits_candidate_hashes_and_never_overwrites) ... ok
+test_deletions_suppress_subject_events_and_conflicting_eligibility_fails (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_deletions_suppress_subject_events_and_conflicting_eligibility_fails) ... ok
+test_distinct_audience_normalization_preserves_unknown_mass_and_separate_popularity (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_distinct_audience_normalization_preserves_unknown_mass_and_separate_popularity) ... ok
+test_duplicate_future_and_unscored_contract_errors_fail (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_duplicate_future_and_unscored_contract_errors_fail) ... ok
+test_mode_types_are_exclusive_and_reposts_use_subject_scores (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_mode_types_are_exclusive_and_reposts_use_subject_scores) ... ok
+test_no_scores_or_audience_do_not_become_safe_or_zero_confidence (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_no_scores_or_audience_do_not_become_safe_or_zero_confidence) ... ok
+test_seals_reject_changed_bytes_and_receipt_mismatch (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_seals_reject_changed_bytes_and_receipt_mismatch) ... ok
+test_sensitive_scope_and_late_interests_are_rejected (test_mode_influence_candidate.ModeInfluenceCandidateTests.test_sensitive_scope_and_late_interests_are_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.064s
+
+OK

@@ -1,0 +1,122 @@
+{
+  "assessment_boundary": "Declared repository and dataset metadata plus author statements; not an exhaustive underlying-rights clearance or legal conclusion.",
+  "catbird_training_input_license": {
+    "spdx": null,
+    "status": "Public post access is not a blanket content license. Source rights, retention and permitted use remain a separate recorded decision."
+  },
+  "implementation_code_license": {
+    "spdx": null,
+    "status": "No top-level LICENSE file found in catbird-intel; no license invented by this change."
+  },
+  "models": {
+    "nli": {
+      "commercial_use_clearance": "not_asserted",
+      "model_card": "https://huggingface.co/MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c/raw/b2730f16019076bb0009481121efbe4705e0e378/README.md",
+      "model_card_sha256": "8e7e1f70d452c97a3338be7549c566dcda2bb4e5a5f683265c371301aabcfe08",
+      "model_id": "MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c",
+      "model_license": "mit",
+      "revision": "b2730f16019076bb0009481121efbe4705e0e378",
+      "training_data_licenses": {
+        "datasets": [
+          {
+            "api_metadata_sha256": "6b6804162fa23c6f2c8b481a1f1fa95007355c34085a2875fbdafa8ebd48d61d",
+            "dataset_id": "MoritzLaurer/synthetic_zeroshot_mixtral_v0.1",
+            "declared_license": "apache-2.0",
+            "metadata_revision": "73e6a19617b6ce5010bd4bc59134e2476452befa",
+            "source": "https://huggingface.co/datasets/MoritzLaurer/synthetic_zeroshot_mixtral_v0.1"
+          },
+          {
+            "api_metadata_sha256": "4248f65330dd3e029187a03d43cd61f0c97cbb5d33e0bbeb5d84156d52f8d4d2",
+            "dataset_id": "nyu-mll/multi_nli",
+            "declared_license": [
+              "cc-by-3.0",
+              "cc-by-sa-3.0",
+              "mit",
+              "other"
+            ],
+            "metadata_revision": "da70db2af9d09693783c3320c4249840212ee221",
+            "source": "https://huggingface.co/datasets/nyu-mll/multi_nli"
+          },
+          {
+            "api_metadata_sha256": "54da4dce81102e2a595cb5c0f23912c45816918ea56108040c5165bd39ce6860",
+            "dataset_id": "fever/fever",
+            "declared_license": [
+              "cc-by-sa-3.0",
+              "gpl-3.0"
+            ],
+            "metadata_revision": "2a74f2909caf2b8656343aeb8203e50bf84dcb56",
+            "source": "https://huggingface.co/datasets/fever/fever"
+          }
+        ],
+        "limitation": "Dataset metadata describes repositories, not a complete constituent-rights audit. FEVER repository lists data and code licenses together.",
+        "status": "Author explicitly identifies -c training data as commercially friendly; component metadata retained without flattening licenses."
+      }
+    },
+    "political": {
+      "commercial_use_clearance": "not_asserted",
+      "model_card": "https://huggingface.co/mlburnham/Political_DEBATE_large_v1.0/raw/1a3aff1ecb97ad93a6de598f7414b1707de7e7c3/README.md",
+      "model_card_sha256": "1c7ff5033117c657b75640e7005145e48fbb2bd0c285dbe8141468aa38d76acf",
+      "model_id": "mlburnham/Political_DEBATE_large_v1.0",
+      "model_license": "mit",
+      "revision": "1a3aff1ecb97ad93a6de598f7414b1707de7e7c3",
+      "training_data_licenses": {
+        "datasets": [
+          {
+            "api_metadata_sha256": "279108ff3b9fb56fcbcbb97e8689e0eea32c19f480c7ef8c7d49c78fe5fa6c57",
+            "dataset_id": "mlburnham/Pol_NLI",
+            "declared_license": null,
+            "metadata_revision": "062724c0a0e601ffc5fba98a5546cc2237a766fa",
+            "source": "https://huggingface.co/datasets/mlburnham/Pol_NLI"
+          }
+        ],
+        "status": "Pol_NLI has no declared license in inspected card metadata/files; base training corpus also requires review. MIT model metadata does not resolve these rights."
+      }
+    },
+    "qwen": {
+      "commercial_use_clearance": "not_asserted",
+      "model_card": "https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-AWQ/raw/5c7cb76a268fc6cfbb9c4777eb24ba6e27f9ee6c/README.md",
+      "model_card_sha256": "dfd30e65e46c96be34d1edc519e5f18d47b982d266b4ccbc6b220c0d659b301f",
+      "model_id": "Qwen/Qwen2.5-32B-Instruct-AWQ",
+      "model_license": "apache-2.0",
+      "revision": "5c7cb76a268fc6cfbb9c4777eb24ba6e27f9ee6c",
+      "training_data_licenses": {
+        "datasets": [],
+        "status": "No complete per-corpus license inventory supplied in the inspected checkpoint card; Apache-2.0 applies to declared model license."
+      }
+    },
+    "student": {
+      "commercial_use_clearance": "not_asserted",
+      "model_card": "https://huggingface.co/jhu-clsp/ettin-encoder-68m/raw/ac19ae4bc51093b31c475665ac872a936d056cc2/README.md",
+      "model_card_sha256": "1b0dc5b2efba9309ca2645c6b0b167137b3a8c404c97bccee7abc8aa288c5f8d",
+      "model_id": "jhu-clsp/ettin-encoder-68m",
+      "model_license": "mit",
+      "revision": "ac19ae4bc51093b31c475665ac872a936d056cc2",
+      "training_data_licenses": {
+        "datasets": [],
+        "status": "Card describes an open-data pretraining mixture but supplies no complete per-corpus license inventory. MIT model metadata is recorded separately."
+      }
+    }
+  },
+  "runtime_code_licenses": {
+    "torch": {
+      "scope": "Top-level code license; bundled dependencies may carry additional notices.",
+      "sha256": "a8a2c6b67cf8a597ffaa5c82380a6bd1b82629c0417e00673d8013d662eb500a",
+      "source": "https://raw.githubusercontent.com/pytorch/pytorch/v2.9.0/LICENSE",
+      "top_level_spdx": "BSD-3-Clause"
+    },
+    "transformers": {
+      "scope": "Top-level code license; bundled dependencies may carry additional notices.",
+      "sha256": "77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049",
+      "source": "https://raw.githubusercontent.com/huggingface/transformers/v4.57.3/LICENSE",
+      "top_level_spdx": "Apache-2.0"
+    },
+    "vllm": {
+      "scope": "Top-level code license; bundled dependencies may carry additional notices.",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "source": "https://raw.githubusercontent.com/vllm-project/vllm/v0.11.2/LICENSE",
+      "top_level_spdx": "Apache-2.0"
+    }
+  },
+  "schema": "catbird-model-license-inventory-v3",
+  "verified_at_utc": "2026-10-20T10:27:03.034674+00:00"
+}

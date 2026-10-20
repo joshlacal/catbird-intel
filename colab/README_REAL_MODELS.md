@@ -1,81 +1,86 @@
-# Catbird Intel real-model repair
+# Catbird Intel real models — revision 3
 
-This pipeline labels real Bluesky posts with pretrained teachers and trains a real Ettin encoder with two output heads. It replaces the quarantined regex-label and hashed-vector artifacts; it does not qualify the existing production scorer. The governing [master plan](../../docs/execution-plans/2026-10-19-catbird-community-intelligence-master-plan.md) and [decision log](../../docs/DECISIONS.md) retain the invalidated history. Production ingest stays on its explicitly named regex baseline during the soak ending 2026-10-22 13:00Z.
+This revision prepares English-scoped teacher labels and a five-component Ettin student. It replaces the active NLI fallback with a pinned `-c` checkpoint, records model/code/data-license provenance, separates outrage from criticism, and makes unsupported language an explicit unscored state. No revision-3 model inference, training or ONNX export has run. The governing [remediation plan](../../docs/execution-plans/2026-10-20-catbird-intelligence-review-remediation.md) defines the provisional evaluation rules; [decisions](../../docs/DECISIONS.md) retain the historical record.
 
-## Launch in Colab
+## Immutable history and new identities
 
-1. Open `CatbirdCommunity/catbird-lake/Catbird_Intel_Real_Teachers_Ettin_V1_1.ipynb` from Google Drive using **Open with → Google Colaboratory**. Choose a **separate runtime**, not the archive downloader session. Choose **Python 3, A100 GPU** (40 GB or more), or H100 if available. The Qwen 32B AWQ teacher is not supported by this notebook on a T4. An L4 may have insufficient headroom; choose A100 or explicitly use the NLI fallback.
-2. Run cells **1–3** to mount Drive, install requirements and verify the real banks. The notebook expects its sources under `/content/drive/MyDrive/CatbirdCommunity/catbird-lake/colab-v1/revision-2/`. Installation/runtime versions and an exact SHA-256 inventory of implementation sources are recorded. Earlier smoke execution receipts without a source inventory are not retroactively attributed to the current files. If Colab asks for a runtime restart after installing vLLM, restart and rerun cells 1 and 3.
-3. Set `BEHAVIOR_TEACHER = "qwen"` in cell 3. The explicit fallback is `"nli"`, which uses `MoritzLaurer/deberta-v3-large-zeroshot-v2.0`; its outputs remain identified as NLI rather than Qwen. No automatic fallback can disguise a failed Qwen run. Read the GPU name/memory and input hashes printed by cell 3.
-4. Run cells **4–5** to label the 150k training bank and 600-post holdout, then create Josh's review sheet. Every teacher is pinned to an immutable Hugging Face revision. Each stage runs in a separate process so its GPU memory is released before the next stage. Label shards on Drive support resume; rerun the same cells with the same input/model/rubric. A failed or partial shard produces a hard error; archive that shard and rerun it.
-5. Run cell **6** only after the archive-only v1 pair bank exists. The validator checks its KnownFor digest, file digest, `graph_version=phase1-v1`, supplemental-edge exclusion and holdout digest. It refuses old v0 pairs. Pairs currently represent **weak same-community supervision**, not verified co-engagement.
-6. Run cell **7** to train 5,000 optimizer steps and export the actual two-head ONNX model. Change steps/batch size only before starting a new run. Checkpoints save every 250 steps using a temporary file, filesystem sync and rename, followed by a SHA-256/size/configuration integrity sidecar. Set `RESUME` to the latest checkpoint path after a disconnect and keep configuration unchanged. Recovery chooses the latest intact checkpoint, archives damaged/partial files and log records beyond that step, and records the recovery. Legacy v1 checkpoints without integrity sidecars are not silently trusted. This is an initial training schedule, not a quality or convergence guarantee.
-7. Read the actual `training_receipt.json` and `onnx_receipt.json` printed by cell **8**. These contain measured loss, shapes, parameter count, elapsed time, model sizes, hashes and torch/ONNX numerical parity. No F1, posts/credit or credit burn is invented. Record the Colab account balance before/after separately; disconnect the GPU after the run.
+The complete verified revision-2 source bundle is preserved at `archive-bundles/revision-2/`, including its source manifest, V1_1 notebook and smoke receipt. Its manifest SHA-256 is `08af9e174b72344cdb05b3249be0fc9440c6bbde9e806dd333830b80fe9dd592`. The initial delivery remains under `archive-bundles/initial/`. Original notebooks, existing external checkpoints, failed exports and GPU pilot receipts remain unchanged. These new files are not retroactive attribution for old executions.
 
-All outputs go to `catbird-lake/runs/real-v1.1-qwen/` or `real-v1.1-nli/`, never to live production. Uploading source and data does not launch or pay for a GPU session.
+The new notebook is `Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb`; its source location is `catbird-lake/colab-v1/revision-3/`, and outputs use a new `runs/real-v1.2-*` directory. This is an unexecuted template. The historical bounded pilot wrapper and its prepared archives are revision-2 evidence; they are not a validated revision-3 GPU runner. No further GPU run is authorized by the completed pilot.
 
-## Exact data paths
+## Model and license identity
 
-- `training-banks/phase3_health_training_150k_v1_unlabeled.parquet` and `.manifest.json` with the `.parquet` suffix replaced
-- `eval/phase3_holdout_600_unlabeled.jsonl` and `phase3_v1_export_manifest.json`
-- `training-banks/phase5_social_encoder_pairs_v1.parquet` and adjacent `.manifest.json` with the `.parquet` suffix replaced
-- `colab-v1/revision-2/real_pipeline.py`, `colab-v1/revision-2/real_pipeline/`, `colab-v1/revision-2/requirements-colab.txt`
+`model_licenses_v3.json` records pinned model revisions, declared model licenses, upstream code-license sources and hashes, and training-data licensing limitations. Every new teacher and student identity includes this provenance. The active fallback is `MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c` at `b2730f16019076bb0009481121efbe4705e0e378`, replacing the non-`-c` fallback used by the historical smoke. Old labels cannot be silently reused under this identity.
 
-The audited export manifest is pinned in source. Every CLI stage verifies its SHA-256 and the canonical holdout SHA-256, exact integer split buckets and original URI/author correspondence. Raw inputs must match the sealed bank or holdout; labeled inputs must retain their sealed source hash and teacher selection/model/rubric identity. A different export requires an audited source revision. Pair validation requires all three author DIDs, their non-holdout buckets, row counts and the source bucket audit.
+The fallback author describes `-c` training data as commercially friendly. Component metadata remains explicit: synthetic Mixtral data declares Apache-2.0; MNLI lists several licenses; FEVER repository metadata includes data and code licenses. This is not flattened into blanket legal clearance. Political DEBATE declares MIT for the model, while the inspected Pol_NLI dataset card has no declared license. Qwen and Ettin also lack a complete per-corpus license inventory in the inspected checkpoint cards. Public post access is not a blanket content license, and this project does not invent an implementation-code license where none is declared.
 
-The holdout gets teacher labels and empty human-review fields. Review-sheet creation refuses an existing output or status sidecar, preserving human edits on rerun. Josh reviews those fields before thresholds can be locked. The code does not compute quality against its own teacher predictions or tune on this final holdout. A separate future engagement retrieval benchmark and an independent reviewed quality set are still needed for Phase 5/Phase 3 qualification.
+Primary sources: [fallback card](https://huggingface.co/MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c), [Pol_NLI](https://huggingface.co/datasets/mlburnham/Pol_NLI), [Political DEBATE](https://huggingface.co/mlburnham/Political_DEBATE_large_v1.0), [Qwen](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct-AWQ), [Ettin](https://huggingface.co/jhu-clsp/ettin-encoder-68m). Exact metadata revisions and card hashes are retained in the inventory.
 
-## Model semantics and output contract
+## Observed language coverage
 
-`mlburnham/Political_DEBATE_large_v1.0` is a **binary natural-language inference model**, not a dedicated bare-text politicalness classifier. The pipeline feeds each post plus the explicit hypothesis “This text is about politics, government, elections, or public policy.” It records both actual logits and the entailment probability. This is a zero-shot teacher estimate requiring human review.
+`language_audit_v3.json` was computed from the `langs` metadata column of the sealed 150,000-post bank; no text classifier or model was run. It contains every raw combination, normalized tag counts, primary-language counts, empty/missing/invalid counts, and separate multiple-tag/multiple-language counts.
 
-Qwen receives each post as quoted data and one rubric at a time for outraged, critical, engagement bait and spam. Each rubric asks for one digit 0–9. The code verifies each digit is one tokenizer token, obtains all ten single-token log probabilities from vLLM, normalizes the ten scores and takes their expected value divided by nine. The labels retain the raw digit log probabilities. `heat = max(outraged, critical)`; critical here means attacking/condemning/disparaging, not every neutral disagreement. All rubrics and revisions are recorded.
+| Revision-3 scope | Actual rows |
+|---|---:|
+| Explicitly English primary subtags only, including en-US/en-GB | 90,603 |
+| Missing language metadata | 18,273 |
+| Mixed primary languages | 181 |
+| Other declared languages | 40,943 |
+| Total | 150,000 |
 
-The student uses the actual `AutoModel` Ettin-68M encoder, masked mean pooling, a four-output `health_logits` head and a normalized 256-dimensional `matryoshka_emb` head. Soft health targets use binary cross-entropy with logits. The social objective averages InfoNCE at 256, 128 and 64 dimensions and masks same-community false negatives. Re-normalize 128/64-dimensional prefixes after slicing at inference. The final health output order is politicalness, heat, engagement_bait, spam.
+These are post declarations, not verified text-language judgments. A nonempty valid list whose every primary subtag is `en` is in scope. Missing, invalid, mixed and unsupported declarations are unscored. Regional variants of one language are distinguished from genuinely mixed primary languages in the report. All source rows remain in label/merge outputs, with `score_status`, `unscored_reason`, null scores and null raw logits where no model runs. Unscored is absence of evidence; downstream health filters must impose no model-based penalty and must not coerce it to a probability of zero. Separate moderation/visibility/deletion rules still apply.
 
-ONNX export runs `quantize_dynamic` on MatMul and Gather, including embedding weights. The expected 65–70 MB is only a rough size expectation; receipts always report actual bytes. FP32 and int8 outputs are compared with torch on real texts at multiple batch/sequence sizes. Passing numerical parity establishes exporter agreement, not model quality. Smoke-only exports have an untrained social head when no real v1 triplets occur among the same 32 posts.
+Training excludes unscored rows from loss and reports the exact scope counts. The 32-row smoke selection remains the same first 32 original rows; it is not filled with additional posts after scoping. Joint training requires declared-English metadata on all three triplet roles; missing `anchor_langs`/`positive_langs`/`negative_langs` cannot silently become English. Earlier pair banks may therefore be structurally valid but unusable for this scoped model.
 
-## Local 32-row smoke
+Reproduce the metadata-only report at a new output path:
 
-Use a separate Python 3.12 environment and `requirements-local.txt`. The CLI's smoke mode selects the same first 32 training rows and rejects more than 12 optimizer steps. It never labels the holdout locally. Both actual NLI teachers can run with `--device cpu --threads 2 --batch-size 2`; Qwen runs only in Colab. Artifacts belong outside the repository, e.g. `~/catbird-lake-local/real-model-smoke-v1/`.
-
-Run `python real_pipeline.py --help` and each subcommand's `--help` for exact flags. Full labeling/training requires CUDA and is rejected on macOS. A smoke loss decrease demonstrates only fitting on those 32 rows. It cannot replace human validation, real social-pair training, representative throughput or the full teacher pipeline.
-
-## Primary documentation
-
-- [Political DEBATE model card](https://huggingface.co/mlburnham/Political_DEBATE_large_v1.0)
-- [Ettin model card and AutoModel usage](https://huggingface.co/jhu-clsp/ettin-encoder-68m)
-- [NLI fallback model](https://huggingface.co/MoritzLaurer/deberta-v3-large-zeroshot-v2.0)
-- [vLLM SamplingParams](https://docs.vllm.ai/en/latest/api/vllm/sampling_params/)
-- [ONNX Runtime quantization](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html)
-
-## Bounded GPU pilot before a full run
-
-After a separately approved GPU allocation, run notebook cells 1–3, then paste this in a new cell before starting the 150k labels. It uses the same first 32 training posts, Qwen on CUDA, eight student steps and a separate output directory. It does not access a new paid runtime automatically or label the holdout. Record the actual account balance/usage before and after through the Colab CLI; the pipeline leaves credit fields null.
-
-```python
-PILOT = LAKE / 'runs/gpu-pilot-real-v1.1-qwen'
-common = ['--input', BANK, '--holdout', HOLDOUT, '--export-manifest', EXPORT_MANIFEST, '--mode', 'smoke', '--device', 'cuda']
-run('label', *common, '--teacher', 'political', '--max-length', 512, '--batch-size', 4, '--output', PILOT / 'political')
-run('label', *common, '--teacher', 'qwen', '--max-length', 1024, '--batch-size', 4, '--output', PILOT / 'qwen')
-run('merge', *common, '--political', PILOT / 'political', '--behavior', PILOT / 'qwen', '--behavior-teacher', 'qwen', '--output', PILOT / 'train-labeled.parquet')
-run('train', '--input', PILOT / 'train-labeled.parquet', '--holdout', HOLDOUT, '--export-manifest', EXPORT_MANIFEST, '--mode', 'smoke', '--device', 'cuda', '--steps', 8, '--save-every', 8, '--batch-size', 8, '--max-length', 128, '--learning-rate', 0.0001, '--output', PILOT / 'student')
+```sh
+PYTHONPATH=colab python -m real_pipeline.language \
+  --input /path/to/phase3_health_training_150k_v1_unlabeled.parquet \
+  --expected-sha256 4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538 \
+  --output /new/path/language-audit.json
 ```
 
-A GPU pilot without real v1 pairs fits only the health head; the social head is explicitly untrained. Stop on a failed numerical parity check and read its measured receipt. Do not relax a gate to make the report green.
+## Targets and compatibility
 
-## Measured local result, 2026-10-20
+Political DEBATE receives the post plus an explicit political-content hypothesis and returns binary NLI entailment. Qwen scores four separate rubrics using ten retained digit log probabilities and expected 0–9 severity divided by nine. NLI entailment and ordinal severity are not interchangeable calibrated probabilities. All model, rubric, language and software identities are retained. Changed source/dependencies refuse inference resume; metadata consumers preserve the producer environment without requiring identical local packages.
 
-The CPU smoke used exactly 32 real training posts, two CPU threads and eight optimizer steps. Political DEBATE and the explicitly named NLI fallback produced actual targets. Ettin has **68,278,020 parameters**; the fixed training-batch BCE decreased from **2.015553 to 0.355486**. The observed output shapes were **32×4** and **32×256**. There were no real v1 social triplets among this test input, so this test did not train or validate the social head.
+The new `catbird-ettin-components-v3` contract produces `health_component_logits` in this exact order:
 
-The final parity check covered **all 32 unique posts**, plus repeated real examples padded to sequence lengths 64 and 128. The **273,555,140-byte FP32 ONNX passed**: maximum health-probability error **0.000001550**, minimum embedding cosine **0.99999988**. The **69,433,199-byte int8 candidate failed** the unchanged 0.03 health-probability-error gate, measuring **0.06676513** (embedding cosine **0.99531621**). Keeping embedding weights FP32 produced a **146,797,996-byte** candidate that also failed, at **0.07467008** probability error. These are export-agreement measurements, not quality scores.
+1. politicalness
+2. outraged
+3. critical
+4. engagement_bait
+5. spam
 
-The compact int8 candidate remains unqualified and the training command exits with an error on that measured failure. All earlier failed exports/receipts remain in `export-previous-*/` folders. The smaller preliminary checks used seven row instances covering six unique real posts; they were superseded by the complete 32-post checks. No thresholds were relaxed and no additional examples or training steps were introduced during export repairs.
+Apply sigmoid to these logits. There is no trained heat head and no invented hostility head. A future heat/argument control requires a separately frozen aggregation, human rubric and calibration; it must not silently recreate `max(outraged, critical)`. The shared social head remains 256 dimensions with separately renormalized 128/64 prefixes. A five-output head adds 513 parameters to the old 512-hidden-size head by arithmetic; this revision has not measured a newly loaded full model.
 
-Local environment: `~/catbird-lake-local/real-model-smoke-venv/bin/python`. Outputs: `~/catbird-lake-local/real-model-smoke-v1/`. The repository's `smoke_receipt_20261020.json` summarizes exact artifact paths and measurements. Original smoke execution predated the final source inventory; the inventory identifies the delivered implementation, not a retroactively reconstructed training-source snapshot.
+Old four-output checkpoint keys and configurations are incompatible and are rejected. There is no automatic target or weight migration. Student run identity now binds component/language contracts, licensing, source hashes, dependencies and scoped counts. Export reuse is bound to the actual checkpoint digest and export identity. New ONNX filenames contain `components_v3`.
 
-Bulk Qwen labeling, full dual-head training, GPU throughput/credit use, human quality review and representative serving CPU measurements remain unperformed. Labels can be generated before v1 pairs arrive, but the full training command refuses a missing or invalid pair bank.
+`train --objective health` explicitly trains health components without consuming graph pairs; the social head remains untrained. `--objective joint` requires a valid, in-scope v1 pair bank for a full run. Objectives use separate run identities: choose a new output directory when changing one. The 5,000-step schedule is provisional random sampling, not a convergence or complete-epoch guarantee.
 
-## Revision 2 structural verification
+## Review and evaluation
 
-This source revision hardens dataset validation, review preservation and disconnect recovery. It does not replace or retroactively reattribute the original measured smoke results. The immutable initial delivery is retained under `colab/archive-bundles/initial/`; the Drive source lives in `colab-v1/revision-2/`. Run `python -m unittest discover -s colab/tests -v` from the repository with the existing sealed files available. These checks use existing real-row metadata and tiny checkpoint objects; they run no model inference or optimizer steps. The approved CLI pilot wrapper is `ops/run_colab_teacher_pilot.py`. Its prepare mode packages the full canonical bank/holdout and their seals plus a separate 32-row selection audit; inference still uses exactly the first 32 rows through the ordinary smoke CLI.
+`review-sheet` can operate directly on the canonical raw holdout without model inference. Teacher and regex columns are withheld from the blind first pass. Existing review files and their status sidecars cannot be overwritten. Human fields remain null. The historical 600-post challenge set stays sealed; it is not silently repurposed as development data or enlarged.
+
+`evaluation_contract_v3.json` and `python -m real_pipeline.evaluation --help` define the complete metrics-only evaluation interface. It consumes independently annotated labels, matched saved predictions, relevance judgments and explicit artifact/runtime identities; it performs no inference. The remediation plan's sample minima and provisional gates are design requirements, not claims of guaranteed power. Prevalence, author/session clustering, enrichment, missing labels and sampling strata affect what an interval means. Missing human evidence, an unresolved hostility instrument or absent target-host evidence cannot yield a qualification pass.
+
+Freeze a versioned evaluation-contract copy outside this sealed source bundle before final data is examined. Its profile and required targets are predeclared: a politicalness-only health evaluation can qualify that target without an untrained social head or unrelated annotations; a joint profile additionally requires the 256/128/64 retrieval gates. Unselected targets cannot be claimed as qualified, and the profile cannot be chosen after seeing outcomes.
+
+The original compact export's maximum-error gate of 0.03 remains a failed historical smoke criterion. Revision-3 export diagnostics retain that limit; independent trained-model promotion additionally requires the selected profile's decision-flip and paired human-metric gates. A low cosine error or small file alone establishes neither model quality nor serving suitability.
+
+## Runtime preparation and remaining boundaries
+
+Before any separately authorized run, verify the new source manifest and canonical bank/holdout seals. Use a separate CUDA runtime and a new output generation. The notebook still installs from requirement ranges; a runtime-specific hash lock must be prepared for a bounded execution. The Python-version-aware, hash-locked revision-2 pilot is historical evidence, not proof that revision 3 installs or runs unchanged.
+
+Checkpoint saves use temporary files, sync, rename and integrity sidecars; recovery preserves damaged files and reconciles logs. Teacher shards and JSON manifests also sync temporary bytes before atomic rename, with shard publication preceding its manifest entry. A failure between those two publications leaves an orphan that must be preserved/archived manually; interrupted `.partial` files likewise block automatic resumption. A nonempty directory without a manifest cannot acquire a new identity. Tests exercise tiny local states. Hosted Drive/FUSE interruption and real optimizer-state recovery remain untested.
+
+Structural verification uses existing real-row metadata, mocked teacher dispatch, tiny local Linear layers and numeric metric fixtures. It performs no pretrained loading, model forward pass, optimizer steps, GPU allocation or large-weight downloads:
+
+```sh
+python -m unittest discover -s colab/tests -v
+python colab/real_pipeline.py train --help
+PYTHONPATH=colab python -m real_pipeline.evaluation --help
+```
+
+The historical local run fit 32 posts with the non-`-c` NLI fallback; its four-output model had 68,278,020 parameters and training-probe BCE 2.015553 → 0.355486. FP32 ONNX passed same-row numerical comparison; the 69,433,199-byte compact int8 model failed at 0.06676513 maximum probability error. The later A100 pilot ran Qwen and Political DEBATE on those same 32 posts but did not train a student. None of these observations establishes revision-3 quality, full-bank throughput, language accuracy, a trained social encoder, or deployed CPU serving. The live scorer remains the regex baseline.

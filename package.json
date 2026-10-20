@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@atproto/crypto": "0.5.7",
     "@atproto/lex": "*",
     "@bsky/jetstream": "^1.0.0"
   },

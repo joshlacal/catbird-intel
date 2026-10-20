@@ -10,8 +10,12 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from .common import (MODELS, POLITICAL_HYPOTHESIS, RUBRICS, environment, selected_uri_sha256,
-                     sha256, validate_input, validate_labeled, validate_teacher_identity, write_json)
+from .checkpoints import atomic_write
+from .common import (MODELS, POLITICAL_HYPOTHESIS, RUBRICS, environment, teacher_identity,
+                     sha256, validate_input, validate_labeled, validate_teacher_identity,
+                     validate_score_row, write_json)
+from .contracts import STUDENT_CONTRACT
+from .language import LANGUAGE_CONTRACT, language_scope
 
 
 def release(model):
@@ -107,20 +111,52 @@ def qwen_scores(rows, batch_size=32, max_length=1024):
     return outputs
 
 
+def score_scoped_rows(args, rows):
+    """Keep all source rows while running models only on declared-English text."""
+    permitted = [row for row in rows if language_scope(row)["in_scope"]]
+    metrics = ("politicalness",) if args.teacher == "political" else tuple(RUBRICS)
+    inferred = []
+    if permitted:
+        if args.teacher == "qwen":
+            inferred = qwen_scores(permitted, args.batch_size, args.max_length)
+        else:
+            hypotheses = {"politicalness": POLITICAL_HYPOTHESIS} if args.teacher == "political" else RUBRICS
+            inferred = nli_scores(permitted, args.teacher, hypotheses, args.device, args.batch_size, args.max_length)
+    if len(inferred) != len(permitted):
+        raise ValueError("Teacher did not return one result per in-scope post")
+    by_uri = {row["uri"]: score for row, score in zip(permitted, inferred)}
+    output = []
+    for row in rows:
+        scope = language_scope(row)
+        score = dict(by_uri[row["uri"]]) if scope["in_scope"] else {}
+        if not scope["in_scope"]:
+            for metric in metrics:
+                score[f"teacher_{metric}"] = None
+                raw_suffix = "digit_logprobs" if args.teacher == "qwen" else "logits"
+                score[f"teacher_{metric}_{raw_suffix}"] = None
+        score.update(score_status="scored" if scope["in_scope"] else "unscored",
+                     unscored_reason=scope["reason"])
+        validate_score_row(score, row, args.teacher)
+        output.append(score)
+    return output
+
+
 def label_stage(args, rows):
     validate_input(args, rows)
     destination = Path(args.output)
     destination.mkdir(parents=True, exist_ok=True)
-    stage_model = "political" if args.teacher == "political" else args.teacher
-    identity = {"schema": "catbird-real-teacher-v1", "teacher": args.teacher,
-                "model": list(MODELS[stage_model]), "input_sha256": sha256(args.input),
-                "selected_uri_sha256": selected_uri_sha256(rows),
-                "rows": len(rows), "mode": args.mode, "max_length": args.max_length,
-                "rubrics": {"politicalness": POLITICAL_HYPOTHESIS} if args.teacher == "political" else RUBRICS}
+    identity = teacher_identity(args.teacher, sha256(args.input), rows, args.mode, args.max_length)
     manifest_path = destination / "manifest.json"
     previous = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
+    if previous is None and any(destination.iterdir()):
+        raise ValueError("Teacher output is nonempty without provenance; preserve/archive it and use a new directory")
     if previous and previous["identity"] != identity:
         raise ValueError("Existing label run has different input/model/rubric; use a new output directory")
+    if list(destination.glob(".*.partial")):
+        raise ValueError("Interrupted teacher writes remain; preserve/archive partial artifacts before retry")
+    untracked = {path.name for path in destination.glob("*.jsonl")} - set((previous or {}).get("files", {}))
+    if untracked:
+        raise ValueError("Unmanifested teacher shards cannot acquire new provenance; preserve/archive them before retry")
     for name, digest in (previous or {}).get("files", {}).items():
         if not (destination / name).exists() or sha256(destination / name) != digest:
             raise ValueError("Previously completed teacher shard changed; archive and investigate")
@@ -138,23 +174,14 @@ def label_stage(args, rows):
             existing = [json.loads(line) for line in output_path.read_text().split("\n") if line]
             if [r['uri'] for r in existing] != [r['uri'] for r in selected]:
                 raise ValueError("Incomplete or mismatched label shard; archive it before retry")
-            metrics = ("politicalness",) if args.teacher == "political" else tuple(RUBRICS)
-            for label in existing:
-                for metric in metrics:
-                    value = label.get(f"teacher_{metric}")
-                    if not isinstance(value, (float, int)) or not math.isfinite(value) or not 0 <= value <= 1:
-                        raise ValueError("Invalid completed teacher score")
-                    raw = label.get(f"teacher_{metric}_digit_logprobs" if args.teacher == "qwen" else f"teacher_{metric}_logits")
-                    if not isinstance(raw, list) or len(raw) != (10 if args.teacher == "qwen" else 2) or not all(math.isfinite(v) for v in raw):
-                        raise ValueError("Missing or invalid raw teacher logits")
+            for label, original in zip(existing, selected):
+                validate_score_row(label, original, args.teacher)
             continue
-        if args.teacher == "qwen":
-            scored = qwen_scores(selected, args.batch_size, args.max_length)
-        else:
-            hypotheses = {"politicalness": POLITICAL_HYPOTHESIS} if args.teacher == "political" else RUBRICS
-            scored = nli_scores(selected, stage_model, hypotheses, args.device, args.batch_size, args.max_length)
-        output_path.write_text("".join(json.dumps({"uri": row["uri"], **score}) + "\n" for row, score in zip(selected, scored)))
-        completed_this_invocation += len(selected)
+        scored = score_scoped_rows(args, selected)
+        contents = "".join(json.dumps({"uri": row["uri"], **score}, allow_nan=False) + "\n"
+                           for row, score in zip(selected, scored)).encode("utf-8")
+        atomic_write(output_path, contents, overwrite=False)
+        completed_this_invocation += sum(score["score_status"] == "scored" for score in scored)
         write_json(manifest_path, {"identity": identity, "environment": environment(), "status": "running",
                                   "files": {p.name: sha256(p) for p in sorted(destination.glob("*.jsonl"))},
                                   "invocations": (previous or {}).get("invocations", [])})
@@ -194,6 +221,7 @@ def merge_labels(args, rows):
                 uri = label.pop("uri")
                 if uri in covered or uri not in merged:
                     raise ValueError("Duplicate or unexpected teacher row")
+                validate_score_row(label, merged[uri], expected)
                 merged[uri].update(label)
                 covered.add(uri)
         if covered != set(merged):
@@ -201,8 +229,6 @@ def merge_labels(args, rows):
         provenance.append(manifest)
     import pyarrow as pa
     import pyarrow.parquet as pq
-    for row in merged.values():
-        row["teacher_heat"] = max(row["teacher_outraged"], row["teacher_critical"])
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     if Path(args.output).exists() or Path(str(args.output) + ".manifest.json").exists():
         existing = validate_labeled(args.output, list(merged.values()), seal, args.split, args.mode)
@@ -215,6 +241,9 @@ def merge_labels(args, rows):
                           "sha256": existing["sha256"], "output": str(args.output)}), flush=True)
         return
     pq.write_table(pa.Table.from_pylist(list(merged.values())), args.output, compression="zstd")
-    write_json(str(args.output) + ".manifest.json", {"schema": "catbird-real-labeled-v1", "sha256": sha256(args.output),
+    write_json(str(args.output) + ".manifest.json", {"schema": "catbird-real-labeled-v3", "sha256": sha256(args.output),
                "source_sha256": sha256(args.input), "rows": len(merged), "teacher_provenance": provenance,
+               "scored_rows": sum(row["score_status"] == "scored" for row in merged.values()),
+               "unscored_rows": sum(row["score_status"] == "unscored" for row in merged.values()),
+               "language_contract": LANGUAGE_CONTRACT, "student_contract": STUDENT_CONTRACT,
                "human_reviewed": False, "thresholds_locked": False})

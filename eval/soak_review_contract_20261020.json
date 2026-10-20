@@ -1,0 +1,57 @@
+{
+  "schema": "catbird_soak_review_contract_v1",
+  "as_of_date": "2026-10-20",
+  "description": "Planning snapshot only. No production observations collected for this review; no metrics or observation timestamps invented. Prior operational evidence is not imported or requalified here.",
+  "required_soak_start": "2026-10-19T13:00:00Z",
+  "required_soak_end": "2026-10-22T13:00:00Z",
+  "gates": {
+    "continuity": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "final_24h_continuity": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "lag": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "cursor_completeness": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "delete_invariant": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "visibility_latency": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "controlled_create_delete": {
+      "status": "unperformed",
+      "reason": "Not run; explicit dedicated test-account create/delete authorization and keyed observations required."
+    },
+    "cross_archive": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "resource_pressure": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "merge_trend": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "disk": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    },
+    "production_interference": {
+      "status": "unperformed",
+      "reason": "No qualifying observation receipt supplied in this review."
+    }
+  }
+}

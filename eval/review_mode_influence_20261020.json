@@ -1,0 +1,34 @@
+{
+  "observed_at": "2026-10-20T10:45:06.568183+00:00",
+  "files": [
+    {
+      "path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/ops/build_mode_influence_candidate.py",
+      "copy": "/tmp/catbird-intel-review-followup-20261020/mode-influence-20261020T104506Z/build_mode_influence_candidate.py",
+      "sha256": "4d4e039050821b13482cb7024cf628f5be7cf5a678eac31255e239eb7b020f9a",
+      "bytes": 33992
+    },
+    {
+      "path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/ops/test_mode_influence_candidate.py",
+      "copy": "/tmp/catbird-intel-review-followup-20261020/mode-influence-20261020T104506Z/test_mode_influence_candidate.py",
+      "sha256": "7a555aa9a454a1fcba4b597d374be2278c9e72d8aa13ee5bdc139b1cbf118aa2",
+      "bytes": 13254
+    }
+  ],
+  "test_command": [
+    "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/graph/.venv/bin/python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "ops",
+    "-p",
+    "test_mode_influence_candidate.py",
+    "-v"
+  ],
+  "test_returncode": 0,
+  "test_log": "/tmp/catbird-intel-review-followup-20261020/mode-influence-20261020T104506Z/tests.txt",
+  "input_contract": "/tmp/catbird-intel-review-followup-20261020/mode-influence-20261020T104506Z/input_contract.json",
+  "contract_returncode": 0,
+  "graph_evaluator_sha256_still": "c28a3f8542804d621e48be519fe874d5cf1aa9d86bb41c4f516b9b30ecd5724d",
+  "scope": "numeric structural and offline CLI execution only; no empirical feature quality, model inference, production access or graph process mutation"
+}

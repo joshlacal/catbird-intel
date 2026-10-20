@@ -92,6 +92,20 @@ def _atomic_write(destination: Path, contents: bytes) -> None:
     _fsync_directory(destination.parent)
 
 
+def atomic_write(path: str | Path, contents: bytes, *, overwrite: bool = True) -> None:
+    """Publish bytes after file fsync, then fsync the containing directory.
+
+    Requires one writer and atomic same-filesystem rename. Failed writes leave
+    their hidden ``.partial`` file for explicit recovery; they are not deleted.
+    This local-filesystem contract does not qualify mounted Drive behavior.
+    """
+    destination = Path(path)
+    if destination.is_symlink() or (not overwrite and destination.exists()):
+        raise FileExistsError(f"Refusing to overwrite artifact: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(destination, contents)
+
+
 def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode("utf-8")
 

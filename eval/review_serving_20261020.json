@@ -1,0 +1,853 @@
+{
+  "schema": "catbird.intel.local-serving-acceptance.v1",
+  "started_at": "2026-10-20T10:38:33.867Z",
+  "finished_at": "2026-10-20T10:38:34.900Z",
+  "evidence": "local_http_fixture_only",
+  "bun": "1.3.14",
+  "source_hashes": {
+    "src/api.ts": "19670855b8e3c84a58eb07de3cb4a9b654a7f02e0cebf2b56a7ede7574d791ef",
+    "src/serving_contract.ts": "22fda054ac9794b09cb4abc3f87ff190285ba9aadf790fe3a8c154aa709c2c1c",
+    "src/service_auth.ts": "4737b9f145228abcade2e4a6f7abd7deaa1699653884f8a13fdf4df1f8d16863",
+    "src/clickhouse.ts": "8480f24e0e8241f5b3c929542b5db9187427d83f6312e397ec7eb4afb433ca35",
+    "test/serving_fixtures.ts": "b6bc1b0baea18df91a3ede290084a0efd59b16d0aa6be51b6c6e1cfd5e5d1e54",
+    "test/serving.test.ts": "5d7a624c7ca5852a8d565b73cdd08b0268c42bc96655a7bb02ea9c58e5dac91b",
+    "test/service_auth.test.ts": "1c69326a3acd6d922d1ea53486827a70ebe8dd633ed1e1c10ad34193541c2bcb",
+    "ops/verify-serving-local.ts": "4a320a6cbcf3c2b0856687c125534b3580bc74051720f24f12f67e687d3d63ac",
+    "package.json": "ab7e54d10efdb7b18cd1718e29fca83206c5f09f84304c3b3c820430a7156bc6",
+    "bun.lock": "dc71dc93d843b5bff296586fef9d7a85b7fc3c9265cd227e25ba47853b9ac02e",
+    "tsconfig.json": "100114787df4dd6aaaa9fe47ce8d9f712c37a5af0a4a08902329c19181c90e63"
+  },
+  "production_connected": false,
+  "database_connected": false,
+  "client_actions_executed": false,
+  "service_stopped": true,
+  "checks": 30,
+  "status": "passed",
+  "failure": null,
+  "observations": [
+    {
+      "name": "anonymous_feed_forged_flag",
+      "status": 200,
+      "response": {
+        "feed": [
+          {
+            "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+          },
+          {
+            "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+          }
+        ],
+        "meta": {
+          "actor": "anonymous",
+          "compute_ms": 0.354,
+          "control_policy": {
+            "controls": {},
+            "semantics": "optional_uncalibrated_baseline_score_cutoff",
+            "health_filtering": "off",
+            "unknown_policy": "include",
+            "items": 2,
+            "unscored_items": 1,
+            "unscored_share": 0.5
+          }
+        },
+        "unauthenticated": true,
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "default_preview",
+      "status": 200,
+      "response": {
+        "unauthenticated": true,
+        "preview_posts": [
+          {
+            "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+          },
+          {
+            "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+          }
+        ],
+        "control_policy": {
+          "controls": {},
+          "semantics": "optional_uncalibrated_baseline_score_cutoff",
+          "health_filtering": "off",
+          "unknown_policy": "include",
+          "items": 2,
+          "unscored_items": 1,
+          "unscored_share": 0.5
+        },
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "optional_baseline_feed",
+      "status": 200,
+      "response": {
+        "feed": [
+          {
+            "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+          }
+        ],
+        "meta": {
+          "actor": "anonymous",
+          "compute_ms": 0.022,
+          "control_policy": {
+            "controls": {
+              "baseline_score_cutoff": {
+                "politicalness": 0.2,
+                "heat": 0.2
+              }
+            },
+            "semantics": "optional_uncalibrated_baseline_score_cutoff",
+            "health_filtering": "baseline_cutoff",
+            "unknown_policy": "include",
+            "items": 1,
+            "unscored_items": 1,
+            "unscored_share": 1
+          }
+        },
+        "unauthenticated": true,
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "optional_baseline_preview",
+      "status": 200,
+      "response": {
+        "unauthenticated": true,
+        "preview_posts": [
+          {
+            "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+          }
+        ],
+        "control_policy": {
+          "controls": {
+            "baseline_score_cutoff": {
+              "politicalness": 0.2,
+              "heat": 0.2
+            }
+          },
+          "semantics": "optional_uncalibrated_baseline_score_cutoff",
+          "health_filtering": "baseline_cutoff",
+          "unknown_policy": "include",
+          "items": 1,
+          "unscored_items": 1,
+          "unscored_share": 1
+        },
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "explicit_delivery_actions",
+      "status": 200,
+      "response": {
+        "session_id": "onb_1792492713922_5w4vzr",
+        "solve_ms": 0.071,
+        "unauthenticated": true,
+        "controls": {},
+        "actions_applied": false,
+        "delivery_preferences_source": "explicit_request",
+        "posterior_communities": [
+          {
+            "community": 1,
+            "scene_id": 1,
+            "score": 1,
+            "social_proof": 5,
+            "label": "Local fixture"
+          }
+        ],
+        "role_summary": {
+          "total_follows": 1,
+          "creators": 2,
+          "conversational": 0,
+          "curators": 0,
+          "hide_reposts_count": 1,
+          "topic_feed_only_count": 1
+        },
+        "actions": [
+          {
+            "type": "topic_feed_intent",
+            "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+            "community": 1,
+            "follow": false,
+            "applied": false,
+            "executable": false
+          },
+          {
+            "type": "follow_account",
+            "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+            "client_preferences": {
+              "scope": "catbird",
+              "hideReposts": true
+            },
+            "applied": false,
+            "executable": false
+          }
+        ],
+        "follows": [
+          {
+            "type": "follow_account",
+            "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+            "client_preferences": {
+              "scope": "catbird",
+              "hideReposts": true
+            },
+            "applied": false,
+            "executable": false
+          }
+        ],
+        "topic_feeds": [
+          {
+            "type": "topic_feed_intent",
+            "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+            "community": 1,
+            "follow": false,
+            "applied": false,
+            "executable": false
+          }
+        ],
+        "feeds": [
+          {
+            "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.generator/fixture",
+            "community": 1,
+            "community_label": "Local fixture"
+          },
+          {
+            "uri": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.generator/fixture",
+            "community": 1,
+            "community_label": "Local fixture"
+          }
+        ],
+        "starter_packs": [
+          {
+            "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.graph.starterpack/fixture",
+            "community": 1,
+            "community_label": "Local fixture"
+          },
+          {
+            "uri": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.graph.starterpack/fixture",
+            "community": 1,
+            "community_label": "Local fixture"
+          }
+        ],
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "creator_visibility",
+      "status": 200,
+      "response": {
+        "unauthenticated": true,
+        "community": {
+          "community": 1,
+          "scene_id": 1,
+          "domain_id": 1,
+          "size": 4,
+          "label": "Local fixture",
+          "seed_subculture": "systems_rust",
+          "keywords": [
+            "fixture"
+          ]
+        },
+        "accounts_by_role": {
+          "creator": [
+            {
+              "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ]
+        },
+        "posts": [
+          {
+            "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+          },
+          {
+            "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+          }
+        ],
+        "feeds": [
+          {
+            "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.generator/fixture"
+          },
+          {
+            "uri": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.generator/fixture"
+          }
+        ],
+        "packs": [
+          {
+            "uri": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.graph.starterpack/fixture"
+          },
+          {
+            "uri": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.graph.starterpack/fixture"
+          }
+        ],
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "community_metadata",
+      "status": 200,
+      "response": {
+        "total": 1,
+        "communities": [
+          {
+            "community": 1,
+            "scene_id": 1,
+            "domain_id": 1,
+            "size": 4,
+            "label": "Local fixture",
+            "seed_subculture": "systems_rust",
+            "keywords": [
+              "fixture"
+            ]
+          }
+        ],
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "aggregate_author_diagnostics",
+      "status": 200,
+      "response": {
+        "total_producers_scored": 0,
+        "active_producers_in_window": 0,
+        "scoring_status": "legacy_heuristic_unqualified",
+        "individual_profiles_available": false,
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "anonymous_cards",
+      "status": 200,
+      "response": {
+        "point_budget": 6,
+        "unauthenticated": true,
+        "total_cards": 1,
+        "cards": [
+          {
+            "card_id": "systems_rust",
+            "primary_community": 1,
+            "related_communities": [
+              1
+            ],
+            "scene_id": 1,
+            "domain_id": 1,
+            "title": "Local fixture",
+            "keywords": [
+              "fixture"
+            ],
+            "producer_count": 4,
+            "sample_posts": [
+              {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              },
+              {
+                "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+              }
+            ],
+            "sample_accounts": [
+              {
+                "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                "role": "creator"
+              },
+              {
+                "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+                "role": "creator"
+              }
+            ]
+          }
+        ],
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "calibration",
+      "status": 200,
+      "response": {
+        "total_swipes": 12,
+        "consistency_probes": 2,
+        "swipes": [
+          {
+            "swipe_id": "trap_1_rust",
+            "step": 1,
+            "prompt": "Which neighborhood feels closer to what you want on your timeline?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Systems Programming, Rust & Compilers (cargo, tokio, async, OS internals)",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "indie_gamedev",
+              "label": "Multiplayer Survival Games, Wipe Day & Base Building",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_2_swift",
+            "step": 2,
+            "prompt": "When you see 'Swift', which world are you looking for?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "apple_swift_indie",
+              "label": "iOS/macOS App Craft, SwiftUI, Xcode & Indie Apple Developers",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "hangout_celebs_comedy",
+              "label": "Pop Culture, Eras Tour Fandom & Music Stan Timelines",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_3_macro",
+            "step": 3,
+            "prompt": "Pick the 'Macro' lens you actually enjoy reading:",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "fintwit_econsky",
+              "label": "Macroeconomics, Fed Policy, Bond Yields & Labor Markets",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "photo_birding_culinary",
+              "label": "90mm Macro Lens Photography, Entomology, Birding & Film Cameras",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_4_lab",
+            "step": 4,
+            "prompt": "Which 'Lab' belongs in your starter bundle?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "hardware_homelab",
+              "label": "Self-Hosted Homelabs, Proxmox, Kubernetes, Tailscale & NAS",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "photo_birding_culinary",
+              "label": "Golden Retrievers, Labrador Pets & Outdoors Nature Walks",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_5_humor",
+            "step": 5,
+            "prompt": "What kind of humor & commentary fits your vibe?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "weird_shitposting",
+              "label": "Absurdist / Post-Ironic Shitposting & Weird Internet Humor",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "tpot_postrat_poetics",
+              "label": "Reflective Essays, Poetics, Systems Theory & Meditative Notes",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_6_espresso",
+            "step": 6,
+            "prompt": "Morning routine check:",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "photo_birding_culinary",
+              "label": "Specialty Espresso, Light-Roast Pourover, Sourdough & Culinary Craft",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "urbanism_transit",
+              "label": "Transit Headways, Bike Lanes, Housing Policy & Walkable Cities",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_7_football",
+            "step": 7,
+            "prompt": "Matchday preference:",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "soccer_fpl_tactics",
+              "label": "World Football / Soccer Tactics, xG Models & Fantasy Premier League",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "nba_f1_sickos",
+              "label": "NBA Cap Nerds, F1 Telemetry & North American Pro Sports",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "trap_8_indie",
+            "step": 8,
+            "prompt": "Creative indie scene:",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "indie_gamedev",
+              "label": "Godot / Love2D Shaders, Pixel Art & Solo Game Development",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "music_vinyl_bandcamp",
+              "label": "Bandcamp Fridays, Vinyl Records, Modular Synths & Indie Labels",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "depth_split_1",
+            "step": 9,
+            "prompt": "Within systems_rust, do you prefer deep technical/craft threads or conversational hangout?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "depth_split_2",
+            "step": 10,
+            "prompt": "Within systems_rust, do you prefer deep technical/craft threads or conversational hangout?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": false,
+            "option_a": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "consistency_probe_1",
+            "step": 11,
+            "prompt": "Consistency check: which post style would you rather see every morning?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": true,
+            "option_a": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          },
+          {
+            "swipe_id": "consistency_probe_2",
+            "step": 12,
+            "prompt": "Consistency check: which post style would you rather see every morning?",
+            "neither_allowed": true,
+            "both_allowed": true,
+            "is_consistency_probe": true,
+            "option_a": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            },
+            "option_b": {
+              "community": 1,
+              "subculture": "systems_rust",
+              "label": "Local fixture",
+              "sample_post": {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              }
+            }
+          }
+        ],
+        "unauthenticated": true,
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "invalid_token",
+      "status": 401,
+      "response": {
+        "error": "AuthenticationRequired",
+        "message": "Invalid or expired service token",
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "verified_fixture_service_jwt",
+      "status": 200,
+      "response": {
+        "point_budget": 6,
+        "unauthenticated": false,
+        "total_cards": 1,
+        "cards": [
+          {
+            "card_id": "systems_rust",
+            "primary_community": 1,
+            "related_communities": [
+              1
+            ],
+            "scene_id": 1,
+            "domain_id": 1,
+            "title": "Local fixture",
+            "keywords": [
+              "fixture"
+            ],
+            "producer_count": 4,
+            "sample_posts": [
+              {
+                "post": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/high"
+              },
+              {
+                "post": "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/app.bsky.feed.post/unknown"
+              },
+              {
+                "post": "at://did:plc:cccccccccccccccccccccccc/app.bsky.feed.post/restricted"
+              }
+            ],
+            "sample_accounts": [
+              {
+                "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+                "role": "creator"
+              },
+              {
+                "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+                "role": "creator"
+              },
+              {
+                "did": "did:plc:cccccccccccccccccccccccc",
+                "role": "creator"
+              }
+            ]
+          }
+        ],
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "replayed_fixture_service_jwt",
+      "status": 401,
+      "response": {
+        "error": "AuthenticationRequired",
+        "message": "Invalid or expired service token",
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    },
+    {
+      "name": "reject_old_controls",
+      "status": 400,
+      "response": {
+        "error": "InvalidRequest",
+        "message": "Only baseline_score_cutoff is supported; health filtering is off by default",
+        "contract_version": "catbird.intel.serving.v2",
+        "source_community_version": "fixture-generation-only",
+        "derived_generation": null,
+        "cache_refreshed_at": "2026-10-20T10:38:33.867Z",
+        "qualification": "local_candidate_unqualified",
+        "hydration": "viewer_aware_appview_required"
+      }
+    }
+  ],
+  "validation": [
+    {
+      "command": [
+        "bun",
+        "test",
+        "test/serving.test.ts",
+        "test/service_auth.test.ts"
+      ],
+      "exit_code": 0,
+      "status": "passed",
+      "stdout": "bun test v1.3.14 (0d9b296a)\n",
+      "stderr": "\ntest/serving.test.ts:\n(pass) honest serving contract over local HTTP > missing token is logged out; forged boolean cannot expose restricted posts [5.21ms]\n(pass) honest serving contract over local HTTP > feed and preview default to the same off policy, including high and unknown scores [1.99ms]\n(pass) honest serving contract over local HTTP > same optional baseline cutoff removes scored high values and keeps unknown [0.45ms]\n(pass) honest serving contract over local HTTP > typed follow/hide-reposts and topic-feed actions remain distinct [0.35ms]\n(pass) honest serving contract over local HTTP > classifier-free repost hiding does not promise to remove quotes or replies [0.25ms]\n(pass) honest serving contract over local HTTP > creator visibility applies to feed/pack URIs and metadata contains no top DIDs [0.77ms]\n(pass) honest serving contract over local HTTP > author diagnostics are aggregate only, with explicit unqualified readiness [0.74ms]\n(pass) honest serving contract over local HTTP > invalid/unconfigured authorization fails closed instead of downgrading [0.56ms]\n(pass) honest serving contract over local HTTP > legacy telemetry persistence is disabled and diagnostics preserve unknowns [0.87ms]\n(pass) honest serving contract over local HTTP > obsolete controls, invalid limits and oversized allocation are rejected [1.16ms]\n(pass) honest serving contract over local HTTP > malformed JSON and mismatched swipe pairs are rejected [0.70ms]\n(pass) score uncertainty is preserved > zero defaults, missing values and nonfinite scores remain unknown [0.32ms]\n\ntest/service_auth.test.ts:\n(pass) official inter-service JWT boundary with real cryptographic signatures > anonymous without a token, but no token accepted without trust configuration [2.12ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > valid ES256 signature authenticates the exact issuer once [4.09ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > valid ES256K signature works with the matching trusted key [8.36ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > wrong signature, key purpose and algorithm are rejected [4.48ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > audience fragment, endpoint and issuer are bound [1.23ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > expiry, issued-at, lifetime and nonce are required [1.26ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > nonce cache capacity fails closed [2.79ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > audience configuration requires the explicit service fragment [0.05ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > expiry is rechecked after asynchronous identity resolution [1.26ms]\n(pass) official inter-service JWT boundary with real cryptographic signatures > real signed JWT reaches local HTTP route; forged auth flag does not [4.62ms]\n\n 22 pass\n 0 fail\n 106 expect() calls\nRan 22 tests across 2 files. [109.00ms]\n"
+    },
+    {
+      "command": [
+        "bun",
+        "run",
+        "typecheck"
+      ],
+      "exit_code": 0,
+      "status": "passed",
+      "stdout": "",
+      "stderr": "$ tsc --noEmit\n"
+    }
+  ],
+  "fixture_scope": "structural_identifiers_numeric_scores_and_opaque_field_sentinels_only",
+  "semantic_post_quality_evaluated": false,
+  "qualification_gates": {
+    "local_http_contract": "passed",
+    "production_service_jwt_resolution": "unconfigured",
+    "distributed_nonce_protection": "unimplemented",
+    "consistent_derived_generation": "unimplemented",
+    "live_deletion_and_visibility_overlay": "unqualified",
+    "viewer_aware_hydration_and_moderation": "unimplemented",
+    "native_client_actions_and_visual_ui": "unperformed",
+    "recommendation_quality_and_health_calibration": "unperformed",
+    "versioned_telemetry_persistence": "disabled_pending_schema",
+    "production_promotion": "blocked"
+  }
+}

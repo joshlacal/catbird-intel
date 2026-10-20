@@ -1,19 +1,12 @@
 #!/usr/bin/env bun
-/**
- * Catbird Community Intelligence Serving API (Phases 2, 3, and 4):
- *   - Phase 2: Non-neural For You v0 (`getFeedSkeleton`) + Community Browse (`getCommunity`, `listCommunities`)
- *   - Phase 3: Timeline Health & Dual-Mode Author Decomposition (`getAuthorModes`)
- *   - Phase 4: Active Onboarding (`getSceneCards`, `getCalibrationSwipes`, `previewTimeline`, `solveBundle`)
- *
- * Design for sub-10ms feed compute / <=150ms onboarding bundle solve on netcup:
- *   - All community_items (top-200 posts per community), communities metadata,
- *     community_directory, and author_mode_mix are cached in memory (~35 MB RSS)
- *     and refreshed every 2 minutes from ClickHouse.
- *   - Hard Invariant #5 enforced: `hide_from_algorithmic = 1` is excluded from all
- *     algorithmic feeds and generalized onboarding; `!no-unauthenticated` is excluded
- *     from all unauthenticated onboarding previews (`unauthenticated !== false`).
+/** Local serving candidate. Ranking remains heuristic and deployment is unqualified.
+ * Public post responses contain identifiers for viewer-aware AppView hydration.
+ * No invented observations, unverified authentication, or exposure-budget claims.
  */
 import { ClickHouseWriter } from "./clickhouse.ts";
+import { AuthenticationError, createServiceAuthenticator, type ServiceAuthenticator } from "./service_auth.ts";
+import { SERVING_CONTRACT_VERSION, InvalidRequest, parseControls, passesControls, controlReport,
+  recommendationAction, type ServingControls } from "./serving_contract.ts";
 
 export interface PostCandidate {
   community: number;
@@ -100,7 +93,7 @@ const ch = new ClickHouseWriter({
   maxRows: 5000,
 });
 
-// Compact in-memory serving state (~35 MB RSS) for sub-10ms request-path scoring
+// In-memory serving state; production memory and latency qualification remain outstanding.
 let communitiesById = new Map<number, CommunityMeta>();
 let itemsByCommunity = new Map<number, PostCandidate[]>();
 let directoryByCommunity = new Map<number, DirectoryEntry[]>();
@@ -110,6 +103,51 @@ let hiddenAlgoDids = new Set<string>();
 let noUnauthDids = new Set<string>();
 const userAffinityCache = new Map<string, { ts: number; affinities: Affinity[] }>();
 let defaultCommunities: number[] = [];
+let sourceCommunityVersion: string | null = null;
+let cacheRefreshedAt: string | null = null;
+
+/** Explicit dependency seam for local fixture-backed HTTP tests and future atomic publication. */
+export function installServingSnapshot(snapshot: {
+  communities: CommunityMeta[]; items: PostCandidate[]; directory: DirectoryEntry[];
+  modes?: AuthorModeMix[]; hiddenDids?: string[]; noUnauthDids?: string[]; version: string;
+}) {
+  communitiesById = new Map(snapshot.communities.map((row) => [row.community, row]));
+  itemsByCommunity = new Map();
+  directoryByCommunity = new Map();
+  subcultureToCommunities = new Map();
+  for (const row of snapshot.items) itemsByCommunity.set(row.community, [...(itemsByCommunity.get(row.community) ?? []), row]);
+  for (const row of snapshot.directory) directoryByCommunity.set(row.community, [...(directoryByCommunity.get(row.community) ?? []), row]);
+  for (const row of snapshot.communities) if (row.seed_subculture) {
+    subcultureToCommunities.set(row.seed_subculture, [...(subcultureToCommunities.get(row.seed_subculture) ?? []), row.community]);
+  }
+  authorModeByDid = new Map((snapshot.modes ?? []).map((row) => [row.did, row]));
+  hiddenAlgoDids = new Set(snapshot.hiddenDids ?? []);
+  noUnauthDids = new Set(snapshot.noUnauthDids ?? []);
+  defaultCommunities = [...itemsByCommunity.keys()].slice(0, 12);
+  sourceCommunityVersion = snapshot.version;
+  cacheRefreshedAt = new Date().toISOString();
+  userAffinityCache.clear();
+}
+
+function ownerDid(uriOrDid: string): string | null {
+  if (uriOrDid.startsWith("did:")) return uriOrDid;
+  return /^at:\/\/(did:[^/]+)\//.exec(uriOrDid)?.[1] ?? null;
+}
+function eligibleOwner(uriOrDid: string, unauthenticated: boolean, noUnauthLabel = 0): boolean {
+  const owner = ownerDid(uriOrDid);
+  return owner !== null && !hiddenAlgoDids.has(owner) &&
+    (!unauthenticated || (noUnauthLabel === 0 && !noUnauthDids.has(owner)));
+}
+function publicCommunity(row: CommunityMeta) {
+  const { top_dids: _dids, top_followers: _followers, ...metadata } = row;
+  return metadata;
+}
+function postSkeleton(post: PostCandidate) { return { post: post.item_uri }; }
+function contractMetadata() {
+  return { contract_version: SERVING_CONTRACT_VERSION, source_community_version: sourceCommunityVersion,
+    derived_generation: null, cache_refreshed_at: cacheRefreshedAt,
+    qualification: "local_candidate_unqualified", hydration: "viewer_aware_appview_required" };
+}
 
 // Built-in persona presets for hand review & cold-start testing
 export const PERSONA_PRESETS: Record<string, string[]> = {
@@ -121,6 +159,11 @@ export const PERSONA_PRESETS: Record<string, string[]> = {
 
 const serveLogBuffer: Record<string, unknown>[] = [];
 const onboardingSessionBuffer: Record<string, unknown>[] = [];
+const DIAGNOSTIC_BUFFER_LIMIT = 1000;
+function bufferDiagnostic(buffer: Record<string, unknown>[], event: Record<string, unknown>) {
+  buffer.push({ contract_version: SERVING_CONTRACT_VERSION, ...event });
+  if (buffer.length > DIAGNOSTIC_BUFFER_LIMIT) buffer.splice(0, buffer.length - DIAGNOSTIC_BUFFER_LIMIT);
+}
 
 async function queryJsonEachRow<T>(sql: string): Promise<T[]> {
   const txt = await ch.query(`${sql} FORMAT JSONEachRow`);
@@ -225,8 +268,8 @@ export async function refreshServingCache(): Promise<{
               has_no_unauth_label, hide_from_algorithmic
        FROM catbird.author_mode_mix FINAL`,
     );
-  } catch {
-    modeRows = [];
+  } catch (error) {
+    throw new Error(`Author-mode refresh failed: ${String(error)}`);
   }
   const nextModes = new Map<string, AuthorModeMix>();
   const nextHidden = new Set<string>();
@@ -261,15 +304,15 @@ export async function refreshServingCache(): Promise<{
   // Also pull direct visibility declarations & profile !no-unauthenticated labels from Phase 0 tables
   try {
     const visRows = await queryJsonEachRow<{ did: string }>(
-      `SELECT did FROM catbird.visibility WHERE is_deleted = 0 AND hide_from_algorithmic = 1`,
+      `SELECT did FROM catbird.visibility FINAL WHERE is_deleted = 0 AND hide_from_algorithmic = 1`,
     );
     for (const v of visRows) nextHidden.add(v.did);
     const profNoUnauth = await queryJsonEachRow<{ did: string }>(
-      `SELECT did FROM catbird.profiles WHERE is_deleted = 0 AND has(self_labels, '!no-unauthenticated')`,
+      `SELECT did FROM catbird.profiles FINAL WHERE is_deleted = 0 AND has(self_labels, '!no-unauthenticated')`,
     );
     for (const p of profNoUnauth) nextNoUnauth.add(p.did);
-  } catch {
-    // Non-fatal
+  } catch (error) {
+    throw new Error(`Visibility refresh failed: ${String(error)}`);
   }
 
   communitiesById = nextComms;
@@ -284,6 +327,9 @@ export async function refreshServingCache(): Promise<{
     .slice(0, 12)
     .map(([cid]) => cid);
 
+  sourceCommunityVersion = versionTxt;
+  cacheRefreshedAt = new Date().toISOString();
+  userAffinityCache.clear();
   return {
     communities: communitiesById.size,
     candidate_posts: itemRows.length,
@@ -350,10 +396,8 @@ export async function scoreFeedForActor(
   actor: string,
   limit: number,
   cursorOffset: number,
-  maxPoliticalness = 0.7,
-  maxHeat = 0.7,
-  includeDebug = false,
-  unauthenticated = false,
+  controls: ServingControls = {},
+  unauthenticated = true,
 ) {
   const t0 = performance.now();
   const affinities = await resolveAffinities(actor);
@@ -375,7 +419,7 @@ export async function scoreFeedForActor(
       const p = posts[i]!;
       if (hiddenAlgoDids.has(p.did)) continue;
       if (unauthenticated && (p.has_no_unauth_label === 1 || noUnauthDids.has(p.did))) continue;
-      if (p.politicalness > maxPoliticalness || p.heat > maxHeat) continue;
+      if (!passesControls(p, controls)) continue;
       const contrib = aff.score * Math.max(p.residual_score, 0.05);
       const prev = candidateScores.get(p.item_uri);
       if (prev) {
@@ -409,58 +453,21 @@ export async function scoreFeedForActor(
   const slice = reranked.slice(cursorOffset, cursorOffset + limit);
   const computeMs = performance.now() - t0;
 
-  let polCount = 0;
-  let heatSum = 0;
-  for (const s of slice) {
-    if (s.cand.politicalness >= 0.45) polCount++;
-    heatSum += s.cand.heat;
-  }
-  const nServed = slice.length;
-  const polShare = nServed > 0 ? polCount / nServed : 0;
-  const meanHeat = nServed > 0 ? heatSum / nServed : 0;
-
-  serveLogBuffer.push({
+  const policy = controlReport(slice.map((entry) => entry.cand), controls);
+  bufferDiagnostic(serveLogBuffer, {
     ts: new Date().toISOString().replace("T", " ").replace("Z", ""),
     requester_did: actor,
     persona: PERSONA_PRESETS[actor] ? actor : "live_user",
-    items_served: nServed,
-    political_items: polCount,
-    political_share: Number(polShare.toFixed(4)),
-    mean_heat: Number(meanHeat.toFixed(4)),
+    items_served: slice.length,
+    control_policy: policy,
     compute_ms: Number(computeMs.toFixed(3)),
   });
 
   const nextCursor = cursorOffset + slice.length < reranked.length ? String(cursorOffset + slice.length) : undefined;
   return {
     cursor: nextCursor,
-    feed: slice.map((s) =>
-      includeDebug
-        ? {
-            post: s.cand.item_uri,
-            did: s.cand.did,
-            score: Number(s.finalScore.toFixed(4)),
-            residual_score: Number(s.cand.residual_score.toFixed(4)),
-            engagers: s.cand.engagers,
-            expected_engagements: Number(s.cand.expected_engagements.toFixed(2)),
-            politicalness: s.cand.politicalness,
-            heat: s.cand.heat,
-            has_no_unauth_label: s.cand.has_no_unauth_label,
-            text_preview: s.cand.text_preview,
-            communities: s.matchedCommunities,
-          }
-        : { post: s.cand.item_uri },
-    ),
-    meta: {
-      actor,
-      compute_ms: Number(computeMs.toFixed(3)),
-      items_served: nServed,
-      political_share: Number(polShare.toFixed(4)),
-      mean_heat: Number(meanHeat.toFixed(4)),
-      affinities: affinities.slice(0, 10).map((a) => ({
-        ...a,
-        label: communitiesById.get(a.community)?.label ?? `Community #${a.community}`,
-      })),
-    },
+    feed: slice.map((entry) => postSkeleton(entry.cand)),
+    meta: { actor, compute_ms: Number(computeMs.toFixed(3)), control_policy: policy },
   };
 }
 
@@ -468,11 +475,7 @@ export async function scoreFeedForActor(
 // Phase 4: Active Onboarding Engine (Scene Cards, Calibration Swipes, Preview, Portfolio Solver)
 // ============================================================================
 
-export interface OnboardingControls {
-  politics: number;          // 0.0 (none) -> 0.25 (low) -> 0.50 (moderate) -> 1.0 (unfiltered)
-  heat: number;              // 0.0 (calm) -> 0.35 (normal) -> 1.0 (unfiltered arguments)
-  live_event_volume: number; // 0.0 (low burst) -> 0.5 (balanced) -> 1.0 (full live-event stream)
-}
+export type OnboardingControls = ServingControls;
 
 export interface SwipeChoice {
   swipe_id: string;
@@ -570,14 +573,11 @@ function buildSceneCards(unauthenticated: boolean) {
       .filter((p) => {
         if (hiddenAlgoDids.has(p.did)) return false;
         if (unauthenticated && (p.has_no_unauth_label === 1 || noUnauthDids.has(p.did))) return false;
-        return p.politicalness <= 0.35 && p.heat <= 0.35 && p.text_preview.length >= 25;
+        return true;
       })
       .slice(0, 3)
       .map((p) => ({
-        uri: p.item_uri,
-        did: p.did,
-        text_preview: p.text_preview,
-        residual_score: Number(p.residual_score.toFixed(3)),
+        post: p.item_uri,
       }));
 
     const sampleAccounts = (directoryByCommunity.get(primaryCid) ?? [])
@@ -590,7 +590,6 @@ function buildSceneCards(unauthenticated: boolean) {
       .slice(0, 4)
       .map((d) => ({
         did: d.uri_or_did,
-        handle: d.handle_or_name,
         role: d.role,
       }));
 
@@ -603,7 +602,7 @@ function buildSceneCards(unauthenticated: boolean) {
       title: meta.label,
       keywords: meta.keywords.slice(0, 8),
       producer_count: meta.size,
-      medoid_posts: samplePosts,
+      sample_posts: samplePosts,
       sample_accounts: sampleAccounts,
     });
   }
@@ -621,10 +620,10 @@ function buildCalibrationSwipes(allocation: Record<string, number>, unauthentica
     const posts = (itemsByCommunity.get(cid) ?? []).filter((p) => {
       if (hiddenAlgoDids.has(p.did)) return false;
       if (unauthenticated && (p.has_no_unauth_label === 1 || noUnauthDids.has(p.did))) return false;
-      return p.text_preview.length >= 20 && p.heat <= 0.4;
+      return true;
     });
     return posts[0]
-      ? { uri: posts[0].item_uri, did: posts[0].did, text_preview: posts[0].text_preview }
+      ? { post: posts[0].item_uri }
       : null;
   };
 
@@ -730,7 +729,7 @@ function computePosteriorAffinities(
     }
   }
 
-  // 2. ThompsonBALD / log-odds swipe updates (including "neither" negative update)
+  // 2. Fixed additive swipe heuristic, including a negative update for neither
   for (const sw of swipes ?? []) {
     if (sw.choice === "a") {
       addW(sw.community_a, 1.25);
@@ -767,17 +766,14 @@ export function solveOnboardingBundle(
   controls: OnboardingControls,
   unauthenticated = true,
   targetSize = 25,
+  hideReposts = false,
+  deliveryModes: Record<string, "follow" | "hide_reposts" | "topic_feed"> = {},
 ) {
   const t0 = performance.now();
   const posterior = computePosteriorAffinities(allocation, swipes);
-  const politicsCap = Math.min(Math.max(Number(controls?.politics ?? 0.15), 0.02), 1.0);
-  const heatCap = Math.min(Math.max(Number(controls?.heat ?? 0.30), 0.05), 1.0);
-  const liveBurst = Math.min(Math.max(Number(controls?.live_event_volume ?? 0.35), 0.0), 1.0);
-
-  // Role quotas: 40% creator, 45% conversational, 15% curator (adjusted by live_event_volume slider)
-  const curatorShare = Number((0.08 + 0.16 * liveBurst).toFixed(3));
-  const creatorShare = Number((0.44 - 0.08 * liveBurst).toFixed(3));
-  const convShare = Number((1.0 - curatorShare - creatorShare).toFixed(3));
+  const curatorShare = 0.15;
+  const creatorShare = 0.40;
+  const convShare = 0.45;
 
   const targetQuotas: Record<string, number> = {
     creator: Math.round(targetSize * creatorShare),
@@ -794,14 +790,6 @@ export function solveOnboardingBundle(
     mode_label: "Follow all" | "Follow originals only" | "Topic feed only";
     influence: number;
     utility_score: number;
-    expected_orig_share: number;
-    expected_reply_share: number;
-    expected_repost_share: number;
-    expected_political_share: number;
-    expected_heat: number;
-    realized_7d_orig_share: number;
-    realized_7d_political_share: number;
-    realized_7d_heat: number;
   }
 
   const candidateMap = new Map<string, BundleAccount>();
@@ -812,6 +800,7 @@ export function solveOnboardingBundle(
     const dir = directoryByCommunity.get(aff.community) ?? [];
     const commLabel = communitiesById.get(aff.community)?.label ?? `Community #${aff.community}`;
     for (const d of dir) {
+      if (!eligibleOwner(d.uri_or_did, unauthenticated, d.has_no_unauth_label)) continue;
       if (d.kind === "feed") {
         feedsPool.push(d);
         continue;
@@ -831,50 +820,11 @@ export function solveOnboardingBundle(
         if (unauthenticated && modeInfo.has_no_unauth_label === 1) continue;
       }
 
-      const origPol = modeInfo ? modeInfo.orig_political_share : d.political_share * 0.6;
-      const overallPol = modeInfo ? modeInfo.overall_political_share : d.political_share;
-      const repostPol = modeInfo ? Math.max(modeInfo.repost_political_share, modeInfo.quote_political_share) : d.political_share;
-      const origHeat = modeInfo ? modeInfo.orig_heat_mean : 0.08;
-      const overallHeat = modeInfo ? modeInfo.overall_heat_mean : 0.10;
-
-      // Determine mode label based on user's politics & heat controls + dual-mode decomposition
-      let modeLabel: "Follow all" | "Follow originals only" | "Topic feed only" = "Follow all";
-      let effectivePol = overallPol;
-      let effectiveHeat = overallHeat;
-      let effectiveOrigShare = modeInfo
-        ? modeInfo.orig_posts / Math.max(modeInfo.total_events_14d, 1)
-        : d.original_share;
-      let effectiveRepostShare = modeInfo
-        ? (modeInfo.reposts + modeInfo.quote_posts) / Math.max(modeInfo.total_events_14d, 1)
-        : Math.max(1 - d.original_share, 0) * 0.5;
-      let effectiveReplyShare = Math.max(1 - effectiveOrigShare - effectiveRepostShare, 0);
-
-      if (origPol > politicsCap + 0.15 || origHeat > heatCap + 0.15) {
-        modeLabel = "Topic feed only";
-        effectivePol = Math.min(origPol * 0.35, politicsCap);
-        effectiveHeat = Math.min(origHeat * 0.5, heatCap);
-        effectiveOrigShare = 0.85;
-        effectiveRepostShare = 0.05;
-        effectiveReplyShare = 0.10;
-      } else if (
-        overallPol > politicsCap ||
-        repostPol > politicsCap + 0.08 ||
-        overallHeat > heatCap ||
-        (modeInfo?.follow_originals_only_eligible === 1 && politicsCap <= 0.35)
-      ) {
-        modeLabel = "Follow originals only";
-        effectivePol = origPol;
-        effectiveHeat = origHeat;
-        effectiveOrigShare = 0.82;
-        effectiveRepostShare = 0.0;
-        effectiveReplyShare = 0.18;
-      }
-
-      const utility =
-        aff.score *
-        Math.log1p(Math.max(d.influence, 0.5)) *
-        (modeLabel === "Topic feed only" ? 0.55 : 1.0) *
-        Math.max(1.0 - Math.max(effectivePol - politicsCap, 0) * 1.5, 0.2);
+      // Delivery choices are explicit requests, independent of unqualified health scores.
+      const requestedMode = deliveryModes[did] ?? "follow";
+      const modeLabel = requestedMode === "topic_feed" ? "Topic feed only"
+        : requestedMode === "hide_reposts" ? "Follow originals only" : "Follow all";
+      const utility = aff.score * Math.log1p(Math.max(d.influence, 0.5));
 
       const prev = candidateMap.get(did);
       if (!prev || utility > prev.utility_score) {
@@ -887,20 +837,12 @@ export function solveOnboardingBundle(
           mode_label: modeLabel,
           influence: Number(d.influence.toFixed(3)),
           utility_score: Number(utility.toFixed(4)),
-          expected_orig_share: Number(effectiveOrigShare.toFixed(4)),
-          expected_reply_share: Number(effectiveReplyShare.toFixed(4)),
-          expected_repost_share: Number(effectiveRepostShare.toFixed(4)),
-          expected_political_share: Number(effectivePol.toFixed(4)),
-          expected_heat: Number(effectiveHeat.toFixed(4)),
-          realized_7d_orig_share: Number((effectiveOrigShare * 0.98 + 0.01).toFixed(4)),
-          realized_7d_political_share: Number((effectivePol * 0.96 + 0.005).toFixed(4)),
-          realized_7d_heat: Number((effectiveHeat * 0.97 + 0.005).toFixed(4)),
         });
       }
     }
   }
 
-  // Submodular coverage-aware selection across roles and communities
+  // Two-pass utility heuristic with role/community caps on the first pass
   const allCands = [...candidateMap.values()].sort((a, b) => b.utility_score - a.utility_score);
   const selected: BundleAccount[] = [];
   const roleCounts: Record<string, number> = { creator: 0, conversational: 0, curator: 0 };
@@ -928,8 +870,6 @@ export function solveOnboardingBundle(
     .slice(0, 4)
     .map((f) => ({
       uri: f.uri_or_did,
-      display_name: f.handle_or_name,
-      description: f.description,
       community: f.community,
       community_label: communitiesById.get(f.community)?.label ?? `Community #${f.community}`,
     }));
@@ -939,43 +879,17 @@ export function solveOnboardingBundle(
     .slice(0, 3)
     .map((p) => ({
       uri: p.uri_or_did,
-      name: p.handle_or_name,
-      description: p.description,
       community: p.community,
       community_label: communitiesById.get(p.community)?.label ?? `Community #${p.community}`,
     }));
 
-  const nSel = Math.max(selected.length, 1);
-  const avg = (fn: (a: BundleAccount) => number) =>
-    Number((selected.reduce((s, a) => s + fn(a), 0) / nSel).toFixed(4));
-
-  const predictedMix = {
-    original_share: avg((a) => a.expected_orig_share),
-    reply_share: avg((a) => a.expected_reply_share),
-    repost_share: avg((a) => a.expected_repost_share),
-    political_share: avg((a) => a.expected_political_share),
-    heat_share: avg((a) => a.expected_heat),
-    creator_role_share: Number(((roleCounts.creator ?? 0) / nSel).toFixed(4)),
-    conversational_role_share: Number(((roleCounts.conversational ?? 0) / nSel).toFixed(4)),
-    curator_role_share: Number(((roleCounts.curator ?? 0) / nSel).toFixed(4)),
-  };
-
-  const realized7dMix = {
-    original_share: avg((a) => a.realized_7d_orig_share),
-    reply_share: Number((1.0 - avg((a) => a.realized_7d_orig_share) - avg((a) => a.expected_repost_share)).toFixed(4)),
-    repost_share: avg((a) => a.expected_repost_share),
-    political_share: avg((a) => a.realized_7d_political_share),
-    heat_share: avg((a) => a.realized_7d_heat),
-    max_abs_deviation_points: Number(
-      (
-        Math.max(
-          Math.abs(predictedMix.original_share - avg((a) => a.realized_7d_orig_share)),
-          Math.abs(predictedMix.political_share - avg((a) => a.realized_7d_political_share)),
-          Math.abs(predictedMix.heat_share - avg((a) => a.realized_7d_heat)),
-        ) * 100
-      ).toFixed(2),
-    ),
-  };
+  const actions = selected.map((account) => {
+    const action = recommendationAction(account.did, account.community, account.mode_label);
+    if (action.type === "follow_account" && hideReposts) action.client_preferences.hideReposts = true;
+    return action;
+  });
+  const follows = actions.filter((action) => action.type === "follow_account");
+  const topicFeeds = actions.filter((action) => action.type === "topic_feed_intent");
 
   const solveMs = Number((performance.now() - t0).toFixed(3));
   const sessionId = `onb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -984,28 +898,29 @@ export function solveOnboardingBundle(
     session_id: sessionId,
     solve_ms: solveMs,
     unauthenticated,
-    controls: { politics: politicsCap, heat: heatCap, live_event_volume: liveBurst },
+    controls,
+    actions_applied: false,
+    delivery_preferences_source: "explicit_request",
     posterior_communities: posterior.map((p) => ({
       ...p,
       label: communitiesById.get(p.community)?.label ?? `Community #${p.community}`,
     })),
     role_summary: {
-      total_follows: selected.length,
+      total_follows: follows.length,
       creators: roleCounts.creator ?? 0,
       conversational: roleCounts.conversational ?? 0,
       curators: roleCounts.curator ?? 0,
-      follow_all_count: selected.filter((a) => a.mode_label === "Follow all").length,
-      follow_originals_only_count: selected.filter((a) => a.mode_label === "Follow originals only").length,
-      topic_feed_only_count: selected.filter((a) => a.mode_label === "Topic feed only").length,
+      hide_reposts_count: follows.filter((action) => action.client_preferences.hideReposts).length,
+      topic_feed_only_count: topicFeeds.length,
     },
-    predicted_mix: predictedMix,
-    realized_7d_mix: realized7dMix,
-    follows: selected,
+    actions,
+    follows,
+    topic_feeds: topicFeeds,
     feeds: uniqueFeeds,
     starter_packs: uniquePacks,
   };
 
-  onboardingSessionBuffer.push({
+  bufferDiagnostic(onboardingSessionBuffer, {
     session_id: sessionId,
     created_at: new Date().toISOString().replace("T", " ").replace("Z", ""),
     persona: Object.keys(allocation).slice(0, 3).join("+") || "default",
@@ -1015,222 +930,226 @@ export function solveOnboardingBundle(
     controls_json: JSON.stringify(controls ?? {}),
     posterior_json: JSON.stringify(posterior),
     bundle_json: JSON.stringify({
-      follows: selected.map((f) => ({ did: f.did, role: f.role, mode: f.mode_label })),
+      actions,
       feeds: uniqueFeeds.map((f) => f.uri),
       packs: uniquePacks.map((p) => p.uri),
     }),
-    predicted_mix_json: JSON.stringify(predictedMix),
-    realized_mix_json: JSON.stringify(realized7dMix),
     solve_ms: solveMs,
   });
 
   return bundleResult;
 }
 
-// Background flush for serve & onboarding telemetry
-setInterval(async () => {
-  if (serveLogBuffer.length > 0) {
-    const batch = serveLogBuffer.splice(0, serveLogBuffer.length);
-    try {
-      await ch.insert("feed_serve_log", batch);
-    } catch {
-      // Non-fatal
+export function pendingTelemetryForTests() {
+  return { feeds: [...serveLogBuffer], onboarding: [...onboardingSessionBuffer] };
+}
+
+export async function flushTelemetry() {
+  // Existing database tables contain invented outcome fields and unqualified score aggregates.
+  // Do not silently fill their omitted fields with defaults. A versioned migration must precede writes.
+  return { persisted: false, reason: "legacy_schema_incompatible", retention: "bounded_process_memory" };
+}
+
+function record(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new InvalidRequest(`${name} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function integer(value: unknown, fallback: number, min: number, max: number): number {
+  const n = value === null || value === undefined ? fallback : Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) throw new InvalidRequest(`Expected an integer from ${min} to ${max}`);
+  return n;
+}
+
+function allocationInput(value: unknown): Record<string, number> {
+  if (value === undefined) return {};
+  const allocation = record(value, "allocation");
+  if (Object.keys(allocation).length > 6) throw new InvalidRequest("At most six allocated scenes");
+  const parsed: Record<string, number> = {};
+  let total = 0;
+  for (const [key, points] of Object.entries(allocation)) {
+    if (!subcultureToCommunities.has(key) && !communitiesById.has(Number(key))) throw new InvalidRequest("Unknown scene");
+    if (typeof points !== "number") throw new InvalidRequest("Allocation points must be numbers");
+    parsed[key] = integer(points, 0, 0, 6);
+    total += parsed[key]!;
+  }
+  if (total > 6) throw new InvalidRequest("Allocation exceeds the six-point budget");
+  return parsed;
+}
+
+function swipeInput(value: unknown, allocation: Record<string, number>, unauthenticated: boolean): SwipeChoice[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 15) throw new InvalidRequest("At most fifteen swipes");
+  const offered = new Map(buildCalibrationSwipes(allocation, unauthenticated).swipes.map((swipe) => [swipe.swipe_id, swipe]));
+  const seen = new Set<string>();
+  return value.map((raw) => {
+    const swipe = record(raw, "swipe");
+    if (typeof swipe.swipe_id !== "string" || seen.has(swipe.swipe_id)) throw new InvalidRequest("Missing or repeated swipe ID");
+    const original = offered.get(swipe.swipe_id);
+    if (!original || swipe.community_a !== original.option_a.community || swipe.community_b !== original.option_b.community) {
+      throw new InvalidRequest("Swipe does not match the offered community pair");
+    }
+    if (!["a", "b", "both", "neither"].includes(String(swipe.choice))) throw new InvalidRequest("Invalid swipe choice");
+    seen.add(swipe.swipe_id);
+    return swipe as unknown as SwipeChoice;
+  });
+}
+
+async function bodyInput(request: Request): Promise<Record<string, unknown>> {
+  if (!request.headers.get("content-type")?.startsWith("application/json")) throw new InvalidRequest("Expected application/json");
+  const text = await request.text();
+  if (Buffer.byteLength(text) > 65536) throw new InvalidRequest("Request body exceeds 64 KiB");
+  try { return record(JSON.parse(text), "body"); }
+  catch (error) {
+    if (error instanceof InvalidRequest) throw error;
+    throw new InvalidRequest("Malformed JSON");
+  }
+}
+
+function deliveryInput(body: Record<string, unknown>) {
+  const preferences = body.preferences === undefined ? {} : record(body.preferences, "preferences");
+  if (Object.keys(preferences).some((key) => key !== "hideReposts") ||
+      (preferences.hideReposts !== undefined && typeof preferences.hideReposts !== "boolean")) {
+    throw new InvalidRequest("preferences supports only boolean hideReposts");
+  }
+  const modes = body.delivery_modes === undefined ? {} : record(body.delivery_modes, "delivery_modes");
+  if (Object.keys(modes).length > 100) throw new InvalidRequest("Too many delivery modes");
+  for (const [did, mode] of Object.entries(modes)) {
+    if (!/^did:(plc|web):[^#\s]+$/.test(did) || !["follow", "hide_reposts", "topic_feed"].includes(String(mode))) {
+      throw new InvalidRequest("Invalid delivery mode");
     }
   }
-  if (onboardingSessionBuffer.length > 0) {
-    const batch = onboardingSessionBuffer.splice(0, onboardingSessionBuffer.length);
+  return { hideReposts: preferences.hideReposts === true, modes: modes as Record<string, "follow" | "hide_reposts" | "topic_feed"> };
+}
+
+export function createApiHandler(options: { authenticate?: ServiceAuthenticator } = {}) {
+  const authenticate = options.authenticate ?? createServiceAuthenticator();
+  const json = (body: Record<string, unknown>, status = 200) =>
+    Response.json({ ...body, ...contractMetadata() }, { status, headers: { "cache-control": "no-store" } });
+
+  return async (request: Request): Promise<Response> => {
     try {
-      await ch.insert("onboarding_sessions", batch);
-    } catch {
-      // Non-fatal
-    }
-  }
-}, 5000);
-
-// Refresh cache on startup and every 2 minutes
-await refreshServingCache();
-setInterval(() => {
-  refreshServingCache().catch(() => {});
-}, 120_000);
-
-const port = Number(process.env.PORT ?? 3210);
-Bun.serve({
-  port,
-  hostname: process.env.HOST ?? "127.0.0.1",
-  async fetch(req: Request): Promise<Response> {
-    const url = new URL(req.url);
-    if (url.pathname === "/health") {
-      return Response.json({
+      const url = new URL(request.url);
+      const path = url.pathname;
+      if (path === "/health") return json({
         ok: true,
+        ready_for_public_promotion: false,
+        blockers: ["derived_generation_unversioned", "live_deletion_overlay_unqualified", "viewer_moderation_requires_hydration"],
+        telemetry_persistence: "disabled_pending_versioned_schema",
         communities: communitiesById.size,
         communities_with_posts: itemsByCommunity.size,
         author_modes_cached: authorModeByDid.size,
-        hidden_algo_dids: hiddenAlgoDids.size,
-        no_unauth_dids: noUnauthDids.size,
       });
-    }
-    if (url.pathname === "/xrpc/app.bsky.feed.getFeedSkeleton") {
-      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 30), 1), 100);
-      const cursor = Math.max(Number(url.searchParams.get("cursor") ?? 0) || 0, 0);
-      const actor =
-        url.searchParams.get("actor") ??
-        url.searchParams.get("persona") ??
-        "josh_catbird_builder";
-      const debug = url.searchParams.get("debug") === "1";
-      const unauth = url.searchParams.get("unauthenticated") === "1";
-      const maxPol = Number(url.searchParams.get("max_politicalness") ?? 0.7);
-      const maxHeat = Number(url.searchParams.get("max_heat") ?? 0.7);
-      const result = await scoreFeedForActor(actor, limit, cursor, maxPol, maxHeat, debug, unauth);
-      return Response.json(result);
-    }
-    if (url.pathname === "/xrpc/blue.catbird.intel.getCommunity" || url.pathname.startsWith("/community/")) {
-      const cid = Number(
-        url.searchParams.get("community") ?? url.pathname.split("/").pop() ?? 0,
-      );
-      const meta = communitiesById.get(cid);
-      if (!meta) {
-        return Response.json({ error: "CommunityNotFound", community: cid }, { status: 404 });
-      }
-      const unauth = url.searchParams.get("unauthenticated") === "1";
-      const dir = (directoryByCommunity.get(cid) ?? []).filter(
-        (e) => !hiddenAlgoDids.has(e.uri_or_did) && (!unauth || (e.has_no_unauth_label === 0 && !noUnauthDids.has(e.uri_or_did))),
-      );
-      const posts = (itemsByCommunity.get(cid) ?? [])
-        .filter((p) => !hiddenAlgoDids.has(p.did) && (!unauth || (p.has_no_unauth_label === 0 && !noUnauthDids.has(p.did))))
-        .slice(0, 30);
-      const byRole: Record<string, DirectoryEntry[]> = {
-        creator: [],
-        conversational: [],
-        curator: [],
-      };
-      const feeds: DirectoryEntry[] = [];
-      const packs: DirectoryEntry[] = [];
-      for (const e of dir) {
-        if (e.kind === "account") {
-          (byRole[e.role] ??= []).push(e);
-        } else if (e.kind === "feed") {
-          feeds.push(e);
-        } else if (e.kind === "pack") {
-          packs.push(e);
-        }
-      }
-      return Response.json({
-        community: meta,
-        accounts_by_role: byRole,
-        posts,
-        feeds,
-        packs,
-      });
-    }
-    if (url.pathname === "/xrpc/blue.catbird.intel.listCommunities") {
-      const sceneFilter = url.searchParams.get("scene_id");
-      const domainFilter = url.searchParams.get("domain_id");
-      let list = [...communitiesById.values()];
-      if (sceneFilter !== null) list = list.filter((c) => c.scene_id === Number(sceneFilter));
-      if (domainFilter !== null) list = list.filter((c) => c.domain_id === Number(domainFilter));
-      return Response.json({
-        total: list.length,
-        communities: list.slice(0, 200).map((c) => ({
-          ...c,
-          active_posts: itemsByCommunity.get(c.community)?.length ?? 0,
-        })),
-      });
-    }
-    if (url.pathname === "/xrpc/blue.catbird.intel.getAuthorModes") {
-      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 100), 1), 10000);
-      const all = [...authorModeByDid.values()].sort(
-        (a, b) =>
-          (b.total_events_14d > 0 ? 1 : 0) - (a.total_events_14d > 0 ? 1 : 0) ||
-          b.followers_est - a.followers_est,
-      );
-      const top10k = all.slice(0, 10000);
-      const activeProducers = all.filter((a) => a.total_events_14d > 0);
-      const eligibleCount = top10k.filter((a) => a.follow_originals_only_eligible === 1).length;
-      const modeCounts = {
-        "Follow all": top10k.filter((a) => a.recommend_mode === "Follow all").length,
-        "Follow originals only": top10k.filter((a) => a.recommend_mode === "Follow originals only").length,
-        "Topic feed only": top10k.filter((a) => a.recommend_mode === "Topic feed only").length,
-      };
-      return Response.json({
-        total_producers_scored: all.length,
-        active_producers_in_window: activeProducers.length,
-        top_10k_evaluated: top10k.length,
-        follow_originals_only_eligible_in_top_10k: eligibleCount,
-        mode_distribution_top_10k: modeCounts,
-        sample_dual_mode_producers: top10k.filter((a) => a.follow_originals_only_eligible === 1).slice(0, 10),
-        producers: all.slice(0, limit),
-      });
-    }
-    if (url.pathname === "/xrpc/blue.catbird.onboarding.getSceneCards") {
-      const unauth = url.searchParams.get("unauthenticated") !== "false";
-      return Response.json(buildSceneCards(unauth));
-    }
-    if (url.pathname === "/xrpc/blue.catbird.onboarding.getCalibrationSwipes") {
-      let body: Record<string, unknown> = {};
-      if (req.method === "POST") {
-        try {
-          body = (await req.json()) as Record<string, unknown>;
-        } catch {
-          body = {};
-        }
-      }
-      const allocation = (body.allocation as Record<string, number>) ?? { systems_rust: 2, apple_swift_indie: 2, local_ai_ml: 2 };
-      const unauth = body.unauthenticated !== false;
-      return Response.json(buildCalibrationSwipes(allocation, unauth));
-    }
-    if (url.pathname === "/xrpc/blue.catbird.onboarding.previewTimeline" && req.method === "POST") {
-      const body = (await req.json()) as Record<string, unknown>;
-      const allocation = (body.allocation as Record<string, number>) ?? {};
-      const swipes = (body.swipes as SwipeChoice[]) ?? [];
-      const controls = (body.controls as OnboardingControls) ?? { politics: 0.15, heat: 0.30, live_event_volume: 0.35 };
-      const unauth = body.unauthenticated !== false;
-      const bundle = solveOnboardingBundle(allocation, swipes, controls, unauth, 25);
+      const method = path.startsWith("/xrpc/") ? path.slice(6) : "blue.catbird.intel.getCommunity";
+      const viewer = await authenticate(request, method);
+      const unauthenticated = viewer === null; // Never infer authentication from request fields.
+      const postRoute = path === "/xrpc/blue.catbird.onboarding.previewTimeline" ||
+        path === "/xrpc/blue.catbird.onboarding.solveBundle" ||
+        path === "/xrpc/blue.catbird.onboarding.getCalibrationSwipes";
+      if (request.method !== (postRoute ? "POST" : "GET")) return json({ error: "MethodNotAllowed" }, 405);
 
-      // Build preview posts from posterior communities obeying politics & heat sliders and Hard Invariant #5
-      const previewPosts: Record<string, unknown>[] = [];
-      for (const pComm of bundle.posterior_communities.slice(0, 8)) {
-        const items = itemsByCommunity.get(pComm.community) ?? [];
-        for (const it of items) {
-          if (hiddenAlgoDids.has(it.did)) continue;
-          if (unauth && (it.has_no_unauth_label === 1 || noUnauthDids.has(it.did))) continue;
-          if (it.politicalness > controls.politics + 0.15 || it.heat > controls.heat + 0.15) continue;
-          previewPosts.push({
-            uri: it.item_uri,
-            did: it.did,
-            community: it.community,
-            community_label: pComm.label,
-            politicalness: it.politicalness,
-            heat: it.heat,
-            has_no_unauth_label: it.has_no_unauth_label,
-            text_preview: it.text_preview,
-          });
-          if (previewPosts.length >= 25) break;
+      if (path === "/xrpc/app.bsky.feed.getFeedSkeleton") {
+        for (const obsolete of ["max_politicalness", "max_heat", "live_event_volume"]) {
+          if (url.searchParams.has(obsolete)) throw new InvalidRequest("Use the versioned baseline_score_cutoff contract");
         }
-        if (previewPosts.length >= 25) break;
+        const rawCutoff = url.searchParams.get("baseline_score_cutoff");
+        let controls: ServingControls = {};
+        if (rawCutoff !== null) {
+          try { controls = parseControls({ baseline_score_cutoff: JSON.parse(rawCutoff) }); }
+          catch { throw new InvalidRequest("Invalid baseline_score_cutoff"); }
+        }
+        const actorParam = url.searchParams.get("actor");
+        if (actorParam && actorParam !== viewer) return json({ error: "ActorNotAuthorized" }, 403);
+        const persona = url.searchParams.get("persona");
+        if (persona && !PERSONA_PRESETS[persona]) throw new InvalidRequest("Unknown editorial persona");
+        const actor = viewer ?? persona ?? "anonymous";
+        const result = await scoreFeedForActor(actor,
+          integer(url.searchParams.get("limit"), 30, 1, 100),
+          integer(url.searchParams.get("cursor"), 0, 0, 100000),
+          controls, unauthenticated);
+        return json({ ...result, unauthenticated });
       }
 
-      return Response.json({
-        unauthenticated: unauth,
-        controls: bundle.controls,
-        predicted_mix: bundle.predicted_mix,
-        realized_7d_mix: bundle.realized_7d_mix,
-        preview_posts: previewPosts,
-      });
+      if (path === "/xrpc/blue.catbird.intel.getCommunity" || path.startsWith("/community/")) {
+        const cid = integer(url.searchParams.get("community") ?? path.split("/").pop(), 0, 0, 0xffffffff);
+        const community = communitiesById.get(cid);
+        if (!community) return json({ error: "CommunityNotFound" }, 404);
+        const entries = (directoryByCommunity.get(cid) ?? []).filter((entry) =>
+          eligibleOwner(entry.uri_or_did, unauthenticated, entry.has_no_unauth_label));
+        const accounts: Record<string, { did: string }[]> = {};
+        for (const entry of entries.filter((entry) => entry.kind === "account")) {
+          (accounts[entry.role] ??= []).push({ did: entry.uri_or_did });
+        }
+        return json({
+          unauthenticated, community: publicCommunity(community), accounts_by_role: accounts,
+          posts: (itemsByCommunity.get(cid) ?? []).filter((post) =>
+            eligibleOwner(post.did, unauthenticated, post.has_no_unauth_label)).slice(0, 30).map(postSkeleton),
+          feeds: entries.filter((entry) => entry.kind === "feed").map((entry) => ({ uri: entry.uri_or_did })),
+          packs: entries.filter((entry) => entry.kind === "pack").map((entry) => ({ uri: entry.uri_or_did })),
+        });
+      }
+      if (path === "/xrpc/blue.catbird.intel.listCommunities") {
+        let communities = [...communitiesById.values()];
+        for (const key of ["scene_id", "domain_id"] as const) {
+          if (url.searchParams.has(key)) {
+            const value = integer(url.searchParams.get(key), 0, 0, 65535);
+            communities = communities.filter((community) => community[key] === value);
+          }
+        }
+        return json({ total: communities.length, communities: communities.slice(0, 200).map(publicCommunity) });
+      }
+      if (path === "/xrpc/blue.catbird.intel.getAuthorModes") {
+        // Aggregate operational diagnostics only; no inferred political profile of an identified author.
+        return json({ total_producers_scored: authorModeByDid.size,
+          active_producers_in_window: [...authorModeByDid.values()].filter((author) => author.total_events_14d > 0).length,
+          scoring_status: "legacy_heuristic_unqualified", individual_profiles_available: false });
+      }
+      if (path === "/xrpc/blue.catbird.onboarding.getSceneCards") {
+        return json(buildSceneCards(unauthenticated));
+      }
+      if (postRoute) {
+        const body = await bodyInput(request);
+        const allocation = allocationInput(body.allocation);
+        const controls = parseControls(body.controls);
+        if (body.live_event_volume !== undefined) throw new InvalidRequest("Event-volume control is unavailable");
+        if (path.endsWith(".getCalibrationSwipes")) {
+          return json({ ...buildCalibrationSwipes(allocation, unauthenticated), unauthenticated });
+        }
+        const swipes = swipeInput(body.swipes, allocation, unauthenticated);
+        const delivery = deliveryInput(body);
+        const bundle = solveOnboardingBundle(allocation, swipes, controls, unauthenticated,
+          integer(body.target_size, 25, 10, 50), delivery.hideReposts, delivery.modes);
+        if (path.endsWith(".solveBundle")) return json(bundle);
+        const preview: PostCandidate[] = [];
+        const seen = new Set<string>();
+        for (const affinity of bundle.posterior_communities.slice(0, 8)) {
+          for (const post of itemsByCommunity.get(affinity.community) ?? []) {
+            if (seen.has(post.item_uri) || !eligibleOwner(post.did, unauthenticated, post.has_no_unauth_label) ||
+                !passesControls(post, controls)) continue;
+            preview.push(post); seen.add(post.item_uri);
+            if (preview.length >= 25) break;
+          }
+          if (preview.length >= 25) break;
+        }
+        return json({ unauthenticated, preview_posts: preview.map(postSkeleton),
+          control_policy: controlReport(preview, controls) });
+      }
+      // Cache publication remains internal; service authentication does not confer administration.
+      if (path === "/xrpc/blue.catbird.intel.refreshCache") return json({ error: "InternalOperationOnly" }, 403);
+      return json({ error: "NotFound" }, 404);
+    } catch (error) {
+      if (error instanceof AuthenticationError) return json({ error: "AuthenticationRequired", message: error.message }, 401);
+      if (error instanceof InvalidRequest) return json({ error: "InvalidRequest", message: error.message }, 400);
+      console.error("serving request failed", error instanceof Error ? error.name : "UnknownError");
+      return json({ error: "InternalServerError" }, 500);
     }
-    if (url.pathname === "/xrpc/blue.catbird.onboarding.solveBundle" && req.method === "POST") {
-      const body = (await req.json()) as Record<string, unknown>;
-      const allocation = (body.allocation as Record<string, number>) ?? {};
-      const swipes = (body.swipes as SwipeChoice[]) ?? [];
-      const controls = (body.controls as OnboardingControls) ?? { politics: 0.15, heat: 0.30, live_event_volume: 0.35 };
-      const unauth = body.unauthenticated !== false;
-      const targetSize = Math.min(Math.max(Number(body.target_size ?? 25), 10), 50);
-      return Response.json(solveOnboardingBundle(allocation, swipes, controls, unauth, targetSize));
-    }
-    if (url.pathname === "/xrpc/blue.catbird.intel.refreshCache" && req.method === "POST") {
-      const stats = await refreshServingCache();
-      return Response.json({ ok: true, ...stats });
-    }
-    return Response.json({ error: "NotFound" }, { status: 404 });
-  },
-});
-console.log(`catbird-intel-api listening on :${port}`);
+  };
+}
+
+if (import.meta.main) {
+  await refreshServingCache();
+  setInterval(() => { void refreshServingCache().catch((error) => console.error("cache refresh failed", String(error))); }, 120000);
+  const server = Bun.serve({ hostname: process.env.HOST ?? "127.0.0.1", port: Number(process.env.PORT ?? 3210),
+    maxRequestBodySize: 65536, fetch: createApiHandler() });
+  console.log(`catbird-intel-api local candidate listening on ${server.url}; authenticated serving is unconfigured`);
+}

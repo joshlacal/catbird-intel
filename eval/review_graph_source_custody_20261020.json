@@ -1,0 +1,66 @@
+{
+  "evidence_class": "source_observations_and_numeric_structural_tests_not_graph_quality",
+  "pre_edit": {
+    "observed_at": "2026-10-20T10:24:41.323993+00:00",
+    "files": [
+      {
+        "source_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/graph/eval_phase1.py",
+        "preserved_path": "/tmp/catbird-intel-review-followup-20261020/pre-edit-20261020T102441Z/eval_phase1.py",
+        "sha256": "b6d83f2601aa3f06802d6b8024403265ca4a006db8c71459d99ee6b39553e8fb",
+        "bytes": 28318
+      },
+      {
+        "source_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/graph/test_graph_guards.py",
+        "preserved_path": "/tmp/catbird-intel-review-followup-20261020/pre-edit-20261020T102441Z/test_graph_guards.py",
+        "sha256": "0e055970abf99aa6243c633b57382b91b2d7a96a402eec0e399e7872ca9a0c2c",
+        "bytes": 4559
+      }
+    ],
+    "pipeline_status": {
+      "started_at": "2026-10-20T07:04:35.098959+00:00",
+      "graph_version": "phase1-v1",
+      "stage": "waiting_for_fold",
+      "fold_pid": 95795,
+      "stages": [],
+      "driver_pid": 10905,
+      "updated_at": "2026-10-20T07:04:35.107645+00:00",
+      "observed_fold_command": "clickhouse local --path /Users/joshlacalamito/catbird-lake-local/graph-build/ch --queries-file /Users/joshlacalamito/catbird-lake-local/graph-build/fold.sql -- --user_files_path=/Users/joshlacalamito/catbird-lake-local"
+    },
+    "processes": "  PID  ELAPSED COMMAND\n10905 03:20:07 /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python graph/run_phase1_v1.py --fold-pid 95795 --rayon-threads 8\n95795 03:36:16 clickhouse local --path /Users/joshlacalamito/catbird-lake-local/graph-build/ch --queries-file /Users/joshlacalamito/catbird-lake-local/graph-build/fold.sql -- --user_files_path=/Users/joshlacalamito/catbird-lake-local\n",
+    "classification": "Exact pre-edit source copies; no claim about live driver executed-source hash; evaluator has not run according to current waiting_for_fold status."
+  },
+  "post_edit": {
+    "observed_at": "2026-10-20T10:33:16.152927+00:00",
+    "purpose": "Evaluator source preserved after review changes, before waiting driver launches its evaluator subprocess; observation is not retroactive driver execution attestation.",
+    "files": [
+      {
+        "path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/graph/eval_phase1.py",
+        "preserved_copy": "/tmp/catbird-intel-review-followup-20261020/post-edit-20261020T103316Z/eval_phase1.py",
+        "bytes": 49736,
+        "mtime_ns": 1792492332915169300,
+        "sha256": "c28a3f8542804d621e48be519fe874d5cf1aa9d86bb41c4f516b9b30ecd5724d"
+      },
+      {
+        "path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/graph/test_eval_diagnostics.py",
+        "preserved_copy": "/tmp/catbird-intel-review-followup-20261020/post-edit-20261020T103316Z/test_eval_diagnostics.py",
+        "bytes": 11151,
+        "mtime_ns": 1792492376004054725,
+        "sha256": "9bd4ca32f5251d5d651f4cb98546c9f2d813826f3abc4721454124d183e87b27"
+      }
+    ],
+    "tests_returncode": 0,
+    "test_log": "/tmp/catbird-intel-review-followup-20261020/post-edit-20261020T103316Z/tests.txt",
+    "processes": "10905 03:28:42 /opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python graph/run_phase1_v1.py --fold-pid 95795 --rayon-threads 8\n95795 03:44:51 clickhouse local --path /Users/joshlacalamito/catbird-lake-local/graph-build/ch --queries-file /Users/joshlacalamito/catbird-lake-local/graph-build/fold.sql -- --user_files_path=/Users/joshlacalamito/catbird-lake-local\n",
+    "pipeline_status_observed": {
+      "started_at": "2026-10-20T07:04:35.098959+00:00",
+      "graph_version": "phase1-v1",
+      "stage": "waiting_for_fold",
+      "fold_pid": 95795,
+      "stages": [],
+      "driver_pid": 10905,
+      "updated_at": "2026-10-20T07:04:35.107645+00:00",
+      "observed_fold_command": "clickhouse local --path /Users/joshlacalamito/catbird-lake-local/graph-build/ch --queries-file /Users/joshlacalamito/catbird-lake-local/graph-build/fold.sql -- --user_files_path=/Users/joshlacalamito/catbird-lake-local"
+    }
+  },
+  "driver_source_limitation": "Running driver was loaded before these edits; these hashes do not attest its in-memory code. Evaluator observes its own file hash when its future subprocess starts."
+}

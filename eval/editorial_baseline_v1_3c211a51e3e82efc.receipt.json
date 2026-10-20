@@ -1,0 +1,20 @@
+{
+  "counts": {
+    "account": 567,
+    "feed": 40,
+    "pack": 60
+  },
+  "live_requests_performed": 0,
+  "manifest": {
+    "path": "catbird-intel/eval/editorial_baseline_v1_3c211a51e3e82efc.json",
+    "sha256": "3c211a51e3e82efc80b15eaa4730e8b1f5c4d6dfa0abe8d7c1178dd03b31eee7"
+  },
+  "release_eligible_count": 0,
+  "review_queue": {
+    "path": "catbird-intel/eval/editorial_baseline_v1_3c211a51e3e82efc.review.jsonl",
+    "rows": 667,
+    "sha256": "4c08b680afb2b49d160fd858e762e89b84c842345c02cee2eada534380c5dbeb"
+  },
+  "schema": "catbird.editorial-review.v1",
+  "unique_account_dids": 562
+}

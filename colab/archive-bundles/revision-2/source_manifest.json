@@ -1,0 +1,23 @@
+{
+  "schema": "catbird-real-pipeline-source-v1",
+  "revision": "revision-2",
+  "note": "Hardened delivery; immutable initial bundle preserved. Not retrospective attribution for earlier smoke runs.",
+  "files": {
+    "real_pipeline.py": "73e6a09a0b42807626531d9979df979f36134729916744b67c280cb6742db7d5",
+    "real_pipeline/__init__.py": "6c41619880be4625c1f654440c71c70edf755d3d72f1158ebc43e57b8f62d64e",
+    "real_pipeline/checkpoints.py": "a5353e57cad2313b85e7811bf426366aa2ffde02a5b5f198d165914e0f7802bb",
+    "real_pipeline/common.py": "6ed15d63c1ac35a33b232e9f59c879fbb0b0e97d24848a2aadd1d0c0e139260e",
+    "real_pipeline/student.py": "618244267f7625a135ad78deb6942267f992e827dffd912644aeff61c278ff82",
+    "real_pipeline/teachers.py": "a3ce58db48e786a90c79a3ad66fdf53556dfe7793219ae2b100128b9ad73e8c6",
+    "tests/test_checkpoint_durability.py": "66b24e077956564326456f605e9c89b4024980ce7a988f7440e82c0f8898d14d",
+    "tests/test_sealed_contracts.py": "6dfa3140aace8192df76a067b57f540de92650065e8d1d404e6f93c14e4d15dd",
+    "requirements-colab.txt": "978e939cfcfbbb2ff72b77f1ecc54b30f1608e13abe773b9a43289d9c36bbe9c",
+    "requirements-local.txt": "82e2a6d744a725665d343f3a3ecb8744b5187f2ea04b9b44728f226037afaf50",
+    "README_REAL_MODELS.md": "9bfd007c547a3a716027f85386de6c8e08a2ba67f35fe7353163b945e4961a6f",
+    "structural_verification_20261020.json": "de5c2cb7eeea8e036a983cb60facb0706a453dfa06bbe5e3c893ba340b5fdba8"
+  },
+  "notebook": {
+    "name": "Catbird_Intel_Real_Teachers_Ettin_V1_1.ipynb",
+    "sha256": "67c82274ce540869e367bb1e004a8237e8ca42eaff4f240201bf1639d984a042"
+  }
+}

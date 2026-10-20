@@ -8,13 +8,10 @@ import math
 import platform
 from pathlib import Path
 
-MODELS = {
-    "political": ("mlburnham/Political_DEBATE_large_v1.0", "1a3aff1ecb97ad93a6de598f7414b1707de7e7c3"),
-    "qwen": ("Qwen/Qwen2.5-32B-Instruct-AWQ", "5c7cb76a268fc6cfbb9c4777eb24ba6e27f9ee6c"),
-    "nli": ("MoritzLaurer/deberta-v3-large-zeroshot-v2.0", "cf44676c28ba7312e5c5f8f8d2c22b3e0c9cdae2"),
-    "student": ("jhu-clsp/ettin-encoder-68m", "ac19ae4bc51093b31c475665ac872a936d056cc2"),
-}
-HEALTH = ("politicalness", "heat", "engagement_bait", "spam")
+from .checkpoints import atomic_write
+from .contracts import HEALTH, MODELS, STUDENT_CONTRACT, model_identity
+from .language import LANGUAGE_CONTRACT, language_scope
+
 SEALED_EXPORT_SHA256 = "18230128db1ba0347e9a3050a25a25bf14faf09944a458247d7955a1e71a5117"
 POLITICAL_HYPOTHESIS = "This text is about politics, government, elections, or public policy."
 RUBRICS = {
@@ -34,13 +31,15 @@ def sha256(path):
 
 
 def write_json(path, payload):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+    atomic_write(path, (json.dumps(payload, indent=2, sort_keys=True, default=str,
+                                  allow_nan=False) + "\n").encode("utf-8"))
 
 
 def source_inventory():
     root = Path(__file__).resolve().parents[1]
     sources = sorted(root.glob("*.py")) + sorted((root / "real_pipeline").glob("*.py")) + sorted(root.glob("requirements-*.txt"))
+    sources += [root / "model_licenses_v3.json", root / "evaluation_contract_v3.json"]
+    sources = [path for path in sources if path.exists()]
     return {str(path.relative_to(root)): sha256(path) for path in sources}
 
 
@@ -122,26 +121,67 @@ def selected_uri_sha256(rows):
     return hashlib.sha256("\n".join(row["uri"] for row in rows).encode()).hexdigest()
 
 
+def teacher_identity(teacher, source_sha256, rows, mode, max_length):
+    scoped = [row for row in rows if language_scope(row)["in_scope"]]
+    return {
+        "schema": "catbird-real-teacher-v3", "teacher": teacher,
+        "model": list(MODELS[teacher]), "model_provenance": model_identity(teacher),
+        "input_sha256": source_sha256, "selected_uri_sha256": selected_uri_sha256(rows),
+        "rows": len(rows), "mode": mode, "max_length": max_length,
+        "rubrics": {"politicalness": POLITICAL_HYPOTHESIS} if teacher == "political" else RUBRICS,
+        "language_contract": LANGUAGE_CONTRACT, "scored_rows": len(scoped),
+        "unscored_rows": len(rows) - len(scoped), "scored_uri_sha256": selected_uri_sha256(scoped),
+        "software_identity": environment(),
+    }
+
+
 def validate_teacher_identity(identity, teacher, source_sha256, rows, mode):
-    expected_rubrics = {"politicalness": POLITICAL_HYPOTHESIS} if teacher == "political" else RUBRICS
-    if (identity.get("schema") != "catbird-real-teacher-v1"
-            or identity.get("teacher") != teacher
-            or identity.get("model") != list(MODELS[teacher])
-            or identity.get("input_sha256") != source_sha256
-            or identity.get("rows") != len(rows)
-            or identity.get("selected_uri_sha256") != selected_uri_sha256(rows)
-            or identity.get("mode") != mode
-            or identity.get("rubrics") != expected_rubrics):
-        raise ValueError("Teacher identity is not bound to the sealed source, selection, model and rubric")
+    if type(identity.get("max_length")) is not int or identity["max_length"] <= 0:
+        raise ValueError("Invalid teacher context identity")
+    expected = teacher_identity(teacher, source_sha256, rows, mode, identity["max_length"])
+    recorded = identity.get("software_identity", {})
+    if (recorded.get("implementation_source_sha256") != expected["software_identity"]["implementation_source_sha256"]
+            or not isinstance(recorded.get("packages"), dict) or not recorded["packages"]
+            or not isinstance(recorded.get("platform"), str)):
+        raise ValueError("Teacher software provenance is missing or its source generation differs")
+    # Metadata consumers may have different packages/hardware. Exact dependency
+    # equality is enforced by the complete identity comparison when label_stage
+    # resumes inference; a reader retains the producer's recorded environment.
+    expected["software_identity"] = recorded
+    if identity != expected:
+        raise ValueError("Teacher identity differs from revision-3 source, model/license, selection, scope or rubric")
+
+
+def validate_score_row(row, original, teacher):
+    scope = language_scope(original)
+    status = "scored" if scope["in_scope"] else "unscored"
+    if row.get("score_status") != status or row.get("unscored_reason") != scope["reason"]:
+        raise ValueError("Teacher row does not preserve explicit language scoring status")
+    metrics = ("politicalness",) if teacher == "political" else tuple(RUBRICS)
+    for metric in metrics:
+        value = row.get(f"teacher_{metric}")
+        raw_key = f"teacher_{metric}_digit_logprobs" if teacher == "qwen" else f"teacher_{metric}_logits"
+        raw = row.get(raw_key)
+        if not scope["in_scope"]:
+            if value is not None or raw is not None:
+                raise ValueError("Out-of-scope text must remain unscored with null model values")
+            continue
+        if type(value) not in (float, int) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("Invalid completed teacher score")
+        if (not isinstance(raw, list) or len(raw) != (10 if teacher == "qwen" else 2)
+                or any(type(v) not in (float, int) or not math.isfinite(v) for v in raw)):
+            raise ValueError("Missing or invalid raw teacher logits")
 
 
 def validate_labeled(path, rows, seal, split="train", mode="colab"):
     manifest = json.loads(Path(str(path) + ".manifest.json").read_text())
     expected_source = seal["bank" if split == "train" else "holdout"]["sha256"]
-    if (manifest.get("schema") != "catbird-real-labeled-v1"
+    if (manifest.get("schema") != "catbird-real-labeled-v3"
             or manifest.get("sha256") != sha256(path)
             or manifest.get("source_sha256") != expected_source
-            or manifest.get("rows") != len(rows)):
+            or manifest.get("rows") != len(rows)
+            or manifest.get("language_contract") != LANGUAGE_CONTRACT
+            or manifest.get("student_contract") != STUDENT_CONTRACT):
         raise ValueError("Labeled bank lacks sealed source/selection provenance or changed")
     provenance = manifest.get("teacher_provenance", [])
     teachers = [p.get("identity", {}).get("teacher") for p in provenance]
@@ -152,18 +192,29 @@ def validate_labeled(path, rows, seal, split="train", mode="colab"):
             raise ValueError("Teacher stage was not completed")
         validate_teacher_identity(stage["identity"], stage["identity"]["teacher"], expected_source, rows, mode)
     for row in rows:
-        for metric in (*HEALTH, "outraged", "critical"):
+        scope = language_scope(row)
+        if row.get("score_status") != ("scored" if scope["in_scope"] else "unscored") or row.get("unscored_reason") != scope["reason"]:
+            raise ValueError("Labeled row has an invalid language-scoring status")
+        for metric in HEALTH:
             value = row.get(f"teacher_{metric}")
+            if not scope["in_scope"]:
+                if value is not None:
+                    raise ValueError("Out-of-scope teacher value must be null")
+                continue
             if type(value) not in (float, int) or not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError("Invalid real teacher target")
-        if row["teacher_heat"] != max(row["teacher_outraged"], row["teacher_critical"]):
-            raise ValueError("Heat must preserve the declared teacher aggregation")
+        if "teacher_heat" in row:
+            raise ValueError("Revision 3 retains components; a legacy aggregated heat target is incompatible")
+    scored = sum(language_scope(row)["in_scope"] for row in rows)
+    if manifest.get("scored_rows") != scored or manifest.get("unscored_rows") != len(rows) - scored:
+        raise ValueError("Labeled-bank language counts differ from actual rows")
     return manifest
 
 
 def validate_input(args, rows):
     seal, holdout = load_sealed_export(args.holdout, args.export_manifest)
-    labeled = args.command in ("train", "review-sheet")
+    labeled = args.command == "train" or (args.command == "review-sheet"
+                                         and any(key.startswith("teacher_") for row in rows for key in row))
     validate_posts(rows, allow_teachers=labeled, split=args.split)
     if args.command == "train" and args.split != "train":
         raise ValueError("Held-out posts can never train the student")
@@ -185,7 +236,7 @@ def validate_input(args, rows):
         if set(originals) != {r["uri"] for r in rows}:
             raise ValueError("Holdout selection differs from the sealed set")
         for row in rows:
-            if any(row[key] != originals[row["uri"]][key] for key in ("author_did", "text", "author_split_bucket")):
+            if any(row[key] != originals[row["uri"]][key] for key in ("author_did", "text", "author_split_bucket", "langs")):
                 raise ValueError("Holdout original content changed")
     return seal
 
@@ -196,15 +247,20 @@ def create_review_sheet(output, rows):
     if output.exists() or status.exists():
         raise FileExistsError("Review sheet already exists; preserve human edits and use a new versioned output path")
     output.parent.mkdir(parents=True, exist_ok=True)
-    fields = ("politicalness", "outraged", "critical", "engagement_bait", "spam")
+    fields = (*HEALTH, "heat")
     with output.open("x") as handle:
         for row in rows:
-            reviewed = dict(row)
+            # Human first-pass judgments must not be anchored by either teacher
+            # estimates or the old regex baseline.
+            reviewed = {key: value for key, value in row.items()
+                        if not key.startswith(("teacher_", "regex_baseline_"))}
             reviewed.update({f"human_{name}": None for name in fields})
             reviewed.update(human_reviewed=False, reviewer=None, review_notes="")
             handle.write(json.dumps(reviewed, default=str, ensure_ascii=False) + "\n")
     with status.open("x") as handle:
-        json.dump({"rows": len(rows), "human_reviewed": False, "thresholds_locked": False, "F1": None}, handle, indent=2)
+        json.dump({"rows": len(rows), "human_reviewed": False, "thresholds_locked": False, "F1": None,
+                   "blind_first_pass": True, "heat_rubric": "must be frozen separately before annotation"},
+                  handle, indent=2)
 
 
 def local_guard(mode, rows, device):

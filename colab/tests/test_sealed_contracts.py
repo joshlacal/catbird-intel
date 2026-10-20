@@ -34,7 +34,10 @@ class SealedContracts(unittest.TestCase):
         args = SimpleNamespace(input=BANK, holdout=HOLDOUT, export_manifest=None,
                                command="label", split="train", mode="smoke")
         validate_input(args, self.rows)
-        validate_labeled(LABELED, self.labeled, self.seal, mode="smoke")
+        # The original four-head/non-c smoke is historical evidence, never
+        # relabeled as the new scoped/component model generation.
+        with self.assertRaises(ValueError):
+            validate_labeled(LABELED, self.labeled, self.seal, mode="smoke")
 
     def test_missing_float_bool_and_holdout_buckets_rejected(self):
         for value in (None, 0, 1.0, True, "1", 20):

@@ -1,0 +1,40 @@
+test_changed_bytes_never_overwrite (test_editorial_baseline.EditorialBaselineTests.test_changed_bytes_never_overwrite) ... ok
+test_historical_evidence_never_grants_release (test_editorial_baseline.EditorialBaselineTests.test_historical_evidence_never_grants_release) ... ok
+test_malformed_pack_rejected (test_editorial_baseline.EditorialBaselineTests.test_malformed_pack_rejected) ... ok
+test_source_bytes_affect_generation (test_editorial_baseline.EditorialBaselineTests.test_source_bytes_affect_generation) ... ok
+test_changed_binary_fails_receipt_check (test_repair_upload_guards.BankIsolationTests.test_changed_binary_fails_receipt_check) ... ok
+test_different_audited_generation_is_refused (test_repair_upload_guards.BankIsolationTests.test_different_audited_generation_is_refused) ... ok
+test_duplicate_uri_is_refused (test_repair_upload_guards.BankIsolationTests.test_duplicate_uri_is_refused) ... ok
+test_holdout_author_overlap_is_refused (test_repair_upload_guards.BankIsolationTests.test_holdout_author_overlap_is_refused) ... ok
+test_holdout_binary_change_is_refused (test_repair_upload_guards.BankIsolationTests.test_holdout_binary_change_is_refused) ... ok
+test_missing_baseline_column_is_refused (test_repair_upload_guards.BankIsolationTests.test_missing_baseline_column_is_refused) ... ok
+test_receipt_row_count_mismatch_is_refused (test_repair_upload_guards.BankIsolationTests.test_receipt_row_count_mismatch_is_refused) ... ok
+test_reserved_bucket_is_refused (test_repair_upload_guards.BankIsolationTests.test_reserved_bucket_is_refused) ... ok
+test_sealed_disjoint_metadata_passes (test_repair_upload_guards.BankIsolationTests.test_sealed_disjoint_metadata_passes) ... ok
+test_teacher_alias_is_refused (test_repair_upload_guards.BankIsolationTests.test_teacher_alias_is_refused) ... ok
+test_completed_upload_updates_inventory_for_safe_replay (test_repair_upload_guards.DriveCollisionTests.test_completed_upload_updates_inventory_for_safe_replay) ... ok
+test_duplicate_folder_names_fail_without_creating_folder (test_repair_upload_guards.DriveCollisionTests.test_duplicate_folder_names_fail_without_creating_folder) ... ok
+test_duplicate_names_across_pages_include_zero_byte_entries (test_repair_upload_guards.DriveCollisionTests.test_duplicate_names_across_pages_include_zero_byte_entries) ... ok
+test_identical_file_returns_existing_id_without_upload (test_repair_upload_guards.DriveCollisionTests.test_identical_file_returns_existing_id_without_upload) ... ok
+test_omitted_inventory_is_looked_up_before_upload (test_repair_upload_guards.DriveCollisionTests.test_omitted_inventory_is_looked_up_before_upload) ... ok
+test_same_name_with_different_bytes_fails_before_upload (test_repair_upload_guards.DriveCollisionTests.test_same_name_with_different_bytes_fails_before_upload) ... ok
+test_invalidated_model_and_notebook_names_are_refused (test_repair_upload_guards.RepairInputTests.test_invalidated_model_and_notebook_names_are_refused) ... ok
+test_old_training_banks_are_refused_outside_quarantine (test_repair_upload_guards.RepairInputTests.test_old_training_banks_are_refused_outside_quarantine) ... ok
+test_quarantine_prefix_is_refused (test_repair_upload_guards.RepairInputTests.test_quarantine_prefix_is_refused) ... ok
+test_symlink_alias_cannot_bypass_quarantine (test_repair_upload_guards.RepairInputTests.test_symlink_alias_cannot_bypass_quarantine) ... ok
+test_absent_probe_never_passes (test_soak_receipt.SoakTests.test_absent_probe_never_passes) ... ok
+test_actual_violation_fails (test_soak_receipt.SoakTests.test_actual_violation_fails) ... ok
+test_fractional_count_and_out_of_range_fraction (test_soak_receipt.SoakTests.test_fractional_count_and_out_of_range_fraction) ... ok
+test_freshness_is_not_visibility_latency (test_soak_receipt.SoakTests.test_freshness_is_not_visibility_latency) ... ok
+test_full_continuity_separate_from_final_day (test_soak_receipt.SoakTests.test_full_continuity_separate_from_final_day) ... ok
+test_future_collection_cannot_pass (test_soak_receipt.SoakTests.test_future_collection_cannot_pass) ... ok
+test_invalid_time_and_short_windows (test_soak_receipt.SoakTests.test_invalid_time_and_short_windows) ... ok
+test_merge_trend_requires_final_six_hours (test_soak_receipt.SoakTests.test_merge_trend_requires_final_six_hours) ... ok
+test_negative_and_nan_metrics_cannot_pass (test_soak_receipt.SoakTests.test_negative_and_nan_metrics_cannot_pass) ... ok
+test_probe_and_audit_must_be_within_target_soak (test_soak_receipt.SoakTests.test_probe_and_audit_must_be_within_target_soak) ... ok
+test_violation_survives_missing_provenance_and_metric (test_soak_receipt.SoakTests.test_violation_survives_missing_provenance_and_metric) ... ok
+
+----------------------------------------------------------------------
+Ran 35 tests in 0.064s
+
+OK

@@ -1,0 +1,570 @@
+{
+  "documentation_commits": [
+    "aad82dc0",
+    "03d6c85f"
+  ],
+  "evidence_class": "local_structural_runtime_and_verified_artifact_delivery",
+  "integrated_source_hashes": {
+    "graph/eval_phase1.py": "c28a3f8542804d621e48be519fe874d5cf1aa9d86bb41c4f516b9b30ecd5724d",
+    "graph/source_generation_v2.py": "90ad5e50bff8469f4a79cae559bb70299fca32c729c557806858c3747701c4c1",
+    "ops/build_mode_influence_candidate.py": "4d4e039050821b13482cb7024cf628f5be7cf5a678eac31255e239eb7b020f9a",
+    "ops/evaluate_soak_receipt.py": "305ad23de0bba8683ef821b2090b9c07f68d21aed7e4309b7537a1f7c466f3fc",
+    "ops/prepare_editorial_baseline.py": "4e2e5ec9f96fb1dd09d3a0ea85fa8e9e98f8b1fd384742ebff488512bc211dd6",
+    "src/api.ts": "19670855b8e3c84a58eb07de3cb4a9b654a7f02e0cebf2b56a7ede7574d791ef",
+    "src/service_auth.ts": "4737b9f145228abcade2e4a6f7abd7deaa1699653884f8a13fdf4df1f8d16863",
+    "src/serving_contract.ts": "22fda054ac9794b09cb4abc3f87ff190285ba9aadf790fe3a8c154aa709c2c1c"
+  },
+  "native_ui_verified": false,
+  "no_gpu": true,
+  "no_new_inference": true,
+  "no_production_changes": true,
+  "notebook_url": "https://drive.google.com/file/d/1RaAVJkvF_fTVlHX93keciLREQbRXxne9/view?usp=drivesdk",
+  "observed_at": "2026-10-20T10:48:40.725869+00:00",
+  "production_qualified": false,
+  "revision3_bundle_bytes": 265543,
+  "revision3_bundle_files": 22,
+  "root_document_links_checked": 135,
+  "schema": "catbird-review-integration-v1",
+  "separate_local_http_assertions": 30,
+  "source_manifest_sha256": "a11f1359b2c425b76d12493b632d04dde6dfe6d4cb8c9f01bd83f6e2f6157902",
+  "suites": {
+    "bun": 34,
+    "graph_and_source": 25,
+    "mode_influence": 8,
+    "model_structural": 80,
+    "operations": 35
+  },
+  "tests_total": 182,
+  "typecheck_exit_code": 0,
+  "verified_drive_uploads": [
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/README_REAL_MODELS.md",
+      "metadata": {
+        "id": "12G4pj1sKf4tWOYqzULHd3VSzfnC365NH",
+        "md5Checksum": "f7302e5a3b1acc17a7c66cb520d847dd",
+        "mimeType": "text/markdown",
+        "name": "README_REAL_MODELS.md",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "11157",
+        "webViewLink": "https://drive.google.com/file/d/12G4pj1sKf4tWOYqzULHd3VSzfnC365NH/view?usp=drivesdk"
+      },
+      "sha256": "cac92b135d569a974123b274aee7ce6fca326c06b9719294ad72f93c23ecd06c",
+      "upload": {
+        "bytes": 11157,
+        "id": "12G4pj1sKf4tWOYqzULHd3VSzfnC365NH",
+        "name": "README_REAL_MODELS.md",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:27.268718+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/evaluation_contract_v3.json",
+      "metadata": {
+        "id": "1F5HtGWQ_Wj3Ud-rYqgMny2NSnSEKml77",
+        "md5Checksum": "ac921f8153d437d6de30c4a7ca1a350f",
+        "mimeType": "application/json",
+        "name": "evaluation_contract_v3.json",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "14054",
+        "webViewLink": "https://drive.google.com/file/d/1F5HtGWQ_Wj3Ud-rYqgMny2NSnSEKml77/view?usp=drivesdk"
+      },
+      "sha256": "f8677bc8238f8b27470bb118a525e1890f4e4301de4737605669f0312d583c3e",
+      "upload": {
+        "bytes": 14054,
+        "id": "1F5HtGWQ_Wj3Ud-rYqgMny2NSnSEKml77",
+        "name": "evaluation_contract_v3.json",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:29.777151+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/language_audit_v3.json",
+      "metadata": {
+        "id": "1uvmZ8IRBgYquvie6KdxUBtR9AQ_Jzu7L",
+        "md5Checksum": "7666d23f763ba817077f627d3e289a88",
+        "mimeType": "application/json",
+        "name": "language_audit_v3.json",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "9366",
+        "webViewLink": "https://drive.google.com/file/d/1uvmZ8IRBgYquvie6KdxUBtR9AQ_Jzu7L/view?usp=drivesdk"
+      },
+      "sha256": "d951ab07591e9169526d8eb24ed81371c3162b8d331883f4cdba9bada7f4c631",
+      "upload": {
+        "bytes": 9366,
+        "id": "1uvmZ8IRBgYquvie6KdxUBtR9AQ_Jzu7L",
+        "name": "language_audit_v3.json",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:32.189140+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/model_licenses_v3.json",
+      "metadata": {
+        "id": "18zGnXhDDJAxlUsVkLKKucySOJo_MWO4f",
+        "md5Checksum": "b92b73667b0fea672e5c79007a1a8024",
+        "mimeType": "application/json",
+        "name": "model_licenses_v3.json",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "6257",
+        "webViewLink": "https://drive.google.com/file/d/18zGnXhDDJAxlUsVkLKKucySOJo_MWO4f/view?usp=drivesdk"
+      },
+      "sha256": "566773e2e3ee5bf8ae2b83daaf0f0c75e8e52729901b7a7af8949017f6b3b9e1",
+      "upload": {
+        "bytes": 6257,
+        "id": "18zGnXhDDJAxlUsVkLKKucySOJo_MWO4f",
+        "name": "model_licenses_v3.json",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:34.491941+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline.py",
+      "metadata": {
+        "id": "1tvGpza6sl52zTm5aaR8YNfO_91pTAxR6",
+        "md5Checksum": "d47284ce52065cd48d8d38b7be5a37fe",
+        "mimeType": "text/x-python",
+        "name": "real_pipeline.py",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "3597",
+        "webViewLink": "https://drive.google.com/file/d/1tvGpza6sl52zTm5aaR8YNfO_91pTAxR6/view?usp=drivesdk"
+      },
+      "sha256": "c7d1be34a2977740849719d276fe655c0035dd38a6a1f6c3dfcd4dd5b02983d0",
+      "upload": {
+        "bytes": 3597,
+        "id": "1tvGpza6sl52zTm5aaR8YNfO_91pTAxR6",
+        "name": "real_pipeline.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:36.565473+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/requirements-colab.txt",
+      "metadata": {
+        "id": "1fBtS16EIhEzxYF-THwDOlw0-GAqXeCpp",
+        "md5Checksum": "9fe94eb33d69a272e14eda947d4986bd",
+        "mimeType": "text/plain",
+        "name": "requirements-colab.txt",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "210",
+        "webViewLink": "https://drive.google.com/file/d/1fBtS16EIhEzxYF-THwDOlw0-GAqXeCpp/view?usp=drivesdk"
+      },
+      "sha256": "978e939cfcfbbb2ff72b77f1ecc54b30f1608e13abe773b9a43289d9c36bbe9c",
+      "upload": {
+        "bytes": 210,
+        "id": "1fBtS16EIhEzxYF-THwDOlw0-GAqXeCpp",
+        "name": "requirements-colab.txt",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:38.771256+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/requirements-local.txt",
+      "metadata": {
+        "id": "1OXuwMea4KSTE-dAe75d6NMV3lGu7OzId",
+        "md5Checksum": "91cc9c100d1445c97dc9f3c0668d8978",
+        "mimeType": "text/plain",
+        "name": "requirements-local.txt",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "187",
+        "webViewLink": "https://drive.google.com/file/d/1OXuwMea4KSTE-dAe75d6NMV3lGu7OzId/view?usp=drivesdk"
+      },
+      "sha256": "82e2a6d744a725665d343f3a3ecb8744b5187f2ea04b9b44728f226037afaf50",
+      "upload": {
+        "bytes": 187,
+        "id": "1OXuwMea4KSTE-dAe75d6NMV3lGu7OzId",
+        "name": "requirements-local.txt",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:41.397033+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/structural_verification_revision3_20261020.json",
+      "metadata": {
+        "id": "1hvWGfHUHcp-ue-I7I-P_66GNdNaCw4iu",
+        "md5Checksum": "895666d6263ea59b1609955dbd338e76",
+        "mimeType": "application/json",
+        "name": "structural_verification_revision3_20261020.json",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "4701",
+        "webViewLink": "https://drive.google.com/file/d/1hvWGfHUHcp-ue-I7I-P_66GNdNaCw4iu/view?usp=drivesdk"
+      },
+      "sha256": "329281270ed98e82aef1a359bc44eab63485a55860aaa78fb4409b664f4230f2",
+      "upload": {
+        "bytes": 4701,
+        "id": "1hvWGfHUHcp-ue-I7I-P_66GNdNaCw4iu",
+        "name": "structural_verification_revision3_20261020.json",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:43.424578+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+      "metadata": {
+        "id": "1jBhF5sYMdsBfBL068ZIznsvG98IlETYw",
+        "md5Checksum": "26f609491ee0f9d56a37bf4259d18d15",
+        "mimeType": "application/octet-stream",
+        "name": "Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "11449",
+        "webViewLink": "https://drive.google.com/file/d/1jBhF5sYMdsBfBL068ZIznsvG98IlETYw/view?usp=drivesdk"
+      },
+      "sha256": "33f075c1e03040058808ed0c8f9b0686e9cdabf1b7dde0c136c61b663da6aba8",
+      "upload": {
+        "bytes": 11449,
+        "id": "1jBhF5sYMdsBfBL068ZIznsvG98IlETYw",
+        "name": "Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:45.515962+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/source_manifest.json",
+      "metadata": {
+        "id": "1XxkNWT-q50awUimjtxvVmCRnF6mPjd4s",
+        "md5Checksum": "d7b92033df5e74b171fb424ef221719b",
+        "mimeType": "application/json",
+        "name": "source_manifest.json",
+        "parents": [
+          "1K-_PeSea49-y9Mb9ZXJxfcrJizcOZ3IQ"
+        ],
+        "size": "2601",
+        "webViewLink": "https://drive.google.com/file/d/1XxkNWT-q50awUimjtxvVmCRnF6mPjd4s/view?usp=drivesdk"
+      },
+      "sha256": "a11f1359b2c425b76d12493b632d04dde6dfe6d4cb8c9f01bd83f6e2f6157902",
+      "upload": {
+        "bytes": 2601,
+        "id": "1XxkNWT-q50awUimjtxvVmCRnF6mPjd4s",
+        "name": "source_manifest.json",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:47.552701+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/__init__.py",
+      "metadata": {
+        "id": "1TFToB9M-IoYhDWpDM_LlwTyUM43FfGiX",
+        "md5Checksum": "ee006962eb65bdddd401ea8a6e66dccd",
+        "mimeType": "text/x-python",
+        "name": "__init__.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "81",
+        "webViewLink": "https://drive.google.com/file/d/1TFToB9M-IoYhDWpDM_LlwTyUM43FfGiX/view?usp=drivesdk"
+      },
+      "sha256": "6c41619880be4625c1f654440c71c70edf755d3d72f1158ebc43e57b8f62d64e",
+      "upload": {
+        "bytes": 81,
+        "id": "1TFToB9M-IoYhDWpDM_LlwTyUM43FfGiX",
+        "name": "__init__.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:51.285216+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/checkpoints.py",
+      "metadata": {
+        "id": "1igEDXLV1ZvvTgUogU3iA8k36NCL0zxXP",
+        "md5Checksum": "60585292b92f221405995b8a4a26bcf5",
+        "mimeType": "text/x-python",
+        "name": "checkpoints.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "16675",
+        "webViewLink": "https://drive.google.com/file/d/1igEDXLV1ZvvTgUogU3iA8k36NCL0zxXP/view?usp=drivesdk"
+      },
+      "sha256": "5bd614b6da0d167ba85b9864d0a4127c62eeaf66763ad6b35fb4e969aac313e8",
+      "upload": {
+        "bytes": 16675,
+        "id": "1igEDXLV1ZvvTgUogU3iA8k36NCL0zxXP",
+        "name": "checkpoints.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:53.370433+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/common.py",
+      "metadata": {
+        "id": "1fUE87Lvy3CzRsupClNV98q_KbrauownM",
+        "md5Checksum": "aca999a8aa8c5fc862b8e78f0139bff2",
+        "mimeType": "text/x-python",
+        "name": "common.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "16953",
+        "webViewLink": "https://drive.google.com/file/d/1fUE87Lvy3CzRsupClNV98q_KbrauownM/view?usp=drivesdk"
+      },
+      "sha256": "d1058b7fd3468586f2e131b8ab629b7f890b5fb3f61b23acea2c2e6335ffa5c9",
+      "upload": {
+        "bytes": 16953,
+        "id": "1fUE87Lvy3CzRsupClNV98q_KbrauownM",
+        "name": "common.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:55.247958+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/contracts.py",
+      "metadata": {
+        "id": "1GGKq92x42kXV33pvEekxMRUJGG6m_zlf",
+        "md5Checksum": "6cf4bc26ff6cb059dd2d90e431eed97a",
+        "mimeType": "text/x-python",
+        "name": "contracts.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "1823",
+        "webViewLink": "https://drive.google.com/file/d/1GGKq92x42kXV33pvEekxMRUJGG6m_zlf/view?usp=drivesdk"
+      },
+      "sha256": "d535110c32ef532daba1d5ce9046217479241bfb8823ba7b6d04cd96f42d4614",
+      "upload": {
+        "bytes": 1823,
+        "id": "1GGKq92x42kXV33pvEekxMRUJGG6m_zlf",
+        "name": "contracts.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:57.064935+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/evaluation.py",
+      "metadata": {
+        "id": "1WzWjQcLrkZehY0lkQAy52NQJkgpixA5S",
+        "md5Checksum": "197870c5623e61b1998d13f43716e2c5",
+        "mimeType": "text/x-python",
+        "name": "evaluation.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "68686",
+        "webViewLink": "https://drive.google.com/file/d/1WzWjQcLrkZehY0lkQAy52NQJkgpixA5S/view?usp=drivesdk"
+      },
+      "sha256": "4083ff9975fbbf07e80a08961f3a53bb265e5b0a4af35f0f2da729ff0adee69e",
+      "upload": {
+        "bytes": 68686,
+        "id": "1WzWjQcLrkZehY0lkQAy52NQJkgpixA5S",
+        "name": "evaluation.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:47:59.044098+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/language.py",
+      "metadata": {
+        "id": "19vd-sqeGKWFPC-8MI8wypKkEFHLJ0l-U",
+        "md5Checksum": "02ef1d185fba6a4201c4855afda6da58",
+        "mimeType": "text/x-python",
+        "name": "language.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "4831",
+        "webViewLink": "https://drive.google.com/file/d/19vd-sqeGKWFPC-8MI8wypKkEFHLJ0l-U/view?usp=drivesdk"
+      },
+      "sha256": "5a9e27052a7f700a4f61555805ef337bbfa6000b70d268ce44a37acebd777017",
+      "upload": {
+        "bytes": 4831,
+        "id": "19vd-sqeGKWFPC-8MI8wypKkEFHLJ0l-U",
+        "name": "language.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:00.720822+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/student.py",
+      "metadata": {
+        "id": "10ev4tD29B5eFMltqKu2yJsfBe_EAJ3IW",
+        "md5Checksum": "5cb63a642f388985326e397046488746",
+        "mimeType": "text/x-python",
+        "name": "student.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "18029",
+        "webViewLink": "https://drive.google.com/file/d/10ev4tD29B5eFMltqKu2yJsfBe_EAJ3IW/view?usp=drivesdk"
+      },
+      "sha256": "0420bce48f3e9b36416a8a4421422a96ca4726ba5e35d00091ef650c6c3aead9",
+      "upload": {
+        "bytes": 18029,
+        "id": "10ev4tD29B5eFMltqKu2yJsfBe_EAJ3IW",
+        "name": "student.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:02.809741+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/real_pipeline/teachers.py",
+      "metadata": {
+        "id": "1lPT3cOpuVG5WRr3BkFk3GJalLbvvA-Xe",
+        "md5Checksum": "d5714fe0ac7a1fbad87edc4555be7d32",
+        "mimeType": "text/x-python",
+        "name": "teachers.py",
+        "parents": [
+          "1qhh3tSMxv4kMDl18_SHTwFg37gJngB6k"
+        ],
+        "size": "14592",
+        "webViewLink": "https://drive.google.com/file/d/1lPT3cOpuVG5WRr3BkFk3GJalLbvvA-Xe/view?usp=drivesdk"
+      },
+      "sha256": "b7da59f61095f7cac1cc11358b927fe2c018f47bacc8835df7878a9772605d2b",
+      "upload": {
+        "bytes": 14592,
+        "id": "1lPT3cOpuVG5WRr3BkFk3GJalLbvvA-Xe",
+        "name": "teachers.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:04.905442+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/tests/test_checkpoint_durability.py",
+      "metadata": {
+        "id": "1KTRKvmmYO7TnSUtRlqU1cd3NU9TO8dwr",
+        "md5Checksum": "9279221a29fd46bb43e0951ffeeff9ea",
+        "mimeType": "text/x-python",
+        "name": "test_checkpoint_durability.py",
+        "parents": [
+          "16D8oVqYOwiBB9OtMK3MH0GSfCs6CXWRy"
+        ],
+        "size": "14079",
+        "webViewLink": "https://drive.google.com/file/d/1KTRKvmmYO7TnSUtRlqU1cd3NU9TO8dwr/view?usp=drivesdk"
+      },
+      "sha256": "66b24e077956564326456f605e9c89b4024980ce7a988f7440e82c0f8898d14d",
+      "upload": {
+        "bytes": 14079,
+        "id": "1KTRKvmmYO7TnSUtRlqU1cd3NU9TO8dwr",
+        "name": "test_checkpoint_durability.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:08.016734+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/tests/test_evaluation.py",
+      "metadata": {
+        "id": "1VfvwdT8ufRrnWZCf5dOgOxb2xHp0l2mT",
+        "md5Checksum": "f7ace69e92529452e838dace9728c058",
+        "mimeType": "text/x-python",
+        "name": "test_evaluation.py",
+        "parents": [
+          "16D8oVqYOwiBB9OtMK3MH0GSfCs6CXWRy"
+        ],
+        "size": "25810",
+        "webViewLink": "https://drive.google.com/file/d/1VfvwdT8ufRrnWZCf5dOgOxb2xHp0l2mT/view?usp=drivesdk"
+      },
+      "sha256": "9c57411d2e19e35dd642a8799f2bc1b5c3e1d82081294031c826ffc5d838fedc",
+      "upload": {
+        "bytes": 25810,
+        "id": "1VfvwdT8ufRrnWZCf5dOgOxb2xHp0l2mT",
+        "name": "test_evaluation.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:09.579625+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/tests/test_revision3_contracts.py",
+      "metadata": {
+        "id": "1WFtZpgXFt8V6hCuPRLtjHXRoMLGr5lzs",
+        "md5Checksum": "49a6673d70fcd99b5c5e3a20b31462be",
+        "mimeType": "text/x-python",
+        "name": "test_revision3_contracts.py",
+        "parents": [
+          "16D8oVqYOwiBB9OtMK3MH0GSfCs6CXWRy"
+        ],
+        "size": "12729",
+        "webViewLink": "https://drive.google.com/file/d/1WFtZpgXFt8V6hCuPRLtjHXRoMLGr5lzs/view?usp=drivesdk"
+      },
+      "sha256": "f54838282a8508511ee893724030091a61fb17986bac8ad1cca28a70878551a3",
+      "upload": {
+        "bytes": 12729,
+        "id": "1WFtZpgXFt8V6hCuPRLtjHXRoMLGr5lzs",
+        "name": "test_revision3_contracts.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:10.983407+00:00"
+    },
+    {
+      "destination": "colab-v1",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/tests/test_sealed_contracts.py",
+      "metadata": {
+        "id": "1jUEGyujp55Vv_MRTJYN1d67oysn5v9ve",
+        "md5Checksum": "3edbcbee9d61fb7c2dd07d3f98125048",
+        "mimeType": "text/x-python",
+        "name": "test_sealed_contracts.py",
+        "parents": [
+          "16D8oVqYOwiBB9OtMK3MH0GSfCs6CXWRy"
+        ],
+        "size": "7676",
+        "webViewLink": "https://drive.google.com/file/d/1jUEGyujp55Vv_MRTJYN1d67oysn5v9ve/view?usp=drivesdk"
+      },
+      "sha256": "a3365822fa2c61930be95bbf9c4c2c26209066df2e63b51f01768b993e733c55",
+      "upload": {
+        "bytes": 7676,
+        "id": "1jUEGyujp55Vv_MRTJYN1d67oysn5v9ve",
+        "name": "test_sealed_contracts.py",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:12.792240+00:00"
+    },
+    {
+      "destination": "root",
+      "local_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/colab/Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+      "metadata": {
+        "id": "1RaAVJkvF_fTVlHX93keciLREQbRXxne9",
+        "md5Checksum": "26f609491ee0f9d56a37bf4259d18d15",
+        "mimeType": "application/octet-stream",
+        "name": "Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+        "parents": [
+          "19n0W_MnOGeaxisZqsO5_wjmSq9rp_Bvy"
+        ],
+        "size": "11449",
+        "webViewLink": "https://drive.google.com/file/d/1RaAVJkvF_fTVlHX93keciLREQbRXxne9/view?usp=drivesdk"
+      },
+      "sha256": "33f075c1e03040058808ed0c8f9b0686e9cdabf1b7dde0c136c61b663da6aba8",
+      "upload": {
+        "bytes": 11449,
+        "id": "1RaAVJkvF_fTVlHX93keciLREQbRXxne9",
+        "name": "Catbird_Intel_Real_Teachers_Ettin_V1_2.ipynb",
+        "status": "uploaded"
+      },
+      "verified_at": "2026-10-20T10:48:14.825039+00:00"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 # Phase 0 "Done when" checks for the catbird-intel ingest. Read-only.
 #   1. Continuous ingest: health intervals with no events or lag > 60 s.
 #   2. Deletes: no record visible under FINAL whose delete is in the ledger;
-#      delete visibility delay sampled from the ledger head for 60 s.
+#      ledger freshness sampled for 60 s (NOT delete visibility latency).
 #   3. Disk: 14-day steady-state projection of the catbird database.
 # Usage (on netcup): verify-phase0.sh [SINCE_UTC, e.g. '2026-10-19 13:20:00']
 set -euo pipefail
@@ -33,11 +33,14 @@ for spec in "engagements:app.bsky.feed.like','app.bsky.feed.repost" "posts:app.b
 done
 q "SELECT count() AS ledger_deletes FROM catbird.deletions FORMAT TSV"
 
-echo "== 2b. delete visibility delay (age of newest ledger row, sampled 60x at 1 s)"
+echo "== 2b. ledger freshness only (age of newest ledger row, sampled 60x at 1 s)"
 for _ in $(seq 60); do
   q "SELECT dateDiff('millisecond', max(indexed_at), now64(3)) FROM catbird.deletions"
   sleep 1
-done | sort -n | awk '{a[NR]=$1} END {printf "p50=%dms p95=%dms max=%dms (includes Jetstream delivery + <=2 s flush)\n", a[int(NR*0.5)], a[int(NR*0.95)], a[NR]}'
+done | sort -n | awk '{a[NR]=$1} END {printf "ledger_head_age_p50=%dms p95=%dms max=%dms (freshness only; idle delete traffic increases age)\n", a[int(NR*0.5)], a[int(NR*0.95)], a[NR]}'
+
+echo "delete_visibility_latency_gate=UNPERFORMED: requires keyed durable-ingest commit and first-hidden serving receipts; ledger age is not latency"
+echo "controlled_create_delete_probe=UNPERFORMED: requires explicit test-account write authorization; this script is read-only"
 
 echo "== 3. disk"
 q "SELECT table, sum(rows) AS row_count, formatReadableSize(sum(bytes_on_disk)) AS size,

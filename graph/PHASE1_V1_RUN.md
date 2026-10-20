@@ -6,6 +6,12 @@ Governing documents: [master plan](../../docs/execution-plans/2026-10-19-catbird
 
 ## Checkpoint and process ownership
 
+### Review amendment, 2026-10-20
+
+The [review remediation plan](../../docs/execution-plans/2026-10-20-catbird-intelligence-review-remediation.md) supersedes the older quality gates below. Continue this existing run as exploratory evidence. Promotion requires the plan's source-generation and flat-graph checks; hierarchical communities are no longer a delivery dependency. The [graph review receipt](../eval/review_graph_20261020.md) documents corrected macro, weighted, dehubbed and null-adjusted diagnostics, and the distinction between joint consumer/producer filtering and pure producer coverage.
+
+The evaluator now emits `pack_recall_diagnostics.parquet` alongside its JSON report. Read the actual output path and SHA-256 from the report, verify them, and include the row-level artifact in delivery using a content-versioned filename. Preserve both [source observations](../eval/review_graph_source_custody_20261020.json); they record files observed before downstream execution, not the in-memory driver's launch identity. Do not imply that a newly passing graph diagnostic repairs the already-running fold's source limitations.
+
 At **2026-10-20 07:31:35Z**, the original ClickHouse fold, PID **95795**, was materializing latest-revision distinct follows into its temporary MergeTree table. An observation of its data parts found **354,562,820 rows**; this is a progress observation under concurrent merges, not the final follow count. Final `producers.tsv`, `edges.bin`, and `stats.tsv` were absent. The latest machine-readable progress observation, if newer, is `~/catbird-lake-local/graph-build/out/fold_progress_observed.json`.
 
 - Original fold: `task-2745`, PID `95795`. Leave it running.

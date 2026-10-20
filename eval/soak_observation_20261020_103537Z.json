@@ -1,0 +1,71 @@
+{
+  "schema": "catbird_current_soak_observation_v1",
+  "host_alias": "netcup",
+  "started_at": "2026-10-20T10:35:37.460459+00:00",
+  "ended_at": "2026-10-20T10:35:43.124903+00:00",
+  "qualification": "NOT_FINAL_SOAK_QUALIFICATION",
+  "limitations": [
+    "Partial observation before soak end, not a pass or fail of final72h gates.",
+    "Health lag currently uses display timestamp, not verified witnessedAt.",
+    "Physical rows include replacement versions, not logical current-state counts.",
+    "Journal scan bounded to latest5000 lines/10min; counts are string matches, not resolved-gap evidence.",
+    "No deletion/visibility probe or production load probe run.",
+    "Merge metadata is instantaneous, not six-hour trend."
+  ],
+  "results": {
+    "health_10m": {
+      "command": "clickhouse-client --query 'SELECT count() samples,min(ts) first,max(ts) last,countIf(lag_ms<0) unknown_lag_samples,quantileExactIf(0.99)(lag_ms,lag_ms>=0) p99_reported_lag_ms,max(lag_ms) max_reported_lag_ms,sum(events) events,sum(reconnects) reconnects,max(rss_mb) max_rss_mb,quantileExact(0.99)(flush_ms) p99_flush_ms FROM catbird.ingest_health WHERE ts>=now()-INTERVAL 10 MINUTE SETTINGS max_execution_time=10 FORMAT JSON'",
+      "command_sha256": "7714b09e84b55778d834f9bbc2db2618fe3d231c44b22f515e1dfcf9491557f4",
+      "started_at": "2026-10-20T10:35:37.460993+00:00",
+      "ended_at": "2026-10-20T10:35:39.152564+00:00",
+      "exit_code": 0,
+      "stdout": "{\n\t\"meta\":\n\t[\n\t\t{\n\t\t\t\"name\": \"samples\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"first\",\n\t\t\t\"type\": \"DateTime64(3, 'UTC')\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"last\",\n\t\t\t\"type\": \"DateTime64(3, 'UTC')\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"unknown_lag_samples\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"p99_reported_lag_ms\",\n\t\t\t\"type\": \"Int64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"max_reported_lag_ms\",\n\t\t\t\"type\": \"Int64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"events\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"reconnects\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"max_rss_mb\",\n\t\t\t\"type\": \"UInt32\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"p99_flush_ms\",\n\t\t\t\"type\": \"UInt32\"\n\t\t}\n\t],\n\n\t\"data\":\n\t[\n\t\t{\n\t\t\t\"samples\": 60,\n\t\t\t\"first\": \"2026-10-20 10:25:41.344\",\n\t\t\t\"last\": \"2026-10-20 10:35:31.366\",\n\t\t\t\"unknown_lag_samples\": 0,\n\t\t\t\"p99_reported_lag_ms\": 192,\n\t\t\t\"max_reported_lag_ms\": 192,\n\t\t\t\"events\": 175215,\n\t\t\t\"reconnects\": 0,\n\t\t\t\"max_rss_mb\": 66,\n\t\t\t\"p99_flush_ms\": 231\n\t\t}\n\t],\n\n\t\"rows\": 1,\n\n\t\"statistics\":\n\t{\n\t\t\"elapsed\": 0.006854515,\n\t\t\"rows_read\": 7770,\n\t\t\"bytes_read\": 217582\n\t}\n}\n",
+      "stderr": ""
+    },
+    "health_since_start": {
+      "command": "clickhouse-client --query 'SELECT count() samples,min(ts) first,max(ts) last,countIf(lag_ms<0) unknown_lag_samples,countIf(lag_ms>60000) lag_over60s_samples,quantileExactIf(0.99)(lag_ms,lag_ms>=0) p99_reported_lag_ms,max(lag_ms) max_reported_lag_ms,sum(reconnects) reconnects,max(rss_mb) max_rss_mb FROM catbird.ingest_health WHERE ts>=toDateTime('\"'\"'2026-10-19 13:00:00'\"'\"','\"'\"'UTC'\"'\"') SETTINGS max_execution_time=10 FORMAT JSON'",
+      "command_sha256": "631ed3a419e41bb1d01df7cea1bda48231de3df74e7d6b2c2fb42ac1a064a12f",
+      "started_at": "2026-10-20T10:35:39.155571+00:00",
+      "ended_at": "2026-10-20T10:35:40.615581+00:00",
+      "exit_code": 0,
+      "stdout": "{\n\t\"meta\":\n\t[\n\t\t{\n\t\t\t\"name\": \"samples\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"first\",\n\t\t\t\"type\": \"DateTime64(3, 'UTC')\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"last\",\n\t\t\t\"type\": \"DateTime64(3, 'UTC')\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"unknown_lag_samples\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"lag_over60s_samples\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"p99_reported_lag_ms\",\n\t\t\t\"type\": \"Int64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"max_reported_lag_ms\",\n\t\t\t\"type\": \"Int64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"reconnects\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"max_rss_mb\",\n\t\t\t\"type\": \"UInt32\"\n\t\t}\n\t],\n\n\t\"data\":\n\t[\n\t\t{\n\t\t\t\"samples\": 7770,\n\t\t\t\"first\": \"2026-10-19 13:00:26.439\",\n\t\t\t\"last\": \"2026-10-20 10:35:31.366\",\n\t\t\t\"unknown_lag_samples\": 0,\n\t\t\t\"lag_over60s_samples\": 343,\n\t\t\t\"p99_reported_lag_ms\": 1508005,\n\t\t\t\"max_reported_lag_ms\": 2228309,\n\t\t\t\"reconnects\": 5,\n\t\t\t\"max_rss_mb\": 1344\n\t\t}\n\t],\n\n\t\"rows\": 1,\n\n\t\"statistics\":\n\t{\n\t\t\"elapsed\": 0.011667267,\n\t\t\"rows_read\": 7770,\n\t\t\"bytes_read\": 155422\n\t}\n}\n",
+      "stderr": ""
+    },
+    "parts": {
+      "command": "clickhouse-client --query 'SELECT table,count() active_parts,sum(rows) physical_rows,sum(bytes_on_disk) bytes_on_disk FROM system.parts WHERE active AND database='\"'\"'catbird'\"'\"' GROUP BY table ORDER BY bytes_on_disk DESC SETTINGS max_execution_time=10 FORMAT JSON'",
+      "command_sha256": "2761bcd3c2bfaf7df76b1f6308c053cf836e9abcb6177d086089d05fabede4f9",
+      "started_at": "2026-10-20T10:35:39.155662+00:00",
+      "ended_at": "2026-10-20T10:35:40.604200+00:00",
+      "exit_code": 0,
+      "stdout": "{\n\t\"meta\":\n\t[\n\t\t{\n\t\t\t\"name\": \"table\",\n\t\t\t\"type\": \"String\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"active_parts\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"physical_rows\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"bytes_on_disk\",\n\t\t\t\"type\": \"UInt64\"\n\t\t}\n\t],\n\n\t\"data\":\n\t[\n\t\t{\n\t\t\t\"table\": \"engagements\",\n\t\t\t\"active_parts\": 21,\n\t\t\t\"physical_rows\": 22883195,\n\t\t\t\"bytes_on_disk\": 864625021\n\t\t},\n\t\t{\n\t\t\t\"table\": \"posts\",\n\t\t\t\"active_parts\": 17,\n\t\t\t\"physical_rows\": 3184862,\n\t\t\t\"bytes_on_disk\": 455023763\n\t\t},\n\t\t{\n\t\t\t\"table\": \"follows\",\n\t\t\t\"active_parts\": 154,\n\t\t\t\"physical_rows\": 2555202,\n\t\t\t\"bytes_on_disk\": 130925967\n\t\t},\n\t\t{\n\t\t\t\"table\": \"deletions\",\n\t\t\t\"active_parts\": 12,\n\t\t\t\"physical_rows\": 1318428,\n\t\t\t\"bytes_on_disk\": 36751867\n\t\t},\n\t\t{\n\t\t\t\"table\": \"item_communities\",\n\t\t\t\"active_parts\": 2,\n\t\t\t\"physical_rows\": 1590140,\n\t\t\t\"bytes_on_disk\": 28959372\n\t\t},\n\t\t{\n\t\t\t\"table\": \"interested_in\",\n\t\t\t\"active_parts\": 2,\n\t\t\t\"physical_rows\": 1606037,\n\t\t\t\"bytes_on_disk\": 21569971\n\t\t},\n\t\t{\n\t\t\t\"table\": \"blocks\",\n\t\t\t\"active_parts\": 80,\n\t\t\t\"physical_rows\": 359848,\n\t\t\t\"bytes_on_disk\": 20498638\n\t\t},\n\t\t{\n\t\t\t\"table\": \"other_records\",\n\t\t\t\"active_parts\": 11,\n\t\t\t\"physical_rows\": 303510,\n\t\t\t\"bytes_on_disk\": 16533741\n\t\t},\n\t\t{\n\t\t\t\"table\": \"community_items\",\n\t\t\t\"active_parts\": 1,\n\t\t\t\"physical_rows\": 107745,\n\t\t\t\"bytes_on_disk\": 12763464\n\t\t},\n\t\t{\n\t\t\t\"table\": \"profiles\",\n\t\t\t\"active_parts\": 6,\n\t\t\t\"physical_rows\": 43330,\n\t\t\t\"bytes_on_disk\": 6506387\n\t\t},\n\t\t{\n\t\t\t\"table\": \"author_mode_mix\",\n\t\t\t\"active_parts\": 1,\n\t\t\t\"physical_rows\": 96092,\n\t\t\t\"bytes_on_disk\": 4327364\n\t\t},\n\t\t{\n\t\t\t\"table\": \"listitems\",\n\t\t\t\"active_parts\": 84,\n\t\t\t\"physical_rows\": 86253,\n\t\t\t\"bytes_on_disk\": 4043807\n\t\t},\n\t\t{\n\t\t\t\"table\": \"known_for\",\n\t\t\t\"active_parts\": 1,\n\t\t\t\"physical_rows\": 162390,\n\t\t\t\"bytes_on_disk\": 3350292\n\t\t},\n\t\t{\n\t\t\t\"table\": \"producer_influence\",\n\t\t\t\"active_parts\": 1,\n\t\t\t\"physical_rows\": 96092,\n\t\t\t\"bytes_on_disk\": 2365846\n\t\t},\n\t\t{\n\t\t\t\"table\": \"community_directory\",\n\t\t\t\"active_parts\": 3,\n\t\t\t\"physical_rows\": 31398,\n\t\t\t\"bytes_on_disk\": 1298714\n\t\t},\n\t\t{\n\t\t\t\"table\": \"communities\",\n\t\t\t\"active_parts\": 1,\n\t\t\t\"physical_rows\": 1500,\n\t\t\t\"bytes_on_disk\": 916055\n\t\t},\n\t\t{\n\t\t\t\"table\": \"account_status\",\n\t\t\t\"active_parts\": 5,\n\t\t\t\"physical_rows\": 22346,\n\t\t\t\"bytes_on_disk\": 849257\n\t\t},\n\t\t{\n\t\t\t\"table\": \"identities\",\n\t\t\t\"active_parts\": 4,\n\t\t\t\"physical_rows\": 20525,\n\t\t\t\"bytes_on_disk\": 771718\n\t\t},\n\t\t{\n\t\t\t\"table\": \"ingest_health\",\n\t\t\t\"active_parts\": 4,\n\t\t\t\"physical_rows\": 7770,\n\t\t\t\"bytes_on_disk\": 249421\n\t\t},\n\t\t{\n\t\t\t\"table\": \"lists\",\n\t\t\t\"active_parts\": 4,\n\t\t\t\"physical_rows\": 1006,\n\t\t\t\"bytes_on_disk\": 86912\n\t\t},\n\t\t{\n\t\t\t\"table\": \"feedgens\",\n\t\t\t\"active_parts\": 3,\n\t\t\t\"physical_rows\": 503,\n\t\t\t\"bytes_on_disk\": 71423\n\t\t},\n\t\t{\n\t\t\t\"table\": \"visibility\",\n\t\t\t\"active_parts\": 3,\n\t\t\t\"physical_rows\": 929,\n\t\t\t\"bytes_on_disk\": 53694\n\t\t},\n\t\t{\n\t\t\t\"table\": \"onboarding_sessions\",\n\t\t\t\"active_parts\": 2,\n\t\t\t\"physical_rows\": 384,\n\t\t\t\"bytes_on_disk\": 48568\n\t\t},\n\t\t{\n\t\t\t\"table\": \"starterpacks\",\n\t\t\t\"active_parts\": 3,\n\t\t\t\"physical_rows\": 172,\n\t\t\t\"bytes_on_disk\": 41247\n\t\t},\n\t\t{\n\t\t\t\"table\": \"feed_serve_log\",\n\t\t\t\"active_parts\": 1,\n\t\t\t\"physical_rows\": 304,\n\t\t\t\"bytes_on_disk\": 6913\n\t\t}\n\t],\n\n\t\"rows\": 25,\n\n\t\"statistics\":\n\t{\n\t\t\"elapsed\": 0.007092662,\n\t\t\"rows_read\": 426,\n\t\t\"bytes_read\": 20476\n\t}\n}\n",
+      "stderr": ""
+    },
+    "merges": {
+      "command": "clickhouse-client --query 'SELECT count() active_merges,sum(total_size_bytes_compressed) total_compressed_bytes,max(elapsed) longest_elapsed_seconds FROM system.merges WHERE database='\"'\"'catbird'\"'\"' SETTINGS max_execution_time=10 FORMAT JSON'",
+      "command_sha256": "9875f4f71d4018d4512789564e3b48d3560f9224d9228e6513e59e1751507010",
+      "started_at": "2026-10-20T10:35:40.604304+00:00",
+      "ended_at": "2026-10-20T10:35:41.966379+00:00",
+      "exit_code": 0,
+      "stdout": "{\n\t\"meta\":\n\t[\n\t\t{\n\t\t\t\"name\": \"active_merges\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"total_compressed_bytes\",\n\t\t\t\"type\": \"UInt64\"\n\t\t},\n\t\t{\n\t\t\t\"name\": \"longest_elapsed_seconds\",\n\t\t\t\"type\": \"Float64\"\n\t\t}\n\t],\n\n\t\"data\":\n\t[\n\t\t{\n\t\t\t\"active_merges\": 0,\n\t\t\t\"total_compressed_bytes\": 0,\n\t\t\t\"longest_elapsed_seconds\": 0\n\t\t}\n\t],\n\n\t\"rows\": 1,\n\n\t\"statistics\":\n\t{\n\t\t\"elapsed\": 0.002911248,\n\t\t\"rows_read\": 0,\n\t\t\"bytes_read\": 0\n\t}\n}\n",
+      "stderr": ""
+    },
+    "filesystem": {
+      "command": "df -B1 / /var/lib/clickhouse",
+      "command_sha256": "c28124ccbe88ad20e3940c7ecdf8aba69f1c9bb216f709143f21a6b10889ad15",
+      "started_at": "2026-10-20T10:35:40.615657+00:00",
+      "ended_at": "2026-10-20T10:35:41.904311+00:00",
+      "exit_code": 0,
+      "stdout": "Filesystem        1B-blocks         Used    Available Use% Mounted on\n/dev/vda4      539792977920 289558495232 228187791360  56% /\n/dev/vda4      539792977920 289558495232 228187791360  56% /\n",
+      "stderr": ""
+    },
+    "recent_journal_notice_counts": {
+      "command": "journalctl -u catbird-intel-ingest --since '10 minutes ago' -n 5000 --no-pager -o cat | python3 -c 'import sys,json; s=sys.stdin.read(); terms=[\"CursorTooOld\",\"OutdatedCursor\",\"FutureCursor\",\"ConsumerTooSlow\",\"flush failed\",\"stream failed\",\"MalformedError\",\"BufferOverflowError\"]; print(json.dumps({\"scanned_lines\":len(s.splitlines()),\"counts\":{x:s.count(x) for x in terms}}))'",
+      "command_sha256": "9df33831b571418b60a05e22320b7b560613319253396a225a585c50cc9fac5b",
+      "started_at": "2026-10-20T10:35:41.904367+00:00",
+      "ended_at": "2026-10-20T10:35:43.124360+00:00",
+      "exit_code": 0,
+      "stdout": "{\"scanned_lines\": 0, \"counts\": {\"CursorTooOld\": 0, \"OutdatedCursor\": 0, \"FutureCursor\": 0, \"ConsumerTooSlow\": 0, \"flush failed\": 0, \"stream failed\": 0, \"MalformedError\": 0, \"BufferOverflowError\": 0}}\n",
+      "stderr": ""
+    }
+  }
+}

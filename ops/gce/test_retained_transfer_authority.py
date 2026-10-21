@@ -764,6 +764,115 @@ class RetainedAuthorityTests(unittest.TestCase):
         with self.assertRaises(AuthorityBlocked):
             self.open_run(3)
 
+    def test_status_probe_reconciles_transient_5xx_media_and_intermediate_probe(self):
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+        payload_size = manifest["payload"]["bytes"]
+        failed_attempt, _ = self.request(authority, payload_size, "media_chunk")
+        authority.mark_dispatch(failed_attempt)
+        authority.finish_request(failed_attempt, 503)
+        self.assertEqual(authority.snapshot()["unresolved_attempts"], 1)
+
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        probe_502, _ = self.request(authority, 0, "resumable_status")
+        authority.mark_dispatch(probe_502)
+        authority.finish_request(probe_502, 502)
+        self.assertEqual(authority.snapshot()["unresolved_attempts"], 2)
+
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        probe_308, _ = self.request(authority, 0, "resumable_status")
+        authority.mark_dispatch(probe_308)
+        authority.finish_request(probe_308, 308)
+
+        proof_sha = authority.reconcile_attempt_by_status_probe(
+            failed_attempt_id=failed_attempt,
+            probe_attempt_id=probe_308,
+            acknowledged_bytes=5,
+            committed_bytes=5,
+        )
+        self.assertEqual(len(proof_sha), 64)
+        snap = authority.snapshot()
+        self.assertEqual(snap["unresolved_attempts"], 0)
+        self.assertEqual(snap["forensic_raw_unresolved_attempts"], 2)
+        inspected = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+            clock=self.clock)
+        self.assertEqual(inspected["unresolved_attempts"], 0)
+        self.assertEqual(inspected["forensic_raw_unresolved_attempts"], 2)
+
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        retry_attempt, _ = self.request(authority, payload_size - 5, "media_chunk")
+        authority.mark_dispatch(retry_attempt)
+        authority.finish_request(retry_attempt, 200)
+        self.finish_index(authority, manifest, digest)
+        self.open_run(2)
+
+    def test_multiple_status_probe_reconciliations_in_single_run_preserve_exact_budget(self):
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+        payload_size = manifest["payload"]["bytes"]
+        receipt_size = manifest["receipt"]["bytes"]
+
+        # 1st transient 5xx on payload chunk (partial commit of 4 bytes)
+        fail_1, _ = self.request(authority, payload_size, "media_chunk")
+        authority.mark_dispatch(fail_1)
+        authority.finish_request(fail_1, 503)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        probe_1, _ = self.request(authority, 0, "resumable_status")
+        authority.mark_dispatch(probe_1)
+        authority.finish_request(probe_1, 308)
+        authority.reconcile_attempt_by_status_probe(
+            failed_attempt_id=fail_1,
+            probe_attempt_id=probe_1,
+            acknowledged_bytes=4,
+            committed_bytes=4,
+        )
+        self.assertEqual(authority.snapshot()["unresolved_attempts"], 0)
+
+        # Retry remaining payload bytes (payload_size - 4), which ALSO hits transient 502 (0 additional bytes committed)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        fail_2, _ = self.request(authority, payload_size - 4, "media_chunk")
+        authority.mark_dispatch(fail_2)
+        authority.finish_request(fail_2, 502)
+        self.assertEqual(authority.snapshot()["unresolved_attempts"], 1)
+
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        probe_2, _ = self.request(authority, 0, "resumable_status")
+        authority.mark_dispatch(probe_2)
+        authority.finish_request(probe_2, 308)
+        authority.reconcile_attempt_by_status_probe(
+            failed_attempt_id=fail_2,
+            probe_attempt_id=probe_2,
+            acknowledged_bytes=4,
+            committed_bytes=0,
+        )
+        snap = authority.snapshot()
+        self.assertEqual(snap["unresolved_attempts"], 0)
+        self.assertEqual(snap["forensic_raw_unresolved_attempts"], 2)
+
+        # Final payload retry + receipt upload succeed within exact pair reservation
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        payload_done, _ = self.request(authority, payload_size - 4, "media_chunk")
+        authority.mark_dispatch(payload_done)
+        authority.finish_request(payload_done, 200)
+
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        receipt_done, _ = self.request(authority, receipt_size, "media_chunk")
+        authority.mark_dispatch(receipt_done)
+        authority.finish_request(receipt_done, 200)
+
+        self.finish_index(authority, manifest, digest)
+        self.open_run(2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

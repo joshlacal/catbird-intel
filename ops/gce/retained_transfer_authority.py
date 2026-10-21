@@ -38,6 +38,9 @@ MAPPING_PARTITION_BYTES = 33_554_432
 MAPPING_MAX_BODY_BYTES = 16_384
 GLOBAL_ROLLING_CAP_BYTES = 700 * (1 << 30)
 RECONCILIATION_SCHEMA = "catbird.drive.retained-receipt-500-reconciliation.v1"
+STATUS_PROBE_RECONCILIATION_SCHEMA = (
+    "catbird.drive.retained-status-probe-reconciliation.v1"
+)
 
 
 def _boot_id() -> str:
@@ -638,7 +641,7 @@ class RetainedObservationAuthority:
             raise AuthorityBlocked("Retained account clock state is malformed")
         return account
 
-    def _reconciled_attempt_ids(self) -> set[str]:
+    def _reconciled_state(self) -> tuple[set[str], dict[str, int]]:
         """Validate append-only proof rows without altering the original HTTP result.
 
         Older ledgers have no table until a reviewed administrator performs the
@@ -648,23 +651,26 @@ class RetainedObservationAuthority:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_reconciliation'"
         ).fetchone()
         if exists is None:
-            return set()
+            return set(), {}
         columns = tuple(row[1] for row in self.db.execute(
             "PRAGMA table_info(retained_reconciliation)"))
         if columns != ("attempt_id", "run_id", "pair_key", "proof_json",
                        "proof_sha256", "applied_at"):
             raise AuthorityBlocked("Retained reconciliation table differs")
         resolved: set[str] = set()
+        credits_by_run: dict[str, int] = {}
         for row in self.db.execute("SELECT * FROM retained_reconciliation"):
             try:
                 proof = json.loads(row["proof_json"], object_pairs_hook=_unique_object)
             except (ValueError, TypeError, UnicodeError) as error:
                 raise AuthorityBlocked("Retained reconciliation proof is malformed") from error
+            schema = proof.get("schema") if isinstance(proof, dict) else None
             if (not isinstance(proof, dict) or
                 _canonical(proof) != row["proof_json"] or
                 not _valid_digest(row["proof_sha256"]) or
                 hashlib.sha256(row["proof_json"].encode()).hexdigest() != row["proof_sha256"] or
-                proof.get("schema") != RECONCILIATION_SCHEMA or
+                schema not in (RECONCILIATION_SCHEMA,
+                               STATUS_PROBE_RECONCILIATION_SCHEMA) or
                 proof.get("attempt_id") != row["attempt_id"] or
                 proof.get("run_id") != row["run_id"] or
                 proof.get("pair_key") != row["pair_key"] or
@@ -680,12 +686,75 @@ class RetainedObservationAuthority:
             manifest, digest, key = _reviewed_manifest(run["manifest_raw"], run["id"],
                                                        self.account_id)
             receipt = manifest["receipt"]
+            payload = manifest["payload"]
+            if schema == STATUS_PROBE_RECONCILIATION_SCHEMA:
+                probe_id = proof.get("probe_attempt_id")
+                probe = (self.db.execute("SELECT * FROM retained_attempt WHERE id=?",
+                                         (probe_id,)).fetchone()
+                         if isinstance(probe_id, str) else None)
+                ack = proof.get("acknowledged_bytes")
+                committed = proof.get("committed_bytes")
+                credit = proof.get("uncommitted_retry_bytes")
+                is_status_attempt = (
+                    attempt["kind"] == "resumable_status" and
+                    attempt["target_category"] == "resumable_status" and
+                    attempt["bytes"] == 0 and committed == 0 and credit == 0
+                )
+                is_media_attempt = (
+                    attempt["kind"] == "media_chunk" and
+                    attempt["target_category"] == "media_chunk" and
+                    0 < attempt["bytes"] <= (8 << 20) and
+                    (probe["http_status"] not in (200, 201) or
+                     committed == attempt["bytes"])
+                )
+                if (attempt["run_id"] != run["id"] or run["pair_key"] != key or
+                    row["pair_key"] != key or attempt["status"] != "unresolved" or
+                    attempt["http_status"] not in (500, 502, 503, 504) or
+                    not (is_media_attempt or is_status_attempt) or
+                    attempt["method"] != "PUT" or attempt["dispatched_at"] is None or
+                    probe is None or probe["id"] == attempt["id"] or
+                    probe["run_id"] != run["id"] or probe["status"] != "settled" or
+                    probe["http_status"] not in (200, 201, 308) or
+                    probe["kind"] != "resumable_status" or
+                    probe["target_category"] != "resumable_status" or
+                    probe["method"] != "PUT" or probe["bytes"] != 0 or
+                    probe["dispatched_at"] is None or
+                    probe["dispatched_at"] < attempt["dispatched_at"] or
+                    probe["target_sha256"] != attempt["target_sha256"] or
+                    proof.get("manifest_sha256") != digest or
+                    proof.get("account_id") != self.account_id or
+                    proof.get("writer_id") != self.writer_id or
+                    proof.get("original_http_status") != attempt["http_status"] or
+                    proof.get("original_charge_bytes") != attempt["bytes"] or
+                    proof.get("probe_http_status") != probe["http_status"] or
+                    proof.get("target_sha256") != attempt["target_sha256"] or
+                    proof.get("operation_key") != attempt["operation_key"] or
+                    type(ack) is not int or type(committed) is not int or
+                    type(credit) is not int or
+                    not 0 <= ack <= max(payload["bytes"], receipt["bytes"]) or
+                    not 0 <= committed <= attempt["bytes"] or
+                    committed > ack or
+                    credit != attempt["bytes"] - committed):
+                    raise AuthorityBlocked(
+                        "Retained status-probe reconciliation attempt identity differs"
+                    )
+                resolved.add(row["attempt_id"])
+                credits_by_run[run["id"]] = credits_by_run.get(run["id"], 0) + credit
+                continue
+            is_payload_tail = (
+                proof.get("permitted_branch") == "payload_tail_and_receipt_auto"
+            )
+            expected_bytes_ok = (
+                (0 < attempt["bytes"] <= min(8 << 20, payload["bytes"]) and
+                 proof.get("payload_session_sha256") == attempt["target_sha256"])
+                if is_payload_tail else attempt["bytes"] == receipt["bytes"]
+            )
             if (attempt["run_id"] != run["id"] or run["pair_key"] != key or
                 row["pair_key"] != key or attempt["status"] != "unresolved" or
                 attempt["http_status"] != 500 or attempt["kind"] != "media_chunk" or
                 attempt["target_category"] != "media_chunk" or
                 attempt["method"] != "PUT" or attempt["dispatched_at"] is None or
-                attempt["bytes"] != receipt["bytes"] or
+                not expected_bytes_ok or
                 proof.get("manifest_sha256") != digest or
                 proof.get("account_id") != self.account_id or
                 proof.get("writer_id") != self.writer_id or
@@ -727,7 +796,13 @@ class RetainedObservationAuthority:
                 not proof["operator_reference"].strip()):
                 raise AuthorityBlocked("Retained reconciliation operator or IDs are absent")
             resolved.add(row["attempt_id"])
-        return resolved
+        return resolved, credits_by_run
+
+    def _reconciled_attempt_ids(self) -> set[str]:
+        return self._reconciled_state()[0]
+
+    def _status_probe_reconciled_credits(self, run_id: str) -> int:
+        return self._reconciled_state()[1].get(run_id, 0)
 
     def _effective_unresolved_count(self, run_id: str | None = None) -> int:
         resolved = self._reconciled_attempt_ids()
@@ -783,11 +858,24 @@ class RetainedObservationAuthority:
             manifest, digest, key = _reviewed_manifest(
                 run["manifest_raw"], run["id"], self.account_id)
             receipt = manifest["receipt"]
+            payload = manifest["payload"]
             try:
                 evidence = json.loads(row["evidence_json"],
                                       object_pairs_hook=_unique_object)
             except (ValueError, TypeError) as error:
                 raise AuthorityBlocked("Receipt recovery review malformed") from error
+            is_payload_tail = (
+                isinstance(evidence, dict) and
+                evidence.get("permitted_branch") == "payload_tail_and_receipt_auto"
+            )
+            expected_budget = (
+                attempt["bytes"] + receipt["bytes"] + (1 << 20)
+                if is_payload_tail else receipt["bytes"] + (1 << 20)
+            )
+            attempt_bytes_ok = (
+                0 < attempt["bytes"] <= min(8 << 20, payload["bytes"])
+                if is_payload_tail else attempt["bytes"] == receipt["bytes"]
+            )
             if (not isinstance(evidence, dict) or
                 _canonical(evidence) != row["evidence_json"] or
                 evidence.get("schema") !=
@@ -805,10 +893,10 @@ class RetainedObservationAuthority:
                 attempt["http_status"] != 500 or
                 attempt["kind"] != "media_chunk" or
                 attempt["method"] != "PUT" or
-                attempt["bytes"] != receipt["bytes"] or
+                not attempt_bytes_ok or
                 attempt["target_sha256"] != row["session_sha256"] or
                 row["manifest_sha256"] != digest or row["pair_key"] != key or
-                row["budget_bytes"] != receipt["bytes"] + (1 << 20) or
+                row["budget_bytes"] != expected_budget or
                 not 0 <= row["reserved_remaining"] <= row["budget_bytes"] or
                 not 0 < row["deadline_at"] - row["started_at"] <= 1200 or
                 row["status"] not in ("open", "closed", "blocked")):
@@ -922,12 +1010,15 @@ class RetainedObservationAuthority:
             spent = 0
             for attempt in attempts:
                 spent += self._validate_attempt(attempt, run)
+            net_spent = spent - self._status_probe_reconciled_credits(run["id"])
+            if net_spent < 0:
+                raise AuthorityBlocked("Retained pair status-probe credit exceeds spend")
             if run["status"] in ("active", "verified") and run["reserved"]:
-                if spent + run["reserved_remaining"] != run["budget_bytes"]:
+                if net_spent + run["reserved_remaining"] != run["budget_bytes"]:
                     raise AuthorityBlocked("Retained pair charges do not reconcile")
             elif run["status"] in ("index_pending", "closed"):
                 if (not run["reserved"] or run["reserved_remaining"] != 0 or
-                    not _valid_digest(run["mapping_sha256"]) or spent > run["budget_bytes"]):
+                    not _valid_digest(run["mapping_sha256"]) or net_spent > run["budget_bytes"]):
                     raise AuthorityBlocked("Retained index state or charge is malformed")
                 if self._effective_unresolved_count(run["id"]):
                     raise AuthorityBlocked("Index pending with uncertain Drive attempt")
@@ -1222,6 +1313,142 @@ class RetainedObservationAuthority:
                                 (now + QUOTA_COOLDOWN_SECONDS,))
             self.db.execute("UPDATE retained_account SET last_clock=? WHERE id=1", (now,))
 
+    def reconcile_attempt_by_status_probe(
+        self, *, failed_attempt_id: str, probe_attempt_id: str,
+        acknowledged_bytes: int, committed_bytes: int,
+    ) -> str:
+        """Reconcile a transient 5xx media_chunk attempt after a settled status probe.
+
+        The original retained_attempt row and its byte charge are never rewritten.
+        An append-only proof row records the settled status probe and credits any
+        uncommitted retry bytes back to the active run's pair budget so the retry
+        chunk can be reserved without double-charging the per-pair cap, while the
+        700 GiB rolling account cap still conservatively counts all wire bytes.
+        """
+        _required_identity(failed_attempt_id, "failed attempt ID")
+        _required_identity(probe_attempt_id, "probe attempt ID")
+        if failed_attempt_id == probe_attempt_id:
+            raise AuthorityBlocked("Status probe reconciliation requires distinct attempts")
+        with self._transaction():
+            account, run = self._run()
+            now = self._now(account)
+            if not run["reserved"]:
+                raise AuthorityBlocked("Status probe reconciliation requires reserved pair")
+            failed = self.db.execute(
+                "SELECT * FROM retained_attempt WHERE id=? AND run_id=?",
+                (failed_attempt_id, self.release_id),
+            ).fetchone()
+            probe = self.db.execute(
+                "SELECT * FROM retained_attempt WHERE id=? AND run_id=?",
+                (probe_attempt_id, self.release_id),
+            ).fetchone()
+            prior = self.db.execute(
+                "SELECT 1 FROM retained_reconciliation WHERE attempt_id=?",
+                (failed_attempt_id,),
+            ).fetchone()
+            max_media = max(self.manifest["payload"]["bytes"],
+                            self.manifest["receipt"]["bytes"])
+            if (prior is not None or failed is None or probe is None or
+                failed["status"] != "unresolved" or
+                failed["http_status"] not in (500, 502, 503, 504) or
+                failed["kind"] != "media_chunk" or
+                failed["target_category"] != "media_chunk" or
+                failed["method"] != "PUT" or failed["dispatched_at"] is None or
+                not 0 < failed["bytes"] <= (8 << 20) or
+                probe["status"] != "settled" or
+                probe["http_status"] not in (200, 201, 308) or
+                probe["kind"] != "resumable_status" or
+                probe["target_category"] != "resumable_status" or
+                probe["method"] != "PUT" or probe["bytes"] != 0 or
+                probe["dispatched_at"] is None or
+                probe["dispatched_at"] < failed["dispatched_at"] or
+                probe["target_sha256"] != failed["target_sha256"] or
+                type(acknowledged_bytes) is not int or
+                type(committed_bytes) is not int or
+                not 0 <= acknowledged_bytes <= max_media or
+                not 0 <= committed_bytes <= failed["bytes"] or
+                committed_bytes > acknowledged_bytes or
+                (probe["http_status"] in (200, 201) and
+                 committed_bytes != failed["bytes"])):
+                raise AuthorityBlocked(
+                    "Transient 5xx media attempt cannot be reconciled by status probe"
+                )
+            uncommitted_retry_bytes = failed["bytes"] - committed_bytes
+            proof = {
+                "schema": STATUS_PROBE_RECONCILIATION_SCHEMA,
+                "attempt_id": failed_attempt_id,
+                "probe_attempt_id": probe_attempt_id,
+                "run_id": self.release_id,
+                "pair_key": self.expected_pair_key,
+                "manifest_sha256": self.manifest_sha256,
+                "account_id": self.account_id,
+                "writer_id": self.writer_id,
+                "original_http_status": failed["http_status"],
+                "original_charge_bytes": failed["bytes"],
+                "probe_http_status": probe["http_status"],
+                "target_sha256": failed["target_sha256"],
+                "operation_key": failed["operation_key"],
+                "acknowledged_bytes": acknowledged_bytes,
+                "committed_bytes": committed_bytes,
+                "uncommitted_retry_bytes": uncommitted_retry_bytes,
+                "applied_at": now,
+            }
+            raw = _canonical(proof)
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+            self.db.execute(
+                "INSERT INTO retained_reconciliation VALUES (?,?,?,?,?,?)",
+                (failed_attempt_id, self.release_id, self.expected_pair_key,
+                 raw, digest, now),
+            )
+            intermediate_probes = self.db.execute(
+                "SELECT a.* FROM retained_attempt a LEFT JOIN "
+                "retained_reconciliation r ON r.attempt_id=a.id "
+                "WHERE a.run_id=? AND a.target_sha256=? AND a.status='unresolved' "
+                "AND a.kind='resumable_status' AND a.bytes=0 AND r.attempt_id IS NULL",
+                (self.release_id, failed["target_sha256"]),
+            ).fetchall()
+            for item in intermediate_probes:
+                if (item["http_status"] in (500, 502, 503, 504) and
+                    item["dispatched_at"] is not None and
+                    failed["dispatched_at"] <= item["dispatched_at"] <=
+                        probe["dispatched_at"]):
+                    p_proof = {
+                        "schema": STATUS_PROBE_RECONCILIATION_SCHEMA,
+                        "attempt_id": item["id"],
+                        "probe_attempt_id": probe_attempt_id,
+                        "run_id": self.release_id,
+                        "pair_key": self.expected_pair_key,
+                        "manifest_sha256": self.manifest_sha256,
+                        "account_id": self.account_id,
+                        "writer_id": self.writer_id,
+                        "original_http_status": item["http_status"],
+                        "original_charge_bytes": 0,
+                        "probe_http_status": probe["http_status"],
+                        "target_sha256": item["target_sha256"],
+                        "operation_key": item["operation_key"],
+                        "acknowledged_bytes": acknowledged_bytes,
+                        "committed_bytes": 0,
+                        "uncommitted_retry_bytes": 0,
+                        "applied_at": now,
+                    }
+                    p_raw = _canonical(p_proof)
+                    p_digest = hashlib.sha256(p_raw.encode()).hexdigest()
+                    self.db.execute(
+                        "INSERT INTO retained_reconciliation VALUES (?,?,?,?,?,?)",
+                        (item["id"], self.release_id, self.expected_pair_key,
+                         p_raw, p_digest, now),
+                    )
+            self.db.execute(
+                "UPDATE retained_run SET reserved_remaining=reserved_remaining+? "
+                "WHERE id=?",
+                (uncommitted_retry_bytes, self.release_id),
+            )
+            self.db.execute(
+                "UPDATE retained_account SET last_clock=? WHERE id=1", (now,),
+            )
+            self._validate_all()
+            return digest
+
     def mark_pair_verified(self, pair_key: str, mapping_sha256: str) -> None:
         if not _valid_digest(mapping_sha256):
             raise AuthorityBlocked("Verified mapping digest missing")
@@ -1336,7 +1563,8 @@ class RetainedObservationAuthority:
             "pair_reserved_remaining": run["reserved_remaining"],
             "pair_status": run["status"], "next_slot": account["next_slot"],
             "cooldown_until": account["cooldown_until"],
-            "unresolved_attempts": self.db.execute(
+            "unresolved_attempts": self._effective_unresolved_count(),
+            "forensic_raw_unresolved_attempts": self.db.execute(
                 "SELECT COUNT(*) FROM retained_attempt WHERE status='unresolved'").fetchone()[0],
         }
 

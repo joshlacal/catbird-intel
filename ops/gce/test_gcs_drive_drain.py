@@ -767,6 +767,150 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(resumed.last_counts["conflict"], 1)
         self.assertTrue(payload.is_symlink())
         self.assertEqual(preserved.read_bytes(), self.data)
+    def test_transient_5xx_status_probe_308_resumes_from_acknowledged_offset(self):
+        path = self.work/"transient308.bin"
+        path.write_bytes(b"A" * (4 << 20) + b"B" * (5 << 20))
+        expected = digest(path)
+        drive = object.__new__(SafeDrive)
+        drive.preflight = lambda *args: None
+        drive.reserve_id = lambda: "reserved"
+        final = {"id": "reserved", "name": path.name, "size": str(expected["size"]),
+                 "md5Checksum": expected["md5"], "parents": ["parent"]}
+        drive.metadata = lambda file_id: final
+        reconciled = []
+        class DummyAuthority:
+            def reconcile_attempt_by_status_probe(self, **kwargs):
+                reconciled.append(kwargs)
+                return "proof"
+        drive.authority = DummyAuthority()
+        state, saved, sent_ranges, sleeps = {}, [], [], []
+        class Response(io.BytesIO):
+            def __init__(self, body=b"", headers=None):
+                super().__init__(body)
+                self.headers = headers or {}
+        status_calls = 0
+        def request(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+            nonlocal status_calls
+            if method == "POST":
+                return Response(headers={"Location": "https://www.googleapis.com/upload/session"})
+            if headers["Content-Range"].startswith("bytes */"):
+                status_calls += 1
+                drive.last_attempt_id = f"probe-{status_calls}"
+                hdrs = {} if status_calls == 1 else {"Range": f"bytes=0-{(4 << 20) - 1}"}
+                error = urllib.error.HTTPError(url, 308, "resume", hdrs, None)
+                error.attempt_id = drive.last_attempt_id
+                self.addCleanup(error.close)
+                raise error
+            sent_ranges.append((headers["Content-Range"], len(data), data[:1], data[-1:]))
+            if len(sent_ranges) == 1:
+                drive.last_attempt_id = "chunk-1-503"
+                error = urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+                error.attempt_id = drive.last_attempt_id
+                self.addCleanup(error.close)
+                raise error
+            return Response(json.dumps(final).encode())
+        drive.request = request
+        with patch("gcs_drive_drain.time.sleep", side_effect=sleeps.append):
+            result = drive.ensure_file(path, "parent", expected, state, lambda: saved.append(dict(state)))
+        self.assertEqual(result, final)
+        self.assertEqual(sleeps, [1.0])
+        self.assertEqual(reconciled, [{
+            "failed_attempt_id": "chunk-1-503",
+            "probe_attempt_id": "probe-2",
+            "acknowledged_bytes": 4 << 20,
+            "committed_bytes": 4 << 20,
+        }])
+        self.assertEqual(sent_ranges, [
+            (f"bytes 0-{(8 << 20) - 1}/{expected['size']}", 8 << 20, b"A", b"B"),
+            (f"bytes {4 << 20}-{expected['size'] - 1}/{expected['size']}", 5 << 20, b"B", b"B"),
+        ])
+    def test_transient_500_on_final_chunk_status_probe_200_completes_without_resend(self):
+        path = self.work/"transient200.bin"
+        path.write_bytes(b"Z" * 1024)
+        expected = digest(path)
+        drive = object.__new__(SafeDrive)
+        drive.preflight = lambda *args: None
+        drive.reserve_id = lambda: "reserved"
+        final = {"id": "reserved", "name": path.name, "size": str(expected["size"]),
+                 "md5Checksum": expected["md5"], "parents": ["parent"]}
+        drive.metadata = lambda file_id: final
+        reconciled = []
+        class DummyAuthority:
+            def reconcile_attempt_by_status_probe(self, **kwargs):
+                reconciled.append(kwargs)
+                return "proof"
+        drive.authority = DummyAuthority()
+        state, sleeps, media_calls = {}, [], 0
+        class Response(io.BytesIO):
+            def __init__(self, body=b"", headers=None):
+                super().__init__(body)
+                self.headers = headers or {}
+        status_calls = 0
+        def request(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+            nonlocal status_calls, media_calls
+            if method == "POST":
+                return Response(headers={"Location": "https://www.googleapis.com/upload/session"})
+            if headers["Content-Range"].startswith("bytes */"):
+                status_calls += 1
+                drive.last_attempt_id = f"probe-{status_calls}"
+                if status_calls == 1:
+                    error = urllib.error.HTTPError(url, 308, "resume", {}, None)
+                    error.attempt_id = drive.last_attempt_id
+                    self.addCleanup(error.close)
+                    raise error
+                if status_calls == 2:
+                    error = urllib.error.HTTPError(url, 502, "bad gateway", {}, None)
+                    error.attempt_id = drive.last_attempt_id
+                    self.addCleanup(error.close)
+                    raise error
+                return Response(json.dumps({"id": "reserved"}).encode())
+            media_calls += 1
+            drive.last_attempt_id = "chunk-final-500"
+            error = urllib.error.HTTPError(url, 500, "internal error", {}, None)
+            error.attempt_id = drive.last_attempt_id
+            self.addCleanup(error.close)
+            raise error
+        drive.request = request
+        with patch("gcs_drive_drain.time.sleep", side_effect=sleeps.append):
+            result = drive.ensure_file(path, "parent", expected, state, lambda: None)
+        self.assertEqual(result, final)
+        self.assertEqual(media_calls, 1)
+        self.assertEqual(sleeps, [1.0, 2.0])
+        self.assertEqual(reconciled, [{
+            "failed_attempt_id": "chunk-final-500",
+            "probe_attempt_id": "probe-3",
+            "acknowledged_bytes": 1024,
+            "committed_bytes": 1024,
+        }])
+    def test_transient_5xx_exceeding_max_recoveries_raises_and_preserves_state(self):
+        path = self.work/"transient_limit.bin"
+        path.write_bytes(b"X" * 2048)
+        expected = digest(path)
+        drive = object.__new__(SafeDrive)
+        drive.preflight = lambda *args: None
+        drive.authority = None
+        state = {"id": "reserved", "session": "https://www.googleapis.com/upload/session"}
+        before = dict(state)
+        status_calls, media_calls = 0, 0
+        def request(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+            nonlocal status_calls, media_calls
+            if headers["Content-Range"].startswith("bytes */"):
+                status_calls += 1
+                error = urllib.error.HTTPError(url, 308, "resume", {}, None)
+                self.addCleanup(error.close)
+                raise error
+            media_calls += 1
+            error = urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+            self.addCleanup(error.close)
+            raise error
+        drive.request = request
+        with patch("gcs_drive_drain.time.sleep"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                drive.ensure_file(path, "parent", expected, state, lambda: None)
+        self.assertEqual(ctx.exception.code, 503)
+        self.assertEqual(media_calls, 3)
+        self.assertEqual(status_calls, 3)  # 1 initial + 2 recovery probes
+        self.assertEqual(state, before)
 
 
 if __name__ == "__main__":

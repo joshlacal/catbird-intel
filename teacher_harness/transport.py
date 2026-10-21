@@ -638,6 +638,12 @@ class FakeAnthropicTransport:
             yield copy.deepcopy(item)
 
 
+SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA: dict[str, str] = {
+    "true": "Unscorable without unseen external material.",
+    "false": "Scorable from the text shown above (including 0 when absent).",
+}
+
+
 def build_systemone_clef_request(
     row: dict[str, Any],
     *,
@@ -649,8 +655,8 @@ def build_systemone_clef_request(
     """Build a Jev / Cloudflare Clef `/v1/systemone` bounded-decision request for the v3 rubric.
 
     Decomposes each component into an ordered 0..3 `score` question plus an explicit
-    insufficiency `noul` check, alongside `choice` questions for topic, missing_context_kind,
-    and stance_ambiguity.
+    insufficiency `noul` check with non-colliding `criteria` options, alongside `choice`
+    questions for topic, missing_context_kind, and stance_ambiguity.
     """
     obs = resolve_post_observation(row, corpus_by_uri=corpus_by_uri, observation_mode=observation_mode)
     questions: dict[str, dict[str, Any]] = {}
@@ -672,6 +678,7 @@ def build_systemone_clef_request(
                 f"Is there insufficient evidence in the provided text to determine '{comp}' "
                 "(for example because required parent post, quoted post, media, or cross-post repetition history is missing)?"
             ),
+            "criteria": dict(SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA),
         }
 
     questions["topic"] = {
@@ -682,6 +689,7 @@ def build_systemone_clef_request(
     questions["context_dependent"] = {
         "type": "noul",
         "instructions": "Does accurate interpretation depend on missing parent, quote, media, or link context?",
+        "criteria": dict(SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA),
     }
     questions["missing_context_kind"] = {
         "type": "choice",
@@ -764,10 +772,12 @@ def parse_systemone_clef_response(
         ordinal_scores[comp] = ordinal_val
         trainer_continuous_0_1[comp] = trainer_val
         components_out[comp] = {
+            "score": ordinal_val,
             "ordinal_score": ordinal_val,
             "map_ordinal_0_3": int(map_level),
             "expected_ordinal_0_3": round(expected_ordinal_0_3, 6),
             "continuous_0_1": continuous_0_1,
+            "normalized_0_to_1": trainer_val,
             "trainer_target_0_1": trainer_val,
             "insufficient_evidence": is_insufficient,
             "insufficient_noul_prob": round(noul_prob, 6),
@@ -787,7 +797,7 @@ def parse_systemone_clef_response(
     if any_insufficient and missing_context_kind == "none":
         missing_context_kind = "reply_parent"
 
-    return {
+    out: dict[str, Any] = {
         "model": response.get("model", "Cloudflare/clef-flash"),
         "usage": response.get("usage", {"input_tokens": 0, "output_tokens": 0}),
         "components": components_out,
@@ -803,4 +813,7 @@ def parse_systemone_clef_response(
         "stance_ambiguity": str(stance_ans.get("choice", "none")),
         "stance_ambiguity_confidence": float(stance_ans.get("confidence", 0.0)),
     }
+    for comp, comp_dict in components_out.items():
+        out[comp] = comp_dict
+    return out
 

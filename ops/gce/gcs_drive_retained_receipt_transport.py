@@ -21,6 +21,7 @@ from gcs_drive_drain import Conflict
 
 
 MAX_RECEIPT_BYTES = 1 << 20
+MAX_PAYLOAD_BYTES = 320 << 20
 MAX_METADATA_BYTES = 16 << 10
 MAX_SESSION_URL_BYTES = 4096
 REQUEST_TIMEOUT_SECONDS = 60
@@ -40,8 +41,9 @@ def _check_id(value: str, label: str) -> str:
     return value
 
 
-def _check_size(size: int) -> int:
-    if type(size) is not int or not 0 < size <= MAX_RECEIPT_BYTES:
+def _check_size(size: int, max_bytes: int = MAX_RECEIPT_BYTES) -> int:
+    if (type(max_bytes) is not int or not 0 < max_bytes <= MAX_PAYLOAD_BYTES or
+            type(size) is not int or not 0 < size <= max_bytes):
         raise Conflict("Pinned receipt size exceeds bound")
     return size
 
@@ -171,10 +173,11 @@ class ReceiptRecoveryTransport:
         self.request = request_fn
 
     def probe(self, session: str, size: int, pinned_id: str,
-              expected_session_sha256: str) -> dict:
+              expected_session_sha256: str, *,
+              max_bytes: int = MAX_RECEIPT_BYTES) -> dict:
         """Make exactly one empty status PUT; never send receipt media."""
         session = _pinned_session(session, expected_session_sha256)
-        size = _check_size(size)
+        size = _check_size(size, max_bytes)
         pinned_id = _check_id(pinned_id, "ID")
         headers = {"Content-Length": "0", "Content-Range": f"bytes */{size}"}
         try:
@@ -203,10 +206,11 @@ class ReceiptRecoveryTransport:
 
     def resume(self, session: str, path: Path, offset: int, size: int,
                pinned_id: str, expected_sha256: str, expected_md5: str,
-               expected_session_sha256: str) -> dict:
+               expected_session_sha256: str, *,
+               max_bytes: int = MAX_RECEIPT_BYTES) -> dict:
         """Send exactly the unsent suffix once; no automatic retry."""
         session = _pinned_session(session, expected_session_sha256)
-        size = _check_size(size)
+        size = _check_size(size, max_bytes)
         pinned_id = _check_id(pinned_id, "ID")
         if type(offset) is not int or not 0 <= offset < size:
             raise Conflict("Reviewed receipt continuation offset differs")

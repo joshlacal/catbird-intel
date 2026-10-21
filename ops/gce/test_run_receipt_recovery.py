@@ -124,7 +124,7 @@ class WrapperIntegration(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.root = Path(self.fixture.temp.name).resolve()
 
-    def exercise(self, expired=False):
+    def exercise(self, expired=False, payload_tail=False):
         import hashlib
         import sqlite3
         import sys
@@ -146,9 +146,14 @@ class WrapperIntegration(unittest.TestCase):
         payload, receipt = b'tiny-payload-1', b'tiny-receipt-1'
         session = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=synthetic-old'
         target = hashlib.sha256(session.encode()).hexdigest()
+        prefix_len = 8
+        tail_bytes = payload[prefix_len:]
+        charged_body = tail_bytes if payload_tail else receipt
+        content_range = (f'bytes {prefix_len}-{len(payload)-1}/{len(payload)}'
+                         if payload_tail else f'bytes 0-{len(receipt)-1}/{len(receipt)}')
         operation = recovery._operation_key('PUT', 'media_chunk', target,
-                                            f'bytes 0-{len(receipt)-1}/{len(receipt)}', receipt)
-        attempt, slot = old.start_request(len(receipt), 20, 'media_chunk', method='PUT',
+                                            content_range, charged_body)
+        attempt, slot = old.start_request(len(charged_body), 20, 'media_chunk', method='PUT',
                                          target_category='media_chunk', target_sha256=target, operation_key=operation)
         fixture.clock.value = max(fixture.clock.value, slot)
         old.mark_dispatch(attempt); old.finish_request(attempt, 500)
@@ -163,7 +168,10 @@ class WrapperIntegration(unittest.TestCase):
         ids = {'folder':'folderSynthetic0123','payload':'payloadSynthetic0123','receipt':'receiptSynthetic0123'}
         entry = {'key':key,'status':'file_upload_inflight','release_id':run_id,'manifest_sha256':manifest_sha,
                  'archive_qualified':False,'drive':{k:{'id':v} for k,v in ids.items()}}
-        entry['drive']['receipt']['session']=session
+        if payload_tail:
+            entry['drive']['payload']['session']=session
+        else:
+            entry['drive']['receipt']['session']=session
         for kind in bodies:
             (stage / names[kind]).write_bytes(bodies[kind])
             entry[kind+'_name']=names[kind];entry[kind+'_digest']=pins[kind]
@@ -182,7 +190,7 @@ class WrapperIntegration(unittest.TestCase):
         jsonroute(http,drivebase+'about',{'user':{'permissionId':fixture.account_id}})
         jsonroute(http,drivebase+'files/'+manifest['drive_root'],{'id':manifest['drive_root'],'mimeType':live.FOLDER_MIME,'trashed':False})
         jsonroute(http,drivebase+'files/'+ids['folder'],{'id':ids['folder'],'name':manifest['folder_name'],'parents':[manifest['drive_root']],'mimeType':live.FOLDER_MIME,'trashed':False})
-        state={'receipt_exists':not expired}
+        state={'receipt_exists':not (expired or payload_tail)}
         for kind in bodies:
             ref=manifest[kind];name=names[kind];file_id=ids[kind]
             meta={'id':file_id,'name':name,'parents':[ids['folder']],'trashed':False,'mimeType':'application/octet-stream' if kind=='payload' else 'application/json','size':str(ref['bytes']),'md5Checksum':pins[kind]['md5']}
@@ -203,6 +211,16 @@ class WrapperIntegration(unittest.TestCase):
         class Opener:
             def open(inner, req, timeout):
                 requests.append((req.get_method(),req.full_url,req.data,dict(req.header_items())))
+                if payload_tail:
+                    if len(requests)==1:
+                        raise urllib.error.HTTPError(req.full_url,308,'resume',{'Range':f'bytes=0-{prefix_len-1}'},io.BytesIO(b''))
+                    if len(requests)==2:
+                        self.assertEqual(req.data,tail_bytes)
+                        return UploadResponse(json.dumps({'id':ids['payload']}).encode())
+                    if req.get_method()=='POST':
+                        return UploadResponse(b'',headers={'Location':session.replace('synthetic-old','synthetic-new')})
+                    self.assertEqual(req.data,receipt);state['receipt_exists']=True
+                    return UploadResponse(json.dumps({'id':ids['receipt']}).encode())
                 if len(requests)==1:
                     if expired:
                         code = 404 if expired is True else int(expired)
@@ -258,13 +276,15 @@ class WrapperIntegration(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(fixture.db_path)) as db:
             db.row_factory=sqlite3.Row
             original=dict(db.execute('SELECT * FROM retained_attempt WHERE id=?',(attempt,)).fetchone())
-            self.assertEqual((original['http_status'],original['status'],original['bytes']),(500,'unresolved',len(receipt)))
+            self.assertEqual((original['http_status'],original['status'],original['bytes']),(500,'unresolved',len(charged_body)))
             self.assertEqual(db.execute('SELECT count(*) FROM retained_attempt').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT count(*) FROM retained_receipt_recovery_attempt').fetchone()[0],len(requests))
-        self.assertEqual(len(requests),3 if expired else 1)
-        self.assertEqual(sum(len(r[2] or b'') for r in requests if r[0]=='PUT'),len(receipt) if expired else 0)
+        expected_reqs = 4 if payload_tail else (3 if expired else 1)
+        expected_put_bytes = (len(tail_bytes) + len(receipt)) if payload_tail else (len(receipt) if expired else 0)
+        self.assertEqual(len(requests),expected_reqs)
+        self.assertEqual(sum(len(r[2] or b'') for r in requests if r[0]=='PUT'),expected_put_bytes)
         self.assertEqual(len(gcs.calls),4)
-        self.assertEqual(len(http.calls),18 if expired else 11)
+        self.assertEqual(len(http.calls),18 if (expired or payload_tail) else 11)
         self.assertNotIn(session,output.getvalue());self.assertNotIn('synthetic-token',output.getvalue())
         self.assertTrue(all((stage/n).exists() for n in names.values()))
         self.assertTrue(len(verifiers) == 1 and verifiers[0]._closed)
@@ -272,6 +292,7 @@ class WrapperIntegration(unittest.TestCase):
     def test_full_wrapper_completed_probe_real_ledger_and_readbacks(self):self.exercise()
     def test_full_wrapper_expired_same_id_real_ledger_and_readbacks(self):self.exercise(expired=True)
     def test_full_wrapper_expired_410_same_id_real_ledger_and_readbacks(self):self.exercise(expired=410)
+    def test_full_wrapper_payload_tail_and_receipt_auto_real_ledger_and_readbacks(self):self.exercise(payload_tail=True)
 
 if __name__ == '__main__': unittest.main()
 

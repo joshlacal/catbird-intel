@@ -65,6 +65,7 @@ def run_prepare(
     moderation_path: Path | None = None,
     moderation_max_chunks: int | None = 2,
     moderation_cutoff_utc: str = "2026-10-20T23:59:59+00:00",
+    hydration_path: Path | None = None,
     run_id: str = "catbird-anthropic-teacher-run-v1",
     generation_id: str = "gen-20261020-v1",
     selection_seed: str = "catbird-teacher-selection-v1",
@@ -84,6 +85,7 @@ def run_prepare(
             target_train_sample_size=target_train_sample_size,
             moderation_events=mod_events,
             moderation_cutoff_utc=moderation_cutoff_utc,
+            hydration_path=hydration_path,
             selection_seed=selection_seed,
             allow_synthetic_input_for_tests=allow_synthetic_input_for_tests,
         )

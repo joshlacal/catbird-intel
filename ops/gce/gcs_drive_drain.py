@@ -185,6 +185,7 @@ class SafeDrive:
                 len(data or b""), timeout, kind, method=method.upper(),
                 target_category=kind, target_sha256=target_sha256,
                 operation_key=operation_key)
+            self.last_attempt_id = attempt_id
             delay = slot_epoch - self.authority.clock()
             if delay > 0:
                 time.sleep(delay)
@@ -212,6 +213,7 @@ class SafeDrive:
             try:
                 response = _NO_REDIRECT_OPENER.open(req, timeout=timeout)
             except urllib.error.HTTPError as error:
+                error.attempt_id = attempt_id
                 self.authority.finish_request(attempt_id, error.code)
                 raise
             # A timeout/transport failure leaves the precharged attempt unresolved.
@@ -314,6 +316,7 @@ class SafeDrive:
                 offset = int(match[1]) + 1
         if not 0 <= offset < expected["size"]:
             raise Conflict("Drive upload offset outside payload")
+        recoveries_used = 0
         with path.open("rb") as fh:
             fh.seek(offset)
             while offset < expected["size"]:
@@ -332,6 +335,64 @@ class SafeDrive:
                 except urllib.error.HTTPError as error:
                     if error.code in (404, 410):
                         raise Conflict(f"Expired Drive resumable session (HTTP {error.code}); preserved ID/session require reconciliation") from error
+                    if error.code in (500, 502, 503, 504):
+                        if recoveries_used >= 2:
+                            raise
+                        recoveries_used += 1
+                        failed_attempt_id = getattr(error, "attempt_id", getattr(self, "last_attempt_id", None))
+                        reconcile = getattr(self.authority, "reconcile_attempt_by_status_probe", None)
+                        last_probe_err = None
+                        probed_offset = None
+                        for delay in (1.0, 2.0, 4.0):
+                            time.sleep(delay)
+                            try:
+                                with self.request(session, "PUT", b"", {
+                                    "Content-Length": "0",
+                                    "Content-Range": f"bytes */{expected['size']}",
+                                }, kind="resumable_status") as probe_resp:
+                                    completed = json.load(probe_resp)
+                                    if end != expected["size"]:
+                                        raise Conflict("Drive completed before all bytes")
+                                    if callable(reconcile):
+                                        reconcile(
+                                            failed_attempt_id=failed_attempt_id,
+                                            probe_attempt_id=getattr(self, "last_attempt_id", None),
+                                            acknowledged_bytes=expected["size"],
+                                            committed_bytes=len(chunk),
+                                        )
+                                    return self.metadata(completed["id"])
+                            except urllib.error.HTTPError as probe_err:
+                                if probe_err.code in (404, 410):
+                                    raise Conflict(f"Expired Drive resumable session (HTTP {probe_err.code}); preserved ID/session require reconciliation") from probe_err
+                                if probe_err.code in (500, 502, 503, 504):
+                                    last_probe_err = probe_err
+                                    continue
+                                if probe_err.code != 308:
+                                    raise
+                                range_hdr = probe_err.headers.get("Range", "")
+                                if range_hdr:
+                                    match = re.fullmatch(r"bytes=0-(\d+)", range_hdr)
+                                    if not match:
+                                        raise Conflict("Invalid Drive upload range") from probe_err
+                                    acknowledged = int(match[1]) + 1
+                                else:
+                                    acknowledged = 0
+                                if not (offset <= acknowledged <= end and 0 <= acknowledged < expected["size"]):
+                                    raise Conflict("Drive status probe range outside chunk window") from probe_err
+                                if callable(reconcile):
+                                    reconcile(
+                                        failed_attempt_id=failed_attempt_id,
+                                        probe_attempt_id=getattr(probe_err, "attempt_id", getattr(self, "last_attempt_id", None)),
+                                        acknowledged_bytes=acknowledged,
+                                        committed_bytes=acknowledged - offset,
+                                    )
+                                probed_offset = acknowledged
+                                break
+                        if probed_offset is None:
+                            raise last_probe_err
+                        offset = probed_offset
+                        fh.seek(offset)
+                        continue
                     if error.code != 308:
                         raise
                     if error.headers.get("Range") != f"bytes=0-{end-1}":

@@ -1,5 +1,8 @@
 node_modules/
 *.cursor
 *.tmp
+__pycache__/
+*.py[cod]
 graph/.venv/
 graph/simgraph/target/
+

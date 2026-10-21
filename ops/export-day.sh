@@ -25,6 +25,7 @@ rm -f "$OUT.partial"/*
 
 for t in "${TABLES[@]}"; do
   f="$OUT.partial/${t}.parquet"
+  rm -f "$f"
   clickhouse-client --query "
     SELECT * FROM ${DB}.${t}
     WHERE indexed_at >= toDateTime64('${DAY} 00:00:00', 3, 'UTC')
@@ -34,6 +35,8 @@ for t in "${TABLES[@]}"; do
     FORMAT Parquet
     SETTINGS output_format_parquet_compression_method = 'zstd',
              output_format_parquet_row_group_size = 1000000,
+             max_bytes_before_external_sort = 1500000000,
+             max_memory_usage = 4000000000,
              max_threads = 2, priority = 10"
 done
 

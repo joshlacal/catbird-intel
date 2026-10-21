@@ -67,6 +67,7 @@ def export_annotation_bank_and_trainer_targets(
     student_observation_mode: str = "text_only",
     allow_simulated_export: bool = True,
     write_parquet: bool = True,
+    mask_insufficient_components: bool = False,
 ) -> dict[str, Any]:
     """Export both the full multi-teacher annotation bank and the filtered trainer-compatible dataset."""
     if tuple(HEALTH) != COMPONENT_ORDER:
@@ -215,7 +216,7 @@ def export_annotation_bank_and_trainer_targets(
             continue
 
         disagreement = evaluate_post_disagreement(succeeded_teachers)
-        if disagreement["has_insufficient_component"]:
+        if disagreement["has_insufficient_component"] and not mask_insufficient_components:
             reason = "insufficient_evidence_component"
             exclusion_counts[reason] += 1
             trainer_exclusions.append({
@@ -228,6 +229,20 @@ def export_annotation_bank_and_trainer_targets(
 
         if disagreement["has_unresolved_disagreement"]:
             reason = "unresolved_teacher_disagreement"
+            exclusion_counts[reason] += 1
+            trainer_exclusions.append({
+                "uri": uri,
+                "split": split,
+                "exclusion_reason": reason,
+                "per_component": disagreement["per_component"],
+            })
+            continue
+
+        if mask_insufficient_components and all(
+            disagreement["per_component"][c]["status"] in ("insufficient_evidence", "no_observation")
+            for c in COMPONENT_ORDER
+        ):
+            reason = "all_components_insufficient"
             exclusion_counts[reason] += 1
             trainer_exclusions.append({
                 "uri": uri,
@@ -259,7 +274,7 @@ def export_annotation_bank_and_trainer_targets(
             )
 
         # Build finite [0,1] target row in exact COMPONENT_ORDER
-        # When multiple agreeing teachers exist (e.g. exact agreement or 1-step adjacent), average their mapped ordinal scores
+        # When multiple agreeing teachers exist (e.g. exact agreement or 1-step adjacent), average their continuous or mapped ordinal scores
         trainer_row: dict[str, Any] = {
             "uri": uri,
             "author_did": post["author_did"],
@@ -284,11 +299,35 @@ def export_annotation_bank_and_trainer_targets(
         for comp in COMPONENT_ORDER:
             tier_vals: list[float] = []
             tier_ordinals: dict[str, int] = {}
+            comp_has_insuff = False
             for tier, t_out in sorted(succeeded_teachers.items()):
-                ord_val = t_out[comp]["score"]
-                mapped = map_ordinal_to_training_score(ord_val)
+                comp_entry = t_out.get(comp) if isinstance(t_out.get(comp), dict) else (t_out.get("components") or {}).get(comp)
+                if not isinstance(comp_entry, dict):
+                    continue
+                ord_val = comp_entry.get("score") if "score" in comp_entry else comp_entry.get("ordinal_score")
+                if ord_val == "insufficient":
+                    comp_has_insuff = True
+                    continue
+                cont_val = comp_entry.get("normalized_0_to_1")
+                if cont_val is None:
+                    cont_val = comp_entry.get("trainer_target_0_1")
+                if isinstance(cont_val, (int, float)) and not isinstance(cont_val, bool):
+                    mapped = float(cont_val)
+                    if not math.isfinite(mapped) or not (0.0 <= mapped <= 1.0):
+                        raise TrainerExportValidationError(f"Invalid continuous target for {comp}: {mapped}")
+                else:
+                    mapped = map_ordinal_to_training_score(ord_val)
                 tier_vals.append(mapped)
-                tier_ordinals[tier] = int(ord_val)
+                if isinstance(ord_val, int) and not isinstance(ord_val, bool):
+                    tier_ordinals[tier] = int(ord_val)
+
+            if comp_has_insuff or not tier_vals:
+                if mask_insufficient_components:
+                    trainer_row[f"teacher_{comp}"] = -1.0
+                    trainer_row[f"teacher_{comp}_ordinals"] = {}
+                    continue
+                raise TrainerExportValidationError(f"Insufficient or missing component {comp} reached unmasked export")
+
             mean_target = round(sum(tier_vals) / len(tier_vals), 8)
             if not math.isfinite(mean_target) or not (0.0 <= mean_target <= 1.0):
                 raise TrainerExportValidationError(f"Non-finite or out-of-range target for {comp}: {mean_target}")
@@ -333,8 +372,12 @@ def export_annotation_bank_and_trainer_targets(
         "component_order": list(COMPONENT_ORDER),
         "student_observation_mode": student_observation_mode,
         "ordinal_mapping": ORDINAL_MAPPING_V1,
-        "masked_loss_in_current_trainer": False,
-        "incomplete_row_policy": "whole_row_excluded_from_trainer_targets_and_preserved_in_annotation_bank",
+        "masked_loss_in_current_trainer": bool(mask_insufficient_components),
+        "incomplete_row_policy": (
+            "component_level_minus_one_loss_masking"
+            if mask_insufficient_components
+            else "whole_row_excluded_from_trainer_targets_and_preserved_in_annotation_bank"
+        ),
         "insufficient_coerced_to_zero": False,
         "simulated_responses_present": any_simulated,
         "qualified_for_real_student_training": False,

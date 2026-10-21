@@ -212,12 +212,23 @@ def main():
         validate_overflow_manifest(manifest,release_id=a.run_id,account_id=ACCOUNT)
         key = pair_key(manifest)
         require(key == run['pair_key'] and run['status'] == 'active','active_pair_identity')
-        require(old['run_id'] == a.run_id and old['status'] == 'unresolved' and old['http_status'] == 500 and
-                old['bytes'] == manifest['receipt']['bytes'] and time.time() > old['charge_through'],'original_receipt_fault')
-        require(account['process_pid'] and not Path('/proc/'+str(account['process_pid'])).exists(),'previous_writer_not_dead')
         entry = json.loads(journal_raw)['segments'][key]
-        session = entry['drive']['receipt']['session']
-        require(hashlib.sha256(session.encode()).hexdigest() == old['target_sha256'],'original_session_digest')
+        receipt_session = entry['drive']['receipt'].get('session')
+        payload_session = entry['drive']['payload'].get('session')
+        is_payload_tail = receipt_session is None and isinstance(payload_session, str)
+        if is_payload_tail:
+            require(old['run_id'] == a.run_id and old['status'] == 'unresolved' and old['http_status'] == 500 and
+                    0 < old['bytes'] <= min(8 << 20, manifest['payload']['bytes']) and
+                    time.time() > old['charge_through'], 'original_payload_tail_fault')
+            session = payload_session
+            permitted_branch = 'payload_tail_and_receipt_auto'
+        else:
+            require(old['run_id'] == a.run_id and old['status'] == 'unresolved' and old['http_status'] == 500 and
+                    old['bytes'] == manifest['receipt']['bytes'] and time.time() > old['charge_through'],'original_receipt_fault')
+            session = receipt_session
+            permitted_branch = 'receipt_only_auto'
+        require(account['process_pid'] and not Path('/proc/'+str(account['process_pid'])).exists(),'previous_writer_not_dead')
+        require(isinstance(session, str) and hashlib.sha256(session.encode()).hexdigest() == old['target_sha256'],'original_session_digest')
         drive_ids = {kind:entry['drive'][kind]['id'] for kind in ('folder','payload','receipt')}
         verifier = CrossPathPacedVerifier(ReceiptRecoveryLiveVerifier(
             manifest=manifest,entry_digests={kind:entry[kind+'_digest'] for kind in ('payload','receipt')},
@@ -230,7 +241,8 @@ def main():
             for kind in ('payload','receipt'):
                 ref = manifest[kind]
                 digests['gcs_'+kind] = verifier.gcs_digest(ref['object'],ref['generation'])
-            digests['drive_payload'] = verifier.drive_digest(drive_ids['payload'])
+            if not is_payload_tail:
+                digests['drive_payload'] = verifier.drive_digest(drive_ids['payload'])
             absent = verifier.verify_exact_receipt_absent(account_id=ACCOUNT,root_id=manifest['drive_root'],
                 folder_id=drive_ids['folder'],receipt_id=drive_ids['receipt'])
             report.update(status='read_only_verifier_smoke_pass',digests=digests,receipt_absent=absent,
@@ -253,8 +265,14 @@ def main():
             'exclusion_valid_until':a.deadline_epoch,'observed_at':time.time(),
             'owner_reference':'Root sole writer under 2026-10-21-network-capture-resume; exact receipt HTTP500 recovery',
             'external_facts_sha256':a.external_sha256,'local_writer_preflight':local,
-            'permitted_branch':'receipt_only_auto',
+            'permitted_branch':permitted_branch,
         }
+        if is_payload_tail:
+            evidence.update(
+                payload_name=entry['payload_name'],
+                payload_stage_path=str(work/'stage'/key/entry['payload_name']),
+                payload_sha256=manifest['payload']['sha256'],
+            )
         require(hashlib.sha256(bounded_file(work/'journal.json',1<<20,private=True)).hexdigest() == a.journal_sha256,
                 'journal_changed_before_claim')
         require(0 <= time.time()-external['observed_at'] < 300,'external_evidence_stale_before_claim')

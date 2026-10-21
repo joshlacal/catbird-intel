@@ -114,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Moderation label snapshot cutoff timestamp (ISO-8601).",
     )
     p_prep.add_argument(
+        "--hydration-path",
+        type=Path,
+        default=None,
+        help="Optional parent/quote context hydration JSONL or Parquet file.",
+    )
+    p_prep.add_argument(
         "--run-id",
         type=str,
         default="catbird-anthropic-teacher-run-v1",
@@ -325,6 +331,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=True,
     )
+    p_exp.add_argument(
+        "--mask-insufficient-components",
+        action="store_true",
+        default=False,
+        help="Mask insufficient components with -1.0 instead of excluding the whole row.",
+    )
 
     # report
     p_rep = subparsers.add_parser(
@@ -398,6 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             moderation_path=args.moderation_path,
             moderation_max_chunks=args.moderation_max_chunks,
             moderation_cutoff_utc=args.moderation_cutoff_utc,
+            hydration_path=args.hydration_path,
             run_id=args.run_id,
             generation_id=args.generation_id,
             allow_synthetic_input_for_tests=args.allow_synthetic_input_for_tests,
@@ -502,6 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_dir=out_dir,
                 student_observation_mode=args.student_observation_mode,
                 allow_simulated_export=args.allow_simulated_export,
+                mask_insufficient_components=args.mask_insufficient_components,
             )
         print(json.dumps(res, indent=2, sort_keys=True))
         return 0

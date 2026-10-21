@@ -127,8 +127,17 @@ class ReceiptRecoveryController:
                     not isinstance(digest.get("md5"), str) or
                     not HEX32.fullmatch(digest["md5"])):
                 raise Conflict("Retained journal source digest differs")
-        original_session = drive["receipt"].get("session")
-        if not isinstance(original_session, str):
+        receipt_session = drive["receipt"].get("session")
+        payload_session = drive["payload"].get("session")
+        if isinstance(receipt_session, str):
+            self.is_payload_tail = False
+            original_session = receipt_session
+        elif (receipt_session is None and isinstance(payload_session, str) and
+                getattr(authority, "permitted_branch", None) ==
+                "payload_tail_and_receipt_auto"):
+            self.is_payload_tail = True
+            original_session = payload_session
+        else:
             raise Conflict("Original receipt session is unavailable")
         session_sha = hashlib.sha256(original_session.encode()).hexdigest()
         if (not isinstance(work_dir, Path) or work_dir.is_symlink() or
@@ -155,9 +164,18 @@ class ReceiptRecoveryController:
                 old_attempt["http_status"] != 500 or
                 old_attempt["method"] != "PUT" or
                 old_attempt["kind"] != "media_chunk" or
-                old_attempt["bytes"] != manifest["receipt"]["bytes"] or
                 old_attempt["target_sha256"] != session_sha):
             raise AuthorityBlocked("Original charged HTTP 500 receipt attempt differs")
+        if self.is_payload_tail:
+            if (type(old_attempt["bytes"]) is not int or
+                    not 0 < old_attempt["bytes"] <=
+                        min(8 << 20, manifest["payload"]["bytes"])):
+                raise AuthorityBlocked("Original charged HTTP 500 receipt attempt differs")
+            self.original_charge_bytes = old_attempt["bytes"]
+        else:
+            if old_attempt["bytes"] != manifest["receipt"]["bytes"]:
+                raise AuthorityBlocked("Original charged HTTP 500 receipt attempt differs")
+            self.original_charge_bytes = manifest["receipt"]["bytes"]
         self.manifest, self.manifest_sha, self.key = manifest, manifest_sha, key
         self.entry, self.journal_sha = entry, hashlib.sha256(journal_raw).hexdigest()
         self.journal_doc, self.journal_raw, self.work_dir = journal, journal_raw, work_dir
@@ -324,7 +342,7 @@ class ReceiptRecoveryController:
             "pair_key": self.key, "manifest_sha256": self.manifest_sha,
             "account_id": self.account_id, "writer_id": self.writer_id,
             "original_http_status": 500,
-            "original_charge_bytes": self.manifest["receipt"]["bytes"],
+            "original_charge_bytes": self.original_charge_bytes,
             "target_sha256": self.session_sha,
             "receipt_ref": self.manifest["receipt"],
             "mapping_sha256": self._mapping_sha256(),
@@ -335,6 +353,9 @@ class ReceiptRecoveryController:
             "operator_reference": operator_reference,
             "applied_at": self.clock(),
         }
+        if self.is_payload_tail:
+            proof["permitted_branch"] = "payload_tail_and_receipt_auto"
+            proof["payload_session_sha256"] = self.session_sha
         for kind, file_id, path, bound in (
             ("payload", self.payload_id, self.payload_path, MAX_LOCAL_PAYLOAD_BYTES),
             ("receipt", self.receipt_id, self.receipt_path, MAX_LOCAL_RECEIPT_BYTES),
@@ -368,7 +389,7 @@ class ReceiptRecoveryController:
             (self.attempt_id, self.run_id)).fetchone()
         if (attempt is None or attempt["http_status"] != 500 or
                 attempt["status"] != "unresolved" or
-                attempt["bytes"] != self.manifest["receipt"]["bytes"] or
+                attempt["bytes"] != self.original_charge_bytes or
                 attempt["target_sha256"] != self.session_sha):
             raise AuthorityBlocked("Original HTTP 500 attempt changed")
         proof["operation_key"] = attempt["operation_key"]
@@ -384,6 +405,67 @@ class ReceiptRecoveryController:
         is a separate charged request and a 308 continuation result stops here,
         requiring another reviewed lease rather than an automatic loop.
         """
+        if self.authority.permitted_branch == "payload_tail_and_receipt_auto":
+            if not isinstance(operator_reference, str) or not operator_reference.strip():
+                raise AuthorityBlocked("Receipt recovery operator reference is missing")
+            existing_probe = self.authority.probe_outcome()
+            if existing_probe is None:
+                probe_res = self.transport.probe(
+                    self.session, self.manifest["payload"]["bytes"],
+                    self.payload_id, self.session_sha,
+                    max_bytes=MAX_LOCAL_PAYLOAD_BYTES)
+                self.authority.record_probe(probe_res)
+                result = self.authority.probe_outcome()
+            else:
+                result = existing_probe
+            state = result["state"]
+            if state == "partial":
+                payload_res = self.transport.resume(
+                    self.session, self.payload_path, result["acknowledged"],
+                    self.manifest["payload"]["bytes"], self.payload_id,
+                    self.manifest["payload"]["sha256"],
+                    self.entry["payload_digest"]["md5"], self.session_sha,
+                    max_bytes=MAX_LOCAL_PAYLOAD_BYTES)
+                if payload_res["state"] != "complete":
+                    return {"state": "payload_recovery_partial_stopped",
+                            "acknowledged": payload_res.get("acknowledged")}
+            elif state not in ("complete", "expired"):
+                raise AuthorityBlocked("Payload probe result is not a reviewed branch")
+            self.verifier.verify_account(self.account_id)
+            self.verifier.verify_folder(self.folder_id,
+                                        self.manifest["folder_name"],
+                                        self.manifest["drive_root"])
+            absent = self.verifier.verify_exact_receipt_absent(
+                account_id=self.account_id, root_id=self.manifest["drive_root"],
+                folder_id=self.folder_id, receipt_id=self.receipt_id)
+            if (not isinstance(absent, dict) or absent.get("account_id") != self.account_id or
+                    absent.get("root_id") != self.manifest["drive_root"] or
+                    absent.get("folder_id") != self.folder_id or
+                    absent.get("receipt_id") != self.receipt_id or
+                    absent.get("http_status") != 404 or
+                    type(absent.get("observed_at")) not in (int, float) or
+                    not absent["observed_at"] <= self.clock() <=
+                        absent["observed_at"] + MAX_PROBE_AGE_SECONDS):
+                raise AuthorityBlocked("Fresh exact-ID receipt absence is unproven")
+            self.authority.record_id_absence({
+                "receipt_id": self.receipt_id, "folder_id": self.folder_id,
+                "account_id": self.account_id, "http_status": 404,
+                "observed_at": absent["observed_at"],
+                "operator_reference": operator_reference,
+            })
+            receipt_session = self.transport.restart_same_id(
+                self.receipt_id, self.folder_id, self.receipt_name,
+                self.manifest["receipt"]["bytes"])
+            receipt_session_sha = self.authority.record_new_session(receipt_session)
+            receipt_res = self.transport.resume(
+                receipt_session, self.receipt_path, 0,
+                self.manifest["receipt"]["bytes"], self.receipt_id,
+                self.manifest["receipt"]["sha256"],
+                self.entry["receipt_digest"]["md5"], receipt_session_sha)
+            if receipt_res["state"] != "complete":
+                return {"state": "receipt_recovery_partial_stopped",
+                        "acknowledged": receipt_res.get("acknowledged")}
+            return self.verify_completed(operator_reference=operator_reference)
         if self.authority.permitted_branch != "receipt_only_auto":
             raise AuthorityBlocked("Conditional receipt recovery is not reviewed")
         existing_probe = self.authority.probe_outcome()
@@ -486,7 +568,7 @@ def finalize_reconciled_journal(controller: ReceiptRecoveryController, *,
     # synced, so another admitted writer cannot interleave this transition.
     account = RetainedObservationAuthority.inspect_account(
         Path(controller.authority.db_path), writer_id=controller.writer_id,
-        account_id=controller.account_id)
+        account_id=controller.account_id, clock=controller.clock)
     if account["unresolved_attempts"] != 0:
         raise AuthorityBlocked("Unresolved send still blocks journal repair")
     db = controller.authority.db
@@ -533,7 +615,7 @@ def finalize_reconciled_journal(controller: ReceiptRecoveryController, *,
                 original_attempt["status"] != "unresolved" or
                 original_attempt["http_status"] != 500 or
                 original_attempt["bytes"] !=
-                    controller.manifest["receipt"]["bytes"] or
+                    controller.original_charge_bytes or
                 original_attempt["target_sha256"] != controller.session_sha or
                 reconcile is None or reconcile["pair_key"] != controller.key or
                 not HEX64.fullmatch(str(reconcile["proof_sha256"])) or

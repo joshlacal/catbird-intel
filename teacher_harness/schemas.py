@@ -245,15 +245,19 @@ def resolve_post_observation(
 
     parent_text: str | None = None
     quoted_text: str | None = None
-    if observation_mode == "context_enriched" and corpus_by_uri:
-        if reply_parent_uri and reply_parent_uri in corpus_by_uri:
+    if observation_mode == "context_enriched":
+        if reply_parent_uri and corpus_by_uri and reply_parent_uri in corpus_by_uri:
             p_text = corpus_by_uri[reply_parent_uri].get("text")
             if isinstance(p_text, str) and p_text.strip():
                 parent_text = p_text[:1200]
-        if quote_uri and quote_uri in corpus_by_uri:
+        elif isinstance(target_row.get("reply_parent_text"), str) and target_row["reply_parent_text"].strip():
+            parent_text = target_row["reply_parent_text"].strip()[:1200]
+        if quote_uri and corpus_by_uri and quote_uri in corpus_by_uri:
             q_text = corpus_by_uri[quote_uri].get("text")
             if isinstance(q_text, str) and q_text.strip():
                 quoted_text = q_text[:1200]
+        elif isinstance(target_row.get("quoted_post_text"), str) and target_row["quoted_post_text"].strip():
+            quoted_text = target_row["quoted_post_text"].strip()[:1200]
 
     envelope = {
         "post_type": post_type,

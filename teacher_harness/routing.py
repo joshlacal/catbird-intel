@@ -10,10 +10,52 @@ from typing import Any
 from .config import HarnessConfig, canonical_sha256
 from .db import HarnessDB, utc_now_iso
 from .schemas import COMPONENT_ORDER, build_batch_request_for_post
+from .splits import is_moderated
+
+
+SUPPORTED_TEACHER_TIERS: tuple[str, ...] = (
+    "clef",
+    "clef_flash",
+    "political_debate",
+    "haiku",
+    "sonnet",
+    "opus",
+)
 
 
 def _det_priority(seed: str, bucket: str, uri: str) -> str:
     return hashlib.sha256(f"{seed}:{bucket}:{uri}".encode("utf-8")).hexdigest()
+
+
+def _extract_comp(t_out: dict[str, Any] | None, comp: str) -> dict[str, Any] | None:
+    if not isinstance(t_out, dict):
+        return None
+    if isinstance(t_out.get(comp), dict):
+        return t_out[comp]
+    comps = t_out.get("components")
+    if isinstance(comps, dict) and isinstance(comps.get(comp), dict):
+        return comps[comp]
+    return None
+
+
+def _extract_score(comp_entry: dict[str, Any] | None) -> int | str | None:
+    if not isinstance(comp_entry, dict):
+        return None
+    if "score" in comp_entry:
+        return comp_entry["score"]
+    if "ordinal_score" in comp_entry:
+        return comp_entry["ordinal_score"]
+    return None
+
+
+def _extract_continuous(comp_entry: dict[str, Any] | None) -> float | None:
+    if not isinstance(comp_entry, dict):
+        return None
+    for k in ("normalized_0_to_1", "trainer_target_0_1", "continuous_0_1"):
+        val = comp_entry.get(k)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+    return None
 
 
 def _haiku_difficulty_signals(haiku_out: dict[str, Any] | None, post: dict[str, Any]) -> dict[str, Any]:
@@ -21,10 +63,27 @@ def _haiku_difficulty_signals(haiku_out: dict[str, Any] | None, post: dict[str, 
         return {"is_difficult": False, "is_rare_or_policy": False, "reasons": []}
 
     reasons: list[str] = []
-    scores = {c: haiku_out[c]["score"] for c in COMPONENT_ORDER}
+    scores: dict[str, int | str | None] = {}
+    high_entropy = False
+    borderline_noul = False
+    for c in COMPONENT_ORDER:
+        entry = _extract_comp(haiku_out, c)
+        scores[c] = _extract_score(entry)
+        if isinstance(entry, dict):
+            ent = entry.get("normalized_entropy")
+            if isinstance(ent, (int, float)) and float(ent) >= 0.55:
+                high_entropy = True
+            noul_p = entry.get("insufficient_noul_prob")
+            if isinstance(noul_p, (int, float)) and 0.35 <= float(noul_p) < 0.50:
+                borderline_noul = True
+
     any_insuff = any(s == "insufficient" for s in scores.values())
     if any_insuff:
         reasons.append("insufficient_component")
+    if high_entropy:
+        reasons.append("high_normalized_entropy")
+    if borderline_noul:
+        reasons.append("borderline_insufficient_noul")
     if haiku_out.get("context_dependent") is True:
         reasons.append("context_dependent")
     if haiku_out.get("stance_ambiguity", "none") != "none":
@@ -33,13 +92,13 @@ def _haiku_difficulty_signals(haiku_out: dict[str, Any] | None, post: dict[str, 
         reasons.append("borderline_ordinal_1_or_2")
 
     # Non-political criticism vs political boundary
-    if isinstance(scores["critical"], int) and scores["critical"] >= 2 and scores["politicalness"] in (0, 1):
+    if isinstance(scores.get("critical"), int) and int(scores["critical"]) >= 2 and scores.get("politicalness") in (0, 1):
         reasons.append("nonpolitical_or_borderline_criticism")
 
     mod_join = post.get("moderation_join") or {}
-    has_mod = bool(mod_join.get("active_record_labels")) or bool(mod_join.get("source_disagreement"))
+    has_mod = is_moderated(post) or bool(mod_join.get("source_disagreement"))
     is_rare_positive = any(
-        isinstance(scores[c], int) and scores[c] >= 1
+        isinstance(scores.get(c), int) and int(scores[c]) >= 1  # type: ignore[arg-type]
         for c in ("spam", "engagement_bait", "outraged")
     )
     if has_mod:
@@ -50,6 +109,8 @@ def _haiku_difficulty_signals(haiku_out: dict[str, Any] | None, post: dict[str, 
     return {
         "is_difficult": bool(
             any_insuff
+            or high_entropy
+            or borderline_noul
             or haiku_out.get("context_dependent")
             or haiku_out.get("stance_ambiguity", "none") != "none"
             or any(s in (1, 2) for s in scores.values() if isinstance(s, int))
@@ -71,8 +132,12 @@ def _pair_disagreement_signals(
     max_diff = 0
     insuff_mismatch = False
     for c in COMPONENT_ORDER:
-        hs = haiku_out[c]["score"]
-        ss = sonnet_out[c]["score"]
+        h_entry = _extract_comp(haiku_out, c)
+        s_entry = _extract_comp(sonnet_out, c)
+        if h_entry is None or s_entry is None:
+            continue
+        hs = _extract_score(h_entry)
+        ss = _extract_score(s_entry)
         if (hs == "insufficient") != (ss == "insufficient"):
             insuff_mismatch = True
             reasons.append(f"insufficiency_mismatch:{c}({hs}_vs_{ss})")
@@ -83,19 +148,16 @@ def _pair_disagreement_signals(
             if diff >= 1:
                 reasons.append(f"ordinal_disagreement:{c}({hs}_vs_{ss})")
 
+    h_crit = _extract_score(_extract_comp(haiku_out, "critical"))
+    h_pol = _extract_score(_extract_comp(haiku_out, "politicalness"))
+    s_bait = _extract_score(_extract_comp(sonnet_out, "engagement_bait"))
+
     is_unresolved = bool(max_diff >= 1 or insuff_mismatch)
     is_boundary = bool(
         haiku_out.get("stance_ambiguity", "none") != "none"
         or sonnet_out.get("stance_ambiguity", "none") != "none"
-        or (
-            isinstance(haiku_out["critical"]["score"], int)
-            and haiku_out["critical"]["score"] >= 2
-            and haiku_out["politicalness"]["score"] == 0
-        )
-        or (
-            isinstance(sonnet_out["engagement_bait"]["score"], int)
-            and sonnet_out["engagement_bait"]["score"] >= 1
-        )
+        or (isinstance(h_crit, int) and h_crit >= 2 and h_pol == 0)
+        or (isinstance(s_bait, int) and s_bait >= 1)
     )
     if is_boundary:
         reasons.append("rubric_boundary_case")
@@ -105,6 +167,13 @@ def _pair_disagreement_signals(
         "max_ordinal_diff": max_diff,
         "reasons": reasons,
     }
+
+
+def _primary_base_output(tier_map: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    for tier in ("haiku", "clef_flash", "clef"):
+        if tier in tier_map:
+            return tier_map[tier]
+    return None
 
 
 def route_review_candidates(
@@ -146,9 +215,9 @@ def route_review_candidates(
         if u in posts_by_uri and t not in by_uri_tier.setdefault(u, {}):
             by_uri_tier[u][t] = json.loads(r["parsed_output_json"])
 
-    eligible_uris = sorted(u for u in by_uri_tier if "haiku" in by_uri_tier[u])
+    eligible_uris = sorted(u for u in by_uri_tier if _primary_base_output(by_uri_tier[u]) is not None)
     if not eligible_uris:
-        raise ValueError("No succeeded Haiku observations available in train split to route from")
+        raise ValueError("No succeeded Haiku/Clef observations available in train split to route from")
 
     selected_items: list[dict[str, Any]] = []
     selected_uris: set[str] = set()
@@ -187,7 +256,8 @@ def route_review_candidates(
         for u in eligible_uris:
             if u in selected_uris:
                 continue
-            sig = _haiku_difficulty_signals(by_uri_tier[u]["haiku"], posts_by_uri[u])
+            base_out = _primary_base_output(by_uri_tier[u])
+            sig = _haiku_difficulty_signals(base_out, posts_by_uri[u])
             if sig["is_difficult"]:
                 diff_candidates.append((_det_priority(seed, "sonnet_difficult", u), u, sig["reasons"]))
             if sig["is_rare_or_policy"]:
@@ -259,8 +329,9 @@ def route_review_candidates(
         for u in pool_uris:
             if u in selected_uris:
                 continue
-            s_out = by_uri_tier[u].get("sonnet") or by_uri_tier[u]["haiku"]
-            sig = _pair_disagreement_signals(by_uri_tier[u]["haiku"], s_out, posts_by_uri[u])
+            base_out = _primary_base_output(by_uri_tier[u])
+            s_out = by_uri_tier[u].get("sonnet") or base_out
+            sig = _pair_disagreement_signals(base_out, s_out, posts_by_uri[u])
             if sig["is_unresolved_high_value"]:
                 unres_candidates.append(
                     (-int(sig.get("max_ordinal_diff", 0)), _det_priority(seed, "opus_unresolved", u), u, sig["reasons"])
@@ -368,16 +439,33 @@ def route_review_candidates(
 
 
 def evaluate_post_disagreement(teacher_outputs: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Compare retained teacher outputs (haiku, sonnet, opus) without declaring Opus or majority ground truth."""
-    tiers = sorted(teacher_outputs.keys())
+    """Compare retained teacher outputs (clef/clef_flash, political_debate, haiku, sonnet, opus) without declaring Opus or majority ground truth."""
+    tiers = sorted(
+        teacher_outputs.keys(),
+        key=lambda t: (SUPPORTED_TEACHER_TIERS.index(t) if t in SUPPORTED_TEACHER_TIERS else 999, t),
+    )
     per_component: dict[str, dict[str, Any]] = {}
     any_unresolved = False
     any_insufficient = False
 
     for comp in COMPONENT_ORDER:
-        comp_scores = {t: teacher_outputs[t][comp]["score"] for t in tiers}
+        comp_scores: dict[str, int | str] = {}
+        continuous_by_tier: dict[str, float] = {}
+        for t in tiers:
+            entry = _extract_comp(teacher_outputs[t], comp)
+            if entry is None:
+                continue
+            sc = _extract_score(entry)
+            if sc is not None:
+                comp_scores[t] = sc
+            cval = _extract_continuous(entry)
+            if cval is not None:
+                continuous_by_tier[t] = cval
+
         insuff_tiers = [t for t, s in comp_scores.items() if s == "insufficient"]
-        numeric_scores = [int(s) for s in comp_scores.values() if isinstance(s, int)]
+        numeric_scores = [int(s) for s in comp_scores.values() if isinstance(s, int) and not isinstance(s, bool)]
+        cont_vals = list(continuous_by_tier.values())
+        cont_spread = round(max(cont_vals) - min(cont_vals), 6) if len(cont_vals) >= 2 else None
 
         if insuff_tiers and numeric_scores:
             # Mixed insufficient vs numeric: unresolved if any numeric score >= 1, else insufficient
@@ -392,8 +480,12 @@ def evaluate_post_disagreement(teacher_outputs: dict[str, dict[str, Any]]) -> di
             spread = max(numeric_scores) - min(numeric_scores)
             has_pos = any(n >= 1 for n in numeric_scores)
             has_zero = any(n == 0 for n in numeric_scores)
-            # Disagreement of >=2 ordinal steps or binary presence/absence (0 vs >=2) is unresolved
-            unresolved = spread >= 2 or (has_zero and has_pos and spread >= 1 and len(set(numeric_scores)) > 1)
+            # Disagreement of >=2 ordinal steps, binary presence/absence, or large continuous gap (>=0.35) is unresolved
+            unresolved = (
+                spread >= 2
+                or (has_zero and has_pos and spread >= 1 and len(set(numeric_scores)) > 1)
+                or (cont_spread is not None and cont_spread >= 0.35)
+            )
             status = "unresolved_disagreement" if unresolved else ("exact_agreement" if spread == 0 else "minor_ordinal_adjacent")
         elif len(numeric_scores) == 1:
             unresolved = False
@@ -409,12 +501,16 @@ def evaluate_post_disagreement(teacher_outputs: dict[str, dict[str, Any]]) -> di
         if unresolved:
             any_unresolved = True
 
-        per_component[comp] = {
+        comp_summary: dict[str, Any] = {
             "scores_by_tier": comp_scores,
             "status": status,
             "unresolved": unresolved,
             "ordinal_spread": spread,
         }
+        if continuous_by_tier:
+            comp_summary["continuous_by_tier"] = continuous_by_tier
+            comp_summary["continuous_spread"] = cont_spread
+        per_component[comp] = comp_summary
 
     overall_status = (
         "unresolved_disagreement"

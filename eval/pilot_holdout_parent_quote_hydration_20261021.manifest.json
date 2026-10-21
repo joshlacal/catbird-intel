@@ -1,0 +1,38 @@
+{
+  "anti_joins_enforced": [
+    "catbird.deletions (collection = 'app.bsky.feed.post')",
+    "catbird.v_inactive_accounts",
+    "catbird.v_hidden_from_algorithms"
+  ],
+  "counts": {
+    "holdout_already_in_holdout_split": 0,
+    "holdout_already_in_local_bank": 14,
+    "holdout_missing_uris": 344,
+    "holdout_referenced_uris": 344,
+    "holdout_resolution_rate": 0.9884,
+    "holdout_resolved_uris": 340,
+    "hydrated_from_catbird_v_posts_live": 1225,
+    "hydrated_from_feed_posts_fallback": 300,
+    "pilot_already_in_local_bank": 51,
+    "pilot_already_in_pilot_split": 3,
+    "pilot_missing_uris": 1212,
+    "pilot_referenced_uris": 1215,
+    "pilot_resolution_rate": 0.9778,
+    "pilot_resolved_uris": 1188,
+    "union_missing_uris": 1556,
+    "union_referenced_uris": 1559,
+    "union_resolution_rate": 0.9801,
+    "union_resolved_uris": 1528,
+    "unresolvable_deleted_or_pre_window_uris": 31
+  },
+  "created_at": "2026-10-21T15:12:36.919547+00:00",
+  "holdout_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/phase3_holdout_600_unlabeled.jsonl",
+  "holdout_sha256": "fd57d61c490cf11860c74341f4c5d16d884d65ae0a0b9dd200b867c52b6b9792",
+  "hydration_jsonl_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/pilot_holdout_parent_quote_hydration_20261021.jsonl",
+  "hydration_jsonl_sha256": "2fe65eb207d0698d63bd5334c8c63bf7a0a8d5bc2fcf0a682ff320a933faf093",
+  "hydration_rows_written": 1525,
+  "pilot_db_path": "/Users/joshlacalamito/Developer/Catbird+Petrel/catbird-intel/eval/anthropic_teacher_pilot_v1/state.sqlite3",
+  "schema": "catbird-parent-quote-hydration-manifest-v1",
+  "source_bank_path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k_v1_unlabeled.parquet",
+  "source_bank_sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538"
+}

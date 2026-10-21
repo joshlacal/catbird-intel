@@ -82,10 +82,16 @@ def _mps_driver_mb() -> float:
     return 0.0
 
 
+DEFAULT_HYDRATION_PATH = REPO_ROOT / "eval" / "pilot_holdout_parent_quote_hydration_20261021.jsonl"
+DEFAULT_BANK_PATH = Path("/Users/joshlacalamito/catbird-lake-local/staging/catbird_v3_export_v1/train_150k_v1.jsonl")
+
+
 def select_stratified_pilot_slice(
     db_path: Path,
     *,
     quotas: dict[str, int] = STRATIFIED_64_QUOTAS,
+    hydration_path: Path | None = DEFAULT_HYDRATION_PATH,
+    bank_path: Path | None = DEFAULT_BANK_PATH,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     """Select a deterministic 64-post stratified slice from the 2,000 prepared pilot posts."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -109,8 +115,41 @@ def select_stratified_pilot_slice(
         conn.close()
 
     corpus_by_uri: dict[str, dict[str, Any]] = {}
+    if hydration_path is not None and hydration_path.exists():
+        with hydration_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                h_row = json.loads(line)
+                h_uri = str(h_row.get("uri") or "").strip()
+                if h_uri:
+                    corpus_by_uri[h_uri] = h_row
+
     for r in all_corpus_rows:
         corpus_by_uri[str(r["uri"])] = json.loads(r["raw_row_json"])
+
+    needed_bank_uris: set[str] = set()
+    for r in rows:
+        raw_peek = json.loads(r["raw_row_json"])
+        for ref_key in ("reply_parent_uri", "quote_uri", "repost_subject_uri"):
+            ref_u = str(raw_peek.get(ref_key) or "").strip()
+            if ref_u and ref_u not in corpus_by_uri:
+                needed_bank_uris.add(ref_u)
+
+    if needed_bank_uris and bank_path is not None and bank_path.exists():
+        with bank_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                b_row = json.loads(line)
+                b_uri = str(b_row.get("uri") or "").strip()
+                if b_uri in needed_bank_uris:
+                    corpus_by_uri[b_uri] = b_row
+                    needed_bank_uris.discard(b_uri)
+                    if not needed_bank_uris:
+                        break
 
     by_stratum: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
@@ -119,7 +158,23 @@ def select_stratified_pilot_slice(
         raw["sampling_method"] = r["sampling_method"]
         raw["inclusion_probability"] = r["inclusion_probability"]
         raw["selection_priority_key"] = r["selection_priority_key"]
-        raw["has_local_parent_or_quote_text"] = bool(r["has_local_parent_or_quote_text"])
+        parent_uri = str(raw.get("reply_parent_uri") or "").strip()
+        quote_uri = str(raw.get("quote_uri") or "").strip()
+        has_parent_txt = bool(
+            parent_uri
+            and parent_uri in corpus_by_uri
+            and isinstance(corpus_by_uri[parent_uri].get("text"), str)
+            and corpus_by_uri[parent_uri]["text"].strip()
+        )
+        has_quote_txt = bool(
+            quote_uri
+            and quote_uri in corpus_by_uri
+            and isinstance(corpus_by_uri[quote_uri].get("text"), str)
+            and corpus_by_uri[quote_uri]["text"].strip()
+        )
+        raw["has_local_parent_or_quote_text"] = bool(
+            r["has_local_parent_or_quote_text"] or has_parent_txt or has_quote_txt
+        )
         raw["moderation_join"] = json.loads(r["moderation_join_json"])
         by_stratum[str(r["sampling_stratum"])].append(raw)
 
@@ -265,7 +320,7 @@ def run_clef_flash_teacher(
     head = head.to(device=device, dtype=dtype)
     try:
         processor = AutoProcessor.from_pretrained(snapshot_dir, local_files_only=True)
-    except ValueError:
+    except (ValueError, ImportError):
         tok = AutoTokenizer.from_pretrained(snapshot_dir, local_files_only=True)
 
         class _TextOnlyProcessor:
@@ -532,8 +587,23 @@ def compute_prototype_summary(
         "outraged_exceeds_critical_by_0_15_count": outraged_gt_critical,
     }
 
+    scorable_post_count = sum(
+        1
+        for rec in combined_records
+        if all(
+            not rec["clef_flash"]["components"][c]["insufficient_evidence"]
+            for c in COMPONENT_ORDER
+        )
+    )
+    context_enriched_post_count = sum(
+        1 for rec in combined_records if rec["observation_mode"] == "context_enriched"
+    )
+
     summary = {
         "total_posts_scored": len(combined_records),
+        "scorable_post_count": scorable_post_count,
+        "scorable_post_rate": round(scorable_post_count / max(1, len(combined_records)), 4),
+        "context_enriched_post_count": context_enriched_post_count,
         "stratum_counts": dict(stratum_counts),
         "component_summaries": component_summaries,
         "topic_distribution": dict(topic_counts.most_common()),
@@ -558,6 +628,8 @@ def render_markdown_report(receipt: dict[str, Any]) -> str:
         f"**Date:** `{receipt['created_at']}`  ",
         f"**Host:** `{receipt['environment']['platform']}` (`mps`)  ",
         f"**Prepared Run Directory:** `catbird-intel/eval/anthropic_teacher_pilot_v1` (`2,000` frozen pilot posts)  ",
+        f"**Hydration Context:** `catbird-intel/eval/pilot_holdout_parent_quote_hydration_20261021.jsonl` (`{summary['context_enriched_post_count']}/{summary['total_posts_scored']}` context-enriched posts in slice)  ",
+        f"**Scorable Post Retention:** **`{summary['scorable_post_count']}/{summary['total_posts_scored']}` (`{summary['scorable_post_rate']*100:.1f}%`)** (up from `5/64 = 7.8%` prior to parent/quote hydration and `SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA` option-key disambiguation)  ",
         f"**Prototype Slice:** `64` deterministic stratified posts (`0` paid API calls, `$0.00` spend)",
         "",
         "## 1. Executive Summary",

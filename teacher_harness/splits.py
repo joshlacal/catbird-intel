@@ -45,6 +45,83 @@ BLIND_SEALED_SPLITS = frozenset({
     "natural_exposure",
 })
 
+TEXT_CONDUCT_LABELS = frozenset({
+    "spam",
+    "scam",
+    "rude",
+    "intolerant",
+    "threat",
+    "impersonation",
+    "engagement-farming",
+    "needs-review",
+    "!takedown",
+    "!suspend",
+})
+
+MEDIA_ONLY_NSFW_LABELS = frozenset({
+    "porn",
+    "sexual",
+    "nudity",
+    "graphic-media",
+    "gore",
+})
+
+
+def _normalize_label_values(raw_labels: Any) -> list[str]:
+    vals: list[str] = []
+    for item in raw_labels or ():
+        if isinstance(item, dict):
+            val = str(item.get("val") or "").strip().lower()
+        else:
+            val = str(item or "").strip().lower()
+        if val:
+            vals.append(val)
+    return vals
+
+
+def extract_moderation_label_buckets(post_or_join: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Separate text-conduct moderation labels from media-only NSFW labels across self_labels and moderation_join."""
+    if not isinstance(post_or_join, dict):
+        return {"text_conduct_labels": [], "media_only_nsfw_labels": []}
+
+    candidate_vals: list[str] = []
+    if "self_labels" in post_or_join:
+        candidate_vals.extend(_normalize_label_values(post_or_join.get("self_labels")))
+
+    mod_join = post_or_join.get("moderation_join") if isinstance(post_or_join.get("moderation_join"), dict) else post_or_join
+    if isinstance(mod_join, dict):
+        for key in ("active_record_labels", "unresolved_cid_labels", "author_account_labels_feature_only", "text_conduct_labels", "media_only_nsfw_labels"):
+            candidate_vals.extend(_normalize_label_values(mod_join.get(key)))
+
+    text_conduct = sorted({v for v in candidate_vals if v in TEXT_CONDUCT_LABELS and v not in MEDIA_ONLY_NSFW_LABELS})
+    media_only = sorted({v for v in candidate_vals if v in MEDIA_ONLY_NSFW_LABELS})
+    return {
+        "text_conduct_labels": text_conduct,
+        "media_only_nsfw_labels": media_only,
+    }
+
+
+def is_moderated(post_or_join: dict[str, Any] | None) -> bool:
+    """Return True iff post or moderation_join has at least one text-conduct label (excluding media-only NSFW labels)."""
+    return bool(extract_moderation_label_buckets(post_or_join)["text_conduct_labels"])
+
+
+def has_text_conduct_moderation_label(post_or_join: dict[str, Any] | None) -> bool:
+    """Alias for is_moderated: True iff post or moderation_join contains at least one text-conduct label."""
+    return is_moderated(post_or_join)
+
+
+def has_media_only_nsfw_label(post_or_join: dict[str, Any] | None) -> bool:
+    """Return True iff post or moderation_join contains at least one media-only NSFW label."""
+    return bool(extract_moderation_label_buckets(post_or_join)["media_only_nsfw_labels"])
+
+
+def _extract_at_uri_did(uri: str) -> str:
+    cleaned = str(uri or "").strip()
+    if cleaned.startswith("at://"):
+        return cleaned[5:].split("/", 1)[0]
+    return ""
+
 
 class SplitLeakageError(ValueError):
     """Raised when author, near-duplicate text, or thread context leaks between splits."""
@@ -161,6 +238,7 @@ def prepare_and_freeze_corpus(
     target_train_sample_size: int | None = None,
     moderation_events: list[dict[str, Any]] | None = None,
     moderation_cutoff_utc: str = "2026-10-20T23:59:59+00:00",
+    hydration_path: Path | None = None,
     external_final_uris: set[str] | None = None,
     external_final_authors: set[str] | None = None,
     external_exposure_uris: set[str] | None = None,
@@ -229,28 +307,71 @@ def prepare_and_freeze_corpus(
             assigned = min((prev, assigned), key=lambda s: priority.index(s))
         author_to_split[author] = assigned
 
-    # Thread component and near-duplicate fingerprint computation for leakage prevention
-    thread_map = _connected_thread_components(raw_rows, holdout_rows)
-    eval_thread_components: set[str] = {thread_map[str(r["uri"])] for r in holdout_rows if str(r["uri"]) in thread_map}
+    # Load optional parent/quote hydration rows before thread-component and leakage analysis
+    h_rows: list[dict[str, Any]] = []
+    hydration_rows_loaded = 0
+    if hydration_path is not None and Path(hydration_path).exists():
+        h_rows = read_rows(Path(hydration_path), limit=None)
+        hydration_rows_loaded = len(h_rows)
+
+    eval_uris: set[str] = set(holdout_uris) | ext_final_uris | ext_exp_uris
+    eval_authors: set[str] = set(holdout_authors) | ext_final_authors | ext_exp_authors
     eval_near_dup_fps: set[str] = set(holdout_fps)
 
     for r in raw_rows:
         uri = str(r["uri"])
         author = str(r["author_did"])
         sp = author_to_split[author]
-        fp = near_duplicate_fingerprint(str(r.get("text") or ""))
         if sp in EVALUATION_SPLITS:
+            eval_uris.add(uri)
+            eval_authors.add(author)
+            eval_near_dup_fps.add(near_duplicate_fingerprint(str(r.get("text") or "")))
+
+    # Thread component computation includes raw_rows, hydrated parent/quote rows, and holdout_rows
+    thread_map = _connected_thread_components([*raw_rows, *h_rows], holdout_rows)
+    eval_thread_components: set[str] = {thread_map[u] for u in eval_uris if u in thread_map}
+
+    for r in (*raw_rows, *h_rows):
+        uri = str(r.get("uri") or "").strip()
+        if not uri:
+            continue
+        author = str(r.get("author_did") or "").strip() or _extract_at_uri_did(uri)
+        fp = near_duplicate_fingerprint(str(r.get("text") or ""))
+        if uri in eval_uris or author in eval_authors or fp in eval_near_dup_fps:
             if uri in thread_map:
                 eval_thread_components.add(thread_map[uri])
-            eval_near_dup_fps.add(fp)
-        # Also if a post directly replies to or quotes a holdout/eval author or URI, taint its component
+        # Also if a post or hydrated parent directly replies to or quotes any evaluation author or URI, taint its component
         for ref_key in ("reply_parent_uri", "reply_root_uri", "quote_uri", "repost_subject_uri"):
             ref_uri = str(r.get(ref_key) or "").strip()
-            if ref_uri in holdout_uris or any(ref_uri.startswith(f"at://{ha}/") for ha in holdout_authors):
+            if not ref_uri:
+                continue
+            ref_did = _extract_at_uri_did(ref_uri)
+            if ref_uri in eval_uris or (ref_did and ref_did in eval_authors):
                 if uri in thread_map:
                     eval_thread_components.add(thread_map[uri])
 
-    corpus_by_uri = {str(r["uri"]): r for r in raw_rows}
+    corpus_by_uri: dict[str, dict[str, Any]] = {}
+    if sample_limit is not None:
+        for full_row in read_rows(input_path, limit=None):
+            if full_row.get("uri"):
+                corpus_by_uri[str(full_row["uri"])] = full_row
+    for h_row in h_rows:
+        h_uri = str(h_row.get("uri") or "").strip()
+        if not h_uri or h_uri in corpus_by_uri:
+            continue
+        h_author = str(h_row.get("author_did") or "").strip() or _extract_at_uri_did(h_uri)
+        h_fp = near_duplicate_fingerprint(str(h_row.get("text") or ""))
+        h_comp = thread_map.get(h_uri, h_uri)
+        # Never inject an evaluation-split post, author, or tainted thread into training context
+        if (
+            h_uri not in eval_uris
+            and h_author not in eval_authors
+            and h_fp not in eval_near_dup_fps
+            and h_comp not in eval_thread_components
+        ):
+            corpus_by_uri[h_uri] = h_row
+    for r in raw_rows:
+        corpus_by_uri[str(r["uri"])] = r
     seen_uris: set[str] = set()
     prepared_posts: list[dict[str, Any]] = []
     quarantine_counts: Counter[str] = Counter()
@@ -284,6 +405,11 @@ def prepare_and_freeze_corpus(
         try:
             text_obs = resolve_post_observation(r, corpus_by_uri=corpus_by_uri, observation_mode="text_only")
             ctx_obs = resolve_post_observation(r, corpus_by_uri=corpus_by_uri, observation_mode="context_enriched")
+            untrusted_ctx = ctx_obs.get("envelope", {}).get("untrusted_context") or {}
+            if untrusted_ctx.get("reply_parent_text"):
+                r["reply_parent_text"] = untrusted_ctx["reply_parent_text"]
+            if untrusted_ctx.get("quoted_post_text"):
+                r["quoted_post_text"] = untrusted_ctx["quoted_post_text"]
             repost_resolved = True
             unscored_reason = lang_info["reason"]
         except ValueError as exc:
@@ -321,6 +447,7 @@ def prepare_and_freeze_corpus(
             "created_at": str(r.get("created_at") or ""),
             "post_type": str(r.get("post_type") or "original"),
             "langs": list(r.get("langs") or []),
+            "self_labels": list(r.get("self_labels") or []),
             "language_in_scope": bool(lang_info["in_scope"]),
             "unscored_reason": unscored_reason,
             "text": str(r.get("text") or ""),
@@ -342,6 +469,8 @@ def prepare_and_freeze_corpus(
             "reply_parent_uri": str(r.get("reply_parent_uri") or ""),
             "reply_root_uri": str(r.get("reply_root_uri") or ""),
             "quote_uri": str(r.get("quote_uri") or ""),
+            "reply_parent_text": r.get("reply_parent_text"),
+            "quoted_post_text": r.get("quoted_post_text"),
             "repost_subject_uri": text_obs["repost_subject_uri"],
             "embed_type": str(r.get("embed_type") or ""),
             "image_count": int(r.get("image_count") or 0),
@@ -382,7 +511,14 @@ def prepare_and_freeze_corpus(
         eligible_uris=eligible_uri_set,
     )
     for p in prepared_posts:
-        p["moderation_join"] = mod_result["per_post"][p["uri"]]
+        joined = mod_result["per_post"][p["uri"]]
+        buckets = extract_moderation_label_buckets({
+            "self_labels": p.get("self_labels"),
+            "moderation_join": joined,
+        })
+        joined["text_conduct_labels"] = buckets["text_conduct_labels"]
+        joined["media_only_nsfw_labels"] = buckets["media_only_nsfw_labels"]
+        p["moderation_join"] = joined
 
     # Assign disjoint sampling strata across eligible train posts
     eligible_train = [p for p in prepared_posts if p["split"] == "train" and p["eligible_for_labeling"]]
@@ -505,14 +641,13 @@ def prepare_and_freeze_corpus(
     }
 
     # 3. moderation_enrichment (15%): heuristic enrichment (inclusion_probability MUST be None)
+    # Filter for text-conduct labels only; exclude media-only NSFW labels (porn, sexual, nudity, graphic-media, gore)
     s3_pool = [
         p
         for p in remaining_pool
         if p["uri"] not in selected_uris_all
         and (
-            bool(p["moderation_join"]["active_record_labels"])
-            or bool(p["moderation_join"]["unresolved_cid_labels"])
-            or bool(p["moderation_join"]["author_account_labels_feature_only"])
+            is_moderated(p)
             or float(p.get("regex_baseline_spam") or 0.0) >= 0.025
         )
     ]
@@ -612,6 +747,10 @@ def prepare_and_freeze_corpus(
         "total_selected_train_items": len(selected_uris_all),
         "moderation_join_audit": mod_result["audit"],
     }
+    if hydration_path is not None and Path(hydration_path).exists():
+        preparation_manifest["hydration_path"] = str(Path(hydration_path).resolve())
+        preparation_manifest["hydration_sha256"] = sha256(Path(hydration_path))
+        preparation_manifest["hydration_rows_loaded"] = hydration_rows_loaded
     preparation_manifest["manifest_sha256"] = canonical_sha256(preparation_manifest)
 
     return {

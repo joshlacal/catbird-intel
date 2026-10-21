@@ -39,7 +39,7 @@ from .pipeline import (
     run_report,
     run_submit,
 )
-from .routing import evaluate_post_disagreement, route_review_candidates
+from .routing import SUPPORTED_TEACHER_TIERS, evaluate_post_disagreement, route_review_candidates
 from .schemas import (
     COMPONENT_ORDER,
     ComponentAssessment,
@@ -54,7 +54,13 @@ from .schemas import (
     verify_prompt_isolation,
 )
 from .splits import (
+    MEDIA_ONLY_NSFW_LABELS,
     SplitLeakageError,
+    TEXT_CONDUCT_LABELS,
+    extract_moderation_label_buckets,
+    has_media_only_nsfw_label,
+    has_text_conduct_moderation_label,
+    is_moderated,
     near_duplicate_fingerprint,
     prepare_and_freeze_corpus,
 )
@@ -65,6 +71,7 @@ from .transport import (
     FakeAnthropicTransport,
     OfficialAnthropicSDKTransport,
     ProviderRateLimitError,
+    SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA,
     build_systemone_clef_request,
     parse_systemone_clef_response,
 )
@@ -82,12 +89,16 @@ __all__ = [
     "FakeAnthropicTransport",
     "HarnessConfig",
     "HarnessDB",
+    "MEDIA_ONLY_NSFW_LABELS",
     "ORDINAL_MAPPING_V1",
     "OfficialAnthropicSDKTransport",
     "ProcessLockError",
     "ProviderRateLimitError",
+    "SUPPORTED_TEACHER_TIERS",
+    "SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA",
     "SchemaValidationError",
     "SplitLeakageError",
+    "TEXT_CONDUCT_LABELS",
     "TeacherAnnotationOutput",
     "TrainerExportValidationError",
     "acquire_writer_lock",
@@ -100,8 +111,12 @@ __all__ = [
     "estimate_input_tokens_offline",
     "evaluate_post_disagreement",
     "export_annotation_bank_and_trainer_targets",
+    "extract_moderation_label_buckets",
     "fold_and_join_moderation_labels",
     "format_usd",
+    "has_media_only_nsfw_label",
+    "has_text_conduct_moderation_label",
+    "is_moderated",
     "iter_packed_cbor_labels",
     "load_moderation_events",
     "make_custom_id",
@@ -122,3 +137,4 @@ __all__ = [
     "validate_teacher_output_json",
     "verify_prompt_isolation",
 ]
+

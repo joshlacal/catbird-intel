@@ -170,7 +170,7 @@ class RecoveryAuthority:
             evidence.get("account_identity_verified") is not True or
             evidence.get("permitted_branch") not in (
                 "probe_only", "partial_exact_suffix", "expired_same_id_restart",
-                "receipt_only_auto") or
+                "receipt_only_auto", "payload_tail_and_receipt_auto") or
             evidence.get("receipt_stage_path") is None or
             not isinstance(evidence.get("folder_id"), str) or
             not evidence["folder_id"] or
@@ -209,16 +209,51 @@ class RecoveryAuthority:
             manifest, digest, pair_key = _reviewed_manifest(
                 run["manifest_raw"], run["id"], account_id)
             receipt = manifest["receipt"]
-            original_body = _exact_stage_bytes(
+            payload = manifest["payload"]
+            is_payload_tail = (
+                evidence.get("permitted_branch") == "payload_tail_and_receipt_auto"
+            )
+            original_receipt_body = _exact_stage_bytes(
                 evidence["receipt_stage_path"], receipt["bytes"],
                 receipt["sha256"],
             )
-            if attempt["operation_key"] != _operation_key(
-                "PUT", "media_chunk", attempt["target_sha256"],
-                f"bytes 0-{receipt['bytes']-1}/{receipt['bytes']}",
-                original_body,
-            ):
-                raise AuthorityBlocked("Original receipt PUT operation differs")
+            if is_payload_tail:
+                if (not isinstance(evidence.get("payload_name"), str) or
+                    not re.fullmatch(r"seg_[0-9a-z]{10}\.jss",
+                                     evidence["payload_name"]) or
+                    evidence["receipt_name"] !=
+                        evidence["payload_name"] + ".receipt.json" or
+                    not isinstance(evidence.get("payload_stage_path"), str) or
+                    not evidence["payload_stage_path"].startswith("/") or
+                    Path(evidence["payload_stage_path"]).name !=
+                        evidence["payload_name"] or
+                    evidence.get("payload_sha256") != payload["sha256"] or
+                    not 0 < attempt["bytes"] <= min(8 << 20, payload["bytes"])):
+                    raise AuthorityBlocked(
+                        "Payload-tail recovery stage or size differs"
+                    )
+                payload_body = _exact_stage_bytes(
+                    evidence["payload_stage_path"], payload["bytes"],
+                    payload["sha256"],
+                )
+                payload_offset = payload["bytes"] - attempt["bytes"]
+                if attempt["operation_key"] != _operation_key(
+                    "PUT", "media_chunk", attempt["target_sha256"],
+                    f"bytes {payload_offset}-{payload['bytes']-1}/{payload['bytes']}",
+                    payload_body[payload_offset:],
+                ):
+                    raise AuthorityBlocked("Original payload-tail PUT operation differs")
+                budget = attempt["bytes"] + receipt["bytes"] + MAX_CONTROL_BYTES
+                attempt_bytes_ok = True
+            else:
+                if attempt["operation_key"] != _operation_key(
+                    "PUT", "media_chunk", attempt["target_sha256"],
+                    f"bytes 0-{receipt['bytes']-1}/{receipt['bytes']}",
+                    original_receipt_body,
+                ):
+                    raise AuthorityBlocked("Original receipt PUT operation differs")
+                budget = receipt["bytes"] + MAX_CONTROL_BYTES
+                attempt_bytes_ok = attempt["bytes"] == receipt["bytes"]
             old_host, old_pid = account["process_host"], account["process_pid"]
             if old_host != authority.process_host or type(old_pid) is not int or old_pid <= 0:
                 raise AuthorityBlocked("Prior writer process cannot be proven stopped")
@@ -230,7 +265,6 @@ class RecoveryAuthority:
                 raise AuthorityBlocked("Prior writer process state is uncertain") from error
             else:
                 raise AuthorityBlocked("Prior writer process may still run")
-            budget = receipt["bytes"] + MAX_CONTROL_BYTES
             open_recoveries = db.execute(
                 "SELECT * FROM retained_receipt_recovery WHERE status!='closed'"
             ).fetchall()
@@ -242,7 +276,7 @@ class RecoveryAuthority:
                 attempt["run_id"] != original_run_id or
                 attempt["status"] != "unresolved" or attempt["http_status"] != 500 or
                 attempt["kind"] != "media_chunk" or attempt["method"] != "PUT" or
-                attempt["bytes"] != receipt["bytes"] or
+                not attempt_bytes_ok or
                 attempt["target_sha256"] != hashlib.sha256(session_url.encode()).hexdigest() or
                 receipt["bytes"] > MAX_RECEIPT_BYTES or
                 evidence.get("manifest_sha256") != digest or
@@ -259,9 +293,12 @@ class RecoveryAuthority:
                     "SELECT * FROM retained_receipt_recovery_attempt "
                     "WHERE recovery_id=? ORDER BY at,id", (existing["id"],),
                 ).fetchall()
+                probe_target_bytes = (
+                    payload["bytes"] if is_payload_tail else receipt["bytes"]
+                )
                 expected_probe_key = _operation_key(
                     "PUT", "resumable_status", existing["session_sha256"],
-                    f"bytes */{receipt['bytes']}", b"",
+                    f"bytes */{probe_target_bytes}", b"",
                 )
                 if (existing["status"] != "open" or
                     existing["original_run_id"] != original_run_id or
@@ -445,17 +482,123 @@ class RecoveryAuthority:
             evidence = json.loads(row["evidence_json"])
             old = self.db.execute("SELECT * FROM retained_run WHERE id=?",
                                   (row["original_run_id"],)).fetchone()
-            if old is None or old["status"] != "active":
+            old_attempt = self.db.execute(
+                "SELECT * FROM retained_attempt WHERE id=?",
+                (row["original_attempt_id"],),
+            ).fetchone()
+            if old is None or old["status"] != "active" or old_attempt is None:
                 raise AuthorityBlocked("Original retained pair state changed")
             manifest, digest, key = _reviewed_manifest(
                 old["manifest_raw"], old["id"], self.account_id)
             receipt = manifest["receipt"]
+            payload = manifest["payload"]
             if (digest != row["manifest_sha256"] or key != row["pair_key"] or
                 row["permit_used"] != 1 or row["permit_key"] is not None):
                 raise AuthorityBlocked("Receipt recovery operation is already pending")
             old_sha = row["session_sha256"]
             probe = self._probe_from_row(row)
-            if kind == "resumable_status":
+            is_payload_tail = (
+                evidence.get("permitted_branch") == "payload_tail_and_receipt_auto"
+            )
+            if is_payload_tail:
+                payload_offset = payload["bytes"] - old_attempt["bytes"]
+                media_attempts = self.db.execute(
+                    "SELECT * FROM retained_receipt_recovery_attempt "
+                    "WHERE recovery_id=? AND kind='media_chunk' ORDER BY at,id",
+                    (self.release_id,),
+                ).fetchall()
+                url_sha = hashlib.sha256(url.encode()).hexdigest()
+                if kind == "resumable_status":
+                    if (probe is not None or method != "PUT" or body or
+                        url_sha != old_sha or
+                        self.db.execute(
+                            "SELECT COUNT(*) FROM retained_receipt_recovery_attempt "
+                            "WHERE recovery_id=? AND kind='resumable_status'",
+                            (self.release_id,),
+                        ).fetchone()[0] or
+                        content_range != f"bytes */{payload['bytes']}"):
+                        raise AuthorityBlocked(
+                            "Only original payload-session empty status probe is allowed"
+                        )
+                elif kind == "media_chunk":
+                    if (probe is None or method != "PUT" or
+                        now - probe["observed_at"] > 60):
+                        raise AuthorityBlocked(
+                            "Payload-tail/receipt media continuation is not authorized"
+                        )
+                    if url_sha == old_sha:
+                        if (probe["state"] != "partial" or
+                            probe["acknowledged"] != payload_offset or
+                            row["new_session_sha256"] is not None or
+                            media_attempts):
+                            raise AuthorityBlocked(
+                                "Payload-tail media continuation state differs"
+                            )
+                        source = _exact_stage_bytes(
+                            evidence["payload_stage_path"],
+                            payload["bytes"], payload["sha256"],
+                        )
+                        if (content_range !=
+                            f"bytes {payload_offset}-{payload['bytes']-1}/{payload['bytes']}" or
+                            body != source[payload_offset:]):
+                            raise AuthorityBlocked(
+                                "Payload-tail continuation bytes or range differ"
+                            )
+                    else:
+                        payload_done = (
+                            (probe["state"] in ("complete", "expired") and not media_attempts) or
+                            (probe["state"] == "partial" and
+                             len(media_attempts) == 1 and
+                             media_attempts[0]["status"] == "settled" and
+                             media_attempts[0]["http_status"] in (200, 201) and
+                             media_attempts[0]["target_sha256"] == old_sha)
+                        )
+                        if (not payload_done or
+                            row["id_absence_json"] is None or
+                            row["new_session_sha256"] is None or
+                            url_sha != row["new_session_sha256"]):
+                            raise AuthorityBlocked(
+                                "Receipt session after payload-tail recovery is not ready"
+                            )
+                        source = _exact_stage_bytes(
+                            evidence["receipt_stage_path"],
+                            receipt["bytes"], receipt["sha256"],
+                        )
+                        if (content_range !=
+                            f"bytes 0-{receipt['bytes']-1}/{receipt['bytes']}" or
+                            body != source):
+                            raise AuthorityBlocked(
+                                "Receipt media bytes or range differ"
+                            )
+                elif kind == "resumable_start":
+                    expected_body = _canonical({
+                        "id": row["receipt_id"], "name": evidence["receipt_name"],
+                        "parents": [evidence["folder_id"]],
+                    }).encode()
+                    payload_done = (
+                        probe is not None and (
+                            (probe["state"] in ("complete", "expired") and not media_attempts) or
+                            (probe["state"] == "partial" and
+                             len(media_attempts) == 1 and
+                             media_attempts[0]["status"] == "settled" and
+                             media_attempts[0]["http_status"] in (200, 201) and
+                             media_attempts[0]["target_sha256"] == old_sha)
+                        )
+                    )
+                    if (not payload_done or
+                        now - probe["observed_at"] > 60 or
+                        row["id_absence_json"] is None or
+                        row["new_session_sha256"] is not None or
+                        method != "POST" or url != _DRIVE_UPLOAD_URL or
+                        content_range or body != expected_body):
+                        raise AuthorityBlocked(
+                            "Same-ID receipt session start after payload-tail differs"
+                        )
+                else:
+                    raise AuthorityBlocked(
+                        "Recovery may send only receipt/payload-tail status/start/media"
+                    )
+            elif kind == "resumable_status":
                 if (probe is not None or method != "PUT" or body or
                     hashlib.sha256(url.encode()).hexdigest() != old_sha or
                     self.db.execute("SELECT COUNT(*) FROM retained_receipt_recovery_attempt "
@@ -691,19 +834,37 @@ class RecoveryAuthority:
             row, account, now = self._active()
             if row["probe_json"] is not None:
                 raise AuthorityBlocked("Receipt status was already recorded")
+            evidence = json.loads(row["evidence_json"])
             old = self.db.execute("SELECT manifest_raw FROM retained_run WHERE id=?",
                                   (row["original_run_id"],)).fetchone()
-            if old is None:
+            old_attempt = self.db.execute(
+                "SELECT * FROM retained_attempt WHERE id=?",
+                (row["original_attempt_id"],),
+            ).fetchone()
+            if old is None or old_attempt is None:
                 raise AuthorityBlocked("Original retained manifest disappeared")
             manifest, _, _ = _reviewed_manifest(
                 old["manifest_raw"], row["original_run_id"], self.account_id)
-            size = manifest["receipt"]["bytes"]
-            if (state == "complete" and offset != size or
-                state == "partial" and not 0 <= offset < size or
-                state == "expired" and offset != 0 or
-                state == "complete" and outcome.get("metadata") !=
-                    {"id": row["receipt_id"]}):
-                raise AuthorityBlocked("Receipt status offset or ID differs")
+            if evidence.get("permitted_branch") == "payload_tail_and_receipt_auto":
+                size = manifest["payload"]["bytes"]
+                expected_id = evidence["payload_id"]
+                expected_offset = size - old_attempt["bytes"]
+                if (state == "expired" and offset != 0 or
+                    state == "complete" and offset != size or
+                    state == "partial" and offset != expected_offset or
+                    state == "complete" and outcome.get("metadata") !=
+                        {"id": expected_id}):
+                    raise AuthorityBlocked(
+                        "Payload status offset or ID differs"
+                    )
+            else:
+                size = manifest["receipt"]["bytes"]
+                if (state == "complete" and offset != size or
+                    state == "partial" and not 0 <= offset < size or
+                    state == "expired" and offset != 0 or
+                    state == "complete" and outcome.get("metadata") !=
+                        {"id": row["receipt_id"]}):
+                    raise AuthorityBlocked("Receipt status offset or ID differs")
             attempts = self.db.execute(
                 "SELECT * FROM retained_receipt_recovery_attempt "
                 "WHERE recovery_id=? ORDER BY at,id", (self.release_id,),
@@ -735,7 +896,15 @@ class RecoveryAuthority:
             row, account, now = self._active()
             review = json.loads(row["evidence_json"])
             probe = self._probe_from_row(row)
-            if (probe is None or probe["state"] != "expired" or
+            probe_ok = (
+                probe is not None and (
+                    probe["state"] == "expired" or
+                    (review.get("permitted_branch") ==
+                     "payload_tail_and_receipt_auto" and
+                     probe["state"] in ("partial", "complete"))
+                )
+            )
+            if (not probe_ok or
                 now - probe["observed_at"] > 60 or
                 row["id_absence_json"] is not None or
                 evidence.get("receipt_id") != row["receipt_id"] or
@@ -763,8 +932,17 @@ class RecoveryAuthority:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             row, account, now = self._active()
+            review = json.loads(row["evidence_json"])
             probe = self._probe_from_row(row)
-            if (probe is None or probe["state"] != "expired" or
+            probe_ok = (
+                probe is not None and (
+                    probe["state"] == "expired" or
+                    (review.get("permitted_branch") ==
+                     "payload_tail_and_receipt_auto" and
+                     probe["state"] in ("partial", "complete"))
+                )
+            )
+            if (not probe_ok or
                 now - probe["observed_at"] > 60 or
                 row["id_absence_json"] is None or
                 row["new_session_url"] is not None or
@@ -801,6 +979,7 @@ class RecoveryAuthority:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             row, account, now = self._active()
+            review = json.loads(row["evidence_json"])
             probe = self._probe_from_row(row)
             if (probe is None or
                 proof.get("attempt_id") != row["original_attempt_id"] or
@@ -833,7 +1012,21 @@ class RecoveryAuthority:
             ).fetchall()
             if any(item["status"] != "settled" for item in attempts):
                 raise AuthorityBlocked("Unresolved receipt recovery request blocks proof")
-            if probe["state"] == "complete":
+            if review.get("permitted_branch") == "payload_tail_and_receipt_auto":
+                media = [item for item in attempts if item["kind"] == "media_chunk"]
+                starts = [item for item in attempts if item["kind"] == "resumable_start"]
+                expected_media_count = 2 if probe["state"] == "partial" else 1
+                if (probe["state"] not in ("partial", "complete", "expired") or
+                    row["new_session_sha256"] is None or
+                    row["id_absence_json"] is None or
+                    len(starts) != 1 or
+                    starts[0]["http_status"] not in (200, 201) or
+                    len(media) != expected_media_count or
+                    any(item["http_status"] not in (200, 201) for item in media)):
+                    raise AuthorityBlocked(
+                        "Payload-tail and receipt completion results are absent"
+                    )
+            elif probe["state"] == "complete":
                 if (len(attempts) != 1 or
                     attempts[0]["kind"] != "resumable_status" or
                     attempts[0]["http_status"] not in (200, 201)):

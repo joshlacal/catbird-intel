@@ -866,6 +866,217 @@ class TeacherHarnessAcceptanceTests(unittest.TestCase):
         self.assertTrue(parsed_clef["has_insufficient_component"])
         self.assertEqual(parsed_clef["topic"], "politics_policy")
 
+    def test_15_hydration_context_resolution_and_text_conduct_moderation_filter(self) -> None:
+        """Scenario 15: Hydration JSONL resolves parent/quote text without leaking holdout; moderation enrichment filters for text-conduct labels only."""
+        from teacher_harness import (
+            MEDIA_ONLY_NSFW_LABELS,
+            TEXT_CONDUCT_LABELS,
+            has_text_conduct_moderation_label,
+        )
+
+        # Verify media-only NSFW labels do not trigger moderation_enrichment, while text-conduct labels do
+        for nsfw_val in MEDIA_ONLY_NSFW_LABELS:
+            self.assertFalse(
+                has_text_conduct_moderation_label(
+                    {"active_record_labels": [{"val": nsfw_val}], "unresolved_cid_labels": [], "author_account_labels_feature_only": []}
+                )
+            )
+        for tc_val in TEXT_CONDUCT_LABELS:
+            self.assertTrue(
+                has_text_conduct_moderation_label(
+                    {"active_record_labels": [{"val": tc_val}], "unresolved_cid_labels": [], "author_account_labels_feature_only": []}
+                )
+            )
+
+        # Create hydration JSONL providing parent text for p7 (at://did:plc:missingparent/app.bsky.feed.post/mp1)
+        hydration_path = self.root / "hydration.jsonl"
+        hydration_row = {
+            "uri": "at://did:plc:missingparent/app.bsky.feed.post/mp1",
+            "author_did": "did:plc:missingparent",
+            "text": "The city council zoning vote on housing density is happening tonight.",
+            "langs": ["en"],
+        }
+        hydration_path.write_text(json.dumps(hydration_row) + "\n", encoding="utf-8")
+
+        run_dir = self.root / "run_hydrated"
+        prep_manifest = run_prepare(
+            run_dir=run_dir,
+            input_path=self.bank_path,
+            holdout_path=CANONICAL_HOLDOUT_PATH,
+            export_manifest_path=CANONICAL_MANIFEST_PATH,
+            config=self.config,
+            hydration_path=hydration_path,
+            target_train_sample_size=25,
+            allow_synthetic_input_for_tests=True,
+        )
+        self.assertEqual(prep_manifest["hydration_rows_loaded"], 1)
+
+        db = HarnessDB(run_dir, self.config)
+        posts_by_uri = {p["uri"]: p for p in db.load_posts()}
+        p7 = posts_by_uri["at://did:plc:synthtrain07/app.bsky.feed.post/p7"]
+        self.assertTrue(p7["has_local_parent_or_quote_text"])
+
+        clef_req = build_systemone_clef_request(
+            p7,
+            config=self.config,
+            observation_mode="context_enriched",
+        )
+        self.assertTrue(clef_req["state"]["structural_signals"]["reply_parent_text_included"])
+        self.assertEqual(
+            clef_req["state"]["untrusted_context"]["reply_parent_text"],
+            "The city council zoning vote on housing density is happening tonight.",
+        )
+
+    def test_16_clef_non_colliding_noul_criteria_continuous_export_and_masked_loss(self) -> None:
+        """Scenario 16: SystemOne noul criteria avoid option collision; continuous E[y]/3 targets and -1.0 component loss masking export cleanly."""
+        from teacher_harness import SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA, evaluate_post_disagreement
+
+        row = {
+            "uri": "at://did:plc:synthtrain01/app.bsky.feed.post/p1",
+            "cid": "bafyp1",
+            "author_did": "did:plc:synthtrain01",
+            "text": "The senate committee vote on election reform legislation is scheduled for tomorrow.",
+            "langs": ["en"],
+            "post_type": "original",
+        }
+        clef_req = build_systemone_clef_request(row, config=self.config)
+        for comp in COMPONENT_ORDER:
+            insuff_q = clef_req["questions"][f"{comp}_insufficient"]
+            self.assertEqual(insuff_q["type"], "noul")
+            self.assertEqual(insuff_q["criteria"], SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA)
+        self.assertEqual(
+            clef_req["questions"]["context_dependent"]["criteria"],
+            SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA,
+        )
+
+        # Partial-component teacher (political_debate) + Clef-Flash disagreement check
+        dis = evaluate_post_disagreement(
+            {
+                "clef_flash": {
+                    "politicalness": {"score": 2, "normalized_0_to_1": 0.72},
+                    "outraged": {"score": 0, "normalized_0_to_1": 0.03},
+                    "critical": {"score": 1, "normalized_0_to_1": 0.34},
+                    "engagement_bait": {"score": 0, "normalized_0_to_1": 0.01},
+                    "spam": {"score": "insufficient", "normalized_0_to_1": None},
+                },
+                "political_debate": {
+                    "politicalness": {"score": 2, "normalized_0_to_1": 0.81},
+                },
+            }
+        )
+        self.assertEqual(dis["tiers_observed"], ["clef_flash", "political_debate"])
+        self.assertFalse(dis["has_unresolved_disagreement"])
+        self.assertTrue(dis["has_insufficient_component"])
+        self.assertEqual(dis["per_component"]["politicalness"]["status"], "exact_agreement")
+
+        # Verify mask_insufficient_components=True exports -1.0 for insufficient component and continuous E[y]/3 for scored components
+        run_dir = self.root / "run_masked_export"
+        self._prepare_run(run_dir)
+        run_plan(run_dir=run_dir, stage="pilot", model_tier="haiku", config=self.config)
+        transport = FakeAnthropicTransport(run_dir / "fake_provider_state.json")
+        run_submit(run_dir=run_dir, stage="pilot", model_tier="haiku", transport=transport, config=self.config)
+        run_collect(run_dir=run_dir, transport=transport, config=self.config)
+
+        db = HarnessDB(run_dir, self.config)
+        exp_dir = run_dir / "exports_masked"
+        manifest = export_annotation_bank_and_trainer_targets(
+            db,
+            self.config,
+            output_dir=exp_dir,
+            student_observation_mode="text_only",
+            mask_insufficient_components=True,
+        )
+        self.assertTrue(manifest["masked_loss_in_current_trainer"])
+        targets = [
+            json.loads(line)
+            for line in (exp_dir / "trainer_targets.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        p7_t = [t for t in targets if t["uri"] == "at://did:plc:synthtrain07/app.bsky.feed.post/p7"]
+        self.assertEqual(len(p7_t), 1)
+        self.assertEqual(p7_t[0]["teacher_politicalness"], -1.0)
+        self.assertEqual(p7_t[0]["teacher_spam"], 0.0)
+
+    def test_17_eval_split_and_hydrated_parent_leakage_quarantine_and_moderation_buckets(self) -> None:
+        """Scenario 17: Train posts touching dev/eval authors via external or hydrated parents are quarantined; media-only NSFW labels stay in separate metadata and do not trigger routing moderation_source_signal."""
+        from teacher_harness import (
+            extract_moderation_label_buckets,
+            has_media_only_nsfw_label,
+            is_moderated,
+        )
+        from teacher_harness.routing import _haiku_difficulty_signals
+
+        # 1. Verify is_moderated / extract_moderation_label_buckets on post dicts with self_labels and moderation_join
+        nsfw_post = {
+            "uri": "at://did:plc:nsfw1/app.bsky.feed.post/1",
+            "self_labels": ["porn", "sexual"],
+            "moderation_join": {
+                "active_record_labels": [{"val": "nudity"}],
+                "source_disagreement": False,
+            },
+        }
+        self.assertFalse(is_moderated(nsfw_post))
+        self.assertTrue(has_media_only_nsfw_label(nsfw_post))
+        buckets = extract_moderation_label_buckets(nsfw_post)
+        self.assertEqual(buckets["text_conduct_labels"], [])
+        self.assertEqual(buckets["media_only_nsfw_labels"], ["nudity", "porn", "sexual"])
+
+        # Media-only NSFW labels without source disagreement must NOT trigger moderation_source_signal in routing
+        benign_out = {c: {"score": 0, "normalized_0_to_1": 0.0} for c in COMPONENT_ORDER}
+        sig_nsfw = _haiku_difficulty_signals(benign_out, nsfw_post)
+        self.assertNotIn("moderation_source_signal", sig_nsfw["reasons"])
+        self.assertFalse(sig_nsfw["is_rare_or_policy"])
+
+        conduct_post = {
+            "uri": "at://did:plc:cond1/app.bsky.feed.post/1",
+            "self_labels": ["porn"],
+            "moderation_join": {
+                "active_record_labels": [{"val": "intolerant"}],
+                "source_disagreement": False,
+            },
+        }
+        self.assertTrue(is_moderated(conduct_post))
+        self.assertTrue(has_media_only_nsfw_label(conduct_post))
+        sig_cond = _haiku_difficulty_signals(benign_out, conduct_post)
+        self.assertIn("moderation_source_signal", sig_cond["reasons"])
+        self.assertTrue(sig_cond["is_rare_or_policy"])
+
+        # 2. Verify train post replying to a hydrated parent authored by a dev-split author (bucket 16) is quarantined
+        # In _create_synthetic_bank_parquet, idx=15 has bucket = 1 + (15 % 19) = 16 -> dev split (did:plc:synthtrain15)
+        hydration_leak_path = self.root / "hydration_dev_leak.jsonl"
+        hydration_leak_row = {
+            "uri": "at://did:plc:synthtrain15/app.bsky.feed.post/ext_dev_parent",
+            "author_did": "did:plc:synthtrain15",
+            "text": "External parent post authored by a dev-split author.",
+            "langs": ["en"],
+        }
+        hydration_leak_path.write_text(json.dumps(hydration_leak_row) + "\n", encoding="utf-8")
+
+        rows = pq.read_table(self.bank_path).to_pylist()
+        for r in rows:
+            if r["uri"] == "at://did:plc:synthtrain07/app.bsky.feed.post/p7":
+                r["reply_parent_uri"] = "at://did:plc:synthtrain15/app.bsky.feed.post/ext_dev_parent"
+                r["reply_root_uri"] = "at://did:plc:synthtrain15/app.bsky.feed.post/ext_dev_parent"
+        dev_leak_bank = self.root / "dev_leak_bank.parquet"
+        pq.write_table(pa.Table.from_pylist(rows), dev_leak_bank)
+
+        prep = prepare_and_freeze_corpus(
+            input_path=dev_leak_bank,
+            holdout_path=CANONICAL_HOLDOUT_PATH,
+            export_manifest_path=CANONICAL_MANIFEST_PATH,
+            config=self.config,
+            hydration_path=hydration_leak_path,
+            allow_synthetic_input_for_tests=True,
+        )
+        posts_by_uri = {p["uri"]: p for p in prep["posts"]}
+        p7_leaked = posts_by_uri["at://did:plc:synthtrain07/app.bsky.feed.post/p7"]
+        self.assertEqual(p7_leaked["split"], "quarantined_leakage")
+        self.assertEqual(p7_leaked["leakage_reason"], "conversation_context_touches_eval_split")
+        self.assertFalse(p7_leaked["eligible_for_labeling"])
+        # Tainted hydrated parent must not be injected into p7's context
+        self.assertIsNone(p7_leaked["reply_parent_text"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

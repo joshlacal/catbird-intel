@@ -16,6 +16,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -187,6 +188,21 @@ class SafeDrive:
             delay = slot_epoch - self.authority.clock()
             if delay > 0:
                 time.sleep(delay)
+            # The retained authority also enforces elapsed monotonic time.
+            # A wall clock jump or a wake one float ULP before the boundary
+            # must wait on this same precharged attempt, never make a second
+            # reservation or dispatch early.
+            until_dispatch = getattr(self.authority, "seconds_until_dispatch", None)
+            if until_dispatch is not None:
+                for _ in range(8):
+                    extra = until_dispatch(attempt_id)
+                    if type(extra) not in (int, float) or not math.isfinite(extra) or extra < 0:
+                        raise Conflict("Drive dispatch wait is invalid")
+                    if extra == 0:
+                        break
+                    time.sleep(extra + 0.001)
+                else:
+                    raise Conflict("Drive dispatch floor could not be reached")
             self.authority.assert_active(timeout, slot_at=slot_epoch)
             req = urllib.request.Request(url, data=data, method=method, headers={
                 "Authorization": "Bearer " + token, **(headers or {})})

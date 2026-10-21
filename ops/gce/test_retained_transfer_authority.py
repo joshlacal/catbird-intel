@@ -317,6 +317,45 @@ class RetainedAuthorityTests(unittest.TestCase):
         authority.mark_dispatch(second)
         authority.finish_request(second, 200)
 
+    def test_precharged_attempt_waits_for_monotonic_floor_without_second_charge(self):
+        self.monotonic.value = 1_000_000_000.0
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+        first, _ = self.request(authority)
+        authority.mark_dispatch(first)
+        authority.finish_request(first, 200)
+        self.clock.advance(10)  # Wall time alone cannot release the next send.
+        self.monotonic.advance(0.1)
+        second, _ = self.request(authority)
+        self.assertGreater(authority.seconds_until_dispatch(second), 0.449)
+        self.monotonic.advance(0.449)
+        self.assertGreater(authority.seconds_until_dispatch(second), 0)
+        self.monotonic.advance(0.002)
+        self.assertEqual(authority.seconds_until_dispatch(second), 0)
+        authority.mark_dispatch(second)
+        authority.finish_request(second, 200)
+        db = sqlite3.connect(self.db_path)
+        try:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM retained_attempt").fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT SUM(bytes) FROM retained_attempt").fetchone()[0], 2)
+        finally:
+            db.close()
+
+    def test_precharged_attempt_cannot_wait_past_deadline(self):
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+        first, _ = self.request(authority)
+        authority.mark_dispatch(first)
+        authority.finish_request(first, 200)
+        self.clock.advance(1198.8)
+        self.monotonic.advance(0.1)
+        second, _ = authority.start_request(
+            1, 1, "media_chunk", method="PUT", target_category="media_chunk",
+            target_sha256="a" * 64, operation_key="b" * 64)
+        with self.assertRaisesRegex(AuthorityBlocked, "cannot fit run deadline"):
+            authority.seconds_until_dispatch(second)
+        self.assertEqual(authority.snapshot()["unresolved_attempts"], 1)
+
     def test_semantically_corrupt_attempt_does_not_reduce_known_charge(self):
         authority, manifest, digest = self.open_run(1)
         self.reserve(authority, manifest, digest)
@@ -419,6 +458,67 @@ class RetainedAuthorityTests(unittest.TestCase):
         finally:
             db.close()
         self.assertEqual(imported, [(self.legacy_digest, self.LEGACY_BYTES)])
+
+    def test_account_inspection_is_read_only_and_reports_durable_stop_gates(self):
+        def process_claim() -> tuple:
+            db = sqlite3.connect(self.db_path)
+            try:
+                return db.execute(
+                    "SELECT process_host,process_pid,process_nonce "
+                    "FROM retained_account WHERE id=1").fetchone()
+            finally:
+                db.close()
+
+        inspect = lambda: TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+            clock=self.clock)
+        unclaimed = process_claim()
+        self.assertEqual(unclaimed, (None, None, None))
+        initial = inspect()
+        self.assertEqual(process_claim(), unclaimed)
+        self.assertTrue(initial["diagnostic_imported"])
+        self.assertFalse(initial["history_proven"])
+        self.assertEqual(initial["cooldown_until"], 0)
+        self.assertGreater(initial["next_slot"], 0)
+        self.assertEqual(initial["unresolved_attempts"], 0)
+        self.assertEqual(initial["known_local_rolling_bytes"], self.LEGACY_BYTES)
+        self.assertEqual(initial["mapping_reserved_total_bytes"], 0)
+        self.assertEqual(initial["mapping_partition_remaining_bytes"],
+                         initial["mapping_partition_bytes"])
+        self.assertIsNone(initial["nonterminal_run_id"])
+        with self.assertRaises(AuthorityBlocked):
+            TransferAuthority.inspect_retained_account(
+                self.db_path, writer_id=self.writer_id,
+                account_id="wrong-account", clock=self.clock)
+        self.assertEqual(process_claim(), unclaimed)
+
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+        attempt, slot = self.request(authority, 5)
+        claimed = process_claim()
+        self.assertNotEqual(claimed, unclaimed)
+        admitted = inspect()
+        self.assertEqual(process_claim(), claimed)
+        self.assertEqual(admitted["unresolved_attempts"], 1)
+        self.assertGreaterEqual(admitted["next_slot"], slot + 0.55 - 1e-6)
+        self.assertEqual(admitted["nonterminal_run_id"], manifest["release_id"])
+        self.assertEqual(admitted["nonterminal_status"], "active")
+
+        authority.mark_dispatch(attempt)
+        authority.finish_request(attempt, 200)
+        key = pair_key(manifest)
+        mapping_digest = hashlib.sha256(b"inspection-mapping").hexdigest()
+        authority.mark_pair_verified(key, mapping_digest)
+        authority.close_pair(key)
+        authority.reserve_index_create(key, mapping_digest,
+                                       manifest["index_object"], 123)
+        pending = inspect()
+        self.assertEqual(process_claim(), claimed)
+        self.assertEqual(pending["unresolved_attempts"], 0)
+        self.assertEqual(pending["mapping_reserved_total_bytes"], 123)
+        self.assertEqual(pending["mapping_partition_remaining_bytes"],
+                         pending["mapping_partition_bytes"] - 123)
+        self.assertEqual(pending["nonterminal_status"], "index_pending")
 
     def test_index_pending_blocks_next_pair_and_all_drive_requests(self):
         authority, manifest, digest = self.open_run(1)

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from gcs_drive_drain import Conflict, FOLDER, ObjectRef
 from gcs_drive_diagnostic import PAYLOAD as COMPLETED_DIAGNOSTIC_PAYLOAD
@@ -222,7 +223,9 @@ class RetainedOverflowTests(unittest.TestCase):
 
     def copy(self):
         return RetainedOverflow(self.cloud, self.drive, self.authority,
-                                self.work, self.manifest, self.digest, self.path.read_bytes())
+                                self.work, self.manifest, self.digest, self.path.read_bytes(),
+                                capture_segments_dir=Path(self.temp.name),
+                                min_capture_free_bytes=1)
 
     def test_retained_copy_has_immutable_mapping_and_never_deletes(self):
         with self.copy() as copier:
@@ -245,6 +248,19 @@ class RetainedOverflowTests(unittest.TestCase):
         with self.copy() as again:
             self.assertEqual(again.run_one()["status"], FINAL_STATUS)
         self.assertEqual(self.drive.media_creates, 2)
+
+    def test_capture_restart_floor_checked_before_each_download(self):
+        from gcs_drive_retained_overflow import CAPTURE_RESTART_FLOOR_BYTES
+        with self.copy() as copier:
+            copier.min_capture_free_bytes = CAPTURE_RESTART_FLOOR_BYTES
+            with mock.patch("gcs_drive_retained_overflow.shutil.disk_usage") as disk:
+                disk.return_value.free = CAPTURE_RESTART_FLOOR_BYTES + 9
+                with self.assertRaisesRegex(Conflict, "capture restart headroom"):
+                    copier.space(10)
+                disk.return_value.free = CAPTURE_RESTART_FLOOR_BYTES + 10
+                with mock.patch.object(type(copier).__mro__[1], "space"):
+                    copier.space(10)
+        self.assertEqual(self.drive.media_creates, 0)
 
     def test_lost_folder_reply_keeps_pinned_id_and_forbids_repost(self):
         self.drive.lose_folder_response = True
@@ -325,7 +341,9 @@ class RetainedOverflowTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     with RetainedOverflow(cloud, self.drive, authority,
                                           Path(directory), loaded, digest,
-                                          self.path.read_bytes()) as copier:
+                                          self.path.read_bytes(),
+                                          capture_segments_dir=Path(directory),
+                                          min_capture_free_bytes=1) as copier:
                         with self.assertRaises(Conflict):
                             copier.run_one()
                 self.assertEqual(self.drive.media_creates, 0)

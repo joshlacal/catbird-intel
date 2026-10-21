@@ -444,6 +444,43 @@ class RetainedObservationAuthority:
             db.close()
 
     @classmethod
+    def inspect_account(cls, db_path: Path, *, writer_id: str, account_id: str,
+                        clock: Callable[[], float] = time.time) -> dict:
+        """Read validated stop gates without claiming the account writer lease."""
+        db, authority = cls._inspect(db_path, writer_id=writer_id, account_id=account_id)
+        try:
+            account = db.execute("SELECT * FROM retained_account WHERE id=1").fetchone()
+            now = _finite_nonnegative(clock(), "inspection clock")
+            if now < account["last_clock"]:
+                raise AuthorityBlocked("Retained inspection clock regressed")
+            used = db.execute(
+                "SELECT COALESCE(SUM(bytes),0) FROM retained_mapping_reservation"
+            ).fetchone()[0]
+            unresolved = db.execute(
+                "SELECT COUNT(*) FROM retained_attempt WHERE status='unresolved'"
+            ).fetchone()[0]
+            nonterminal = db.execute(
+                "SELECT id,status FROM retained_run WHERE status!='closed'"
+            ).fetchone()
+            return {
+                "admission_mode": "retained_pair_observation",
+                "history_proven": False,
+                "diagnostic_imported": True,
+                "cooldown_until": account["cooldown_until"],
+                "next_slot": account["next_slot"],
+                "last_clock": account["last_clock"],
+                "unresolved_attempts": unresolved,
+                "mapping_partition_bytes": MAPPING_PARTITION_BYTES,
+                "mapping_reserved_total_bytes": used,
+                "mapping_partition_remaining_bytes": MAPPING_PARTITION_BYTES - used,
+                "known_local_rolling_bytes": authority._known_usage(now),
+                "nonterminal_run_id": nonterminal["id"] if nonterminal else None,
+                "nonterminal_status": nonterminal["status"] if nonterminal else None,
+            }
+        finally:
+            db.close()
+
+    @classmethod
     def open_run(
         cls, db_path: Path, *, run_id: str, writer_id: str, account_id: str,
         manifest_bytes: bytes, evidence: dict, deadline_at: float,
@@ -842,6 +879,40 @@ class RetainedObservationAuthority:
             self.db.execute("UPDATE retained_account SET last_clock=?,next_slot=? WHERE id=1",
                             (now, slot + PACING_SECONDS))
             return attempt_id, slot
+
+    def seconds_until_dispatch(self, attempt_id: str) -> float:
+        """Read the wait for one precharged attempt; zero means ready to recheck.
+
+        This does not dispatch, settle, or reserve another attempt. The caller
+        must keep its process dispatch lock, sleep, then use mark_dispatch on
+        this same ID immediately before its one network send.
+        """
+        _required_identity(attempt_id, "attempt ID")
+        account, run = self._run()
+        now = self._now(account)
+        mono = _finite_nonnegative(self.monotonic_clock(), "monotonic clock")
+        attempt = self.db.execute(
+            "SELECT * FROM retained_attempt WHERE id=? AND run_id=?",
+            (attempt_id, self.release_id),
+        ).fetchone()
+        if (attempt is None or attempt["status"] != "unresolved" or
+            attempt["dispatched_at"] is not None):
+            raise AuthorityBlocked("Retained attempt is not awaiting dispatch")
+        self._active(account, run, now, attempt["timeout_s"], attempt["slot_at"])
+        wall_wait = max(0.0, attempt["slot_at"] - now)
+        if account["last_dispatch_wall"] is not None:
+            wall_wait = max(wall_wait,
+                            account["last_dispatch_wall"] + PACING_SECONDS - now)
+        mono_wait = 0.0
+        if account["last_dispatch_monotonic"] is not None:
+            if mono < account["last_dispatch_monotonic"]:
+                raise AuthorityBlocked("Retained monotonic clock regressed")
+            mono_wait = max(0.0,
+                            account["last_dispatch_monotonic"] + PACING_SECONDS - mono)
+        wait = max(wall_wait, mono_wait)
+        if now + wait + attempt["timeout_s"] >= run["deadline_at"]:
+            raise AuthorityBlocked("Retained dispatch wait cannot fit run deadline")
+        return wait
 
     def mark_dispatch(self, attempt_id: str) -> None:
         _required_identity(attempt_id, "attempt ID")

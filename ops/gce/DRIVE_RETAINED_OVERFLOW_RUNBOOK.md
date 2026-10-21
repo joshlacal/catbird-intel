@@ -31,8 +31,12 @@ original diagnostic database and files.
 ```sh
 python3 -B -m unittest -v test_gcs_drive_retained_overflow.py
 python3 -B -m unittest -v test_gcs_drive_retained_queue.py
+python3 -B -m unittest -v test_gcs_drive_retained_runner.py
 python3 -B -m unittest -v \
   test_gcs_drive_retained_overflow.RetainedOverflowTests.test_linux_watchdog_kills_worker_and_grandchild
+python3 -B -m unittest -v \
+  test_gcs_drive_retained_runner.RunnerTests.test_linux_child_timeout_kills_nested_session \
+  test_gcs_drive_retained_runner.RunnerTests.test_linux_runner_death_kills_supervisor
 python3 -B gcs_drive_retained_overflow.py \
   --overflow-manifest MANIFEST --run-id RUN_ID \
   --account-id DRIVE_PERMISSION_ID --check-manifest
@@ -113,3 +117,74 @@ mapping remains unqualified for the historical Drive archive shard.
 Reader integration for Colab and Mac must consume the shared GCS mapping's
 exact Drive IDs and source generations. Name-based Drive search is not an
 archive qualification under `drive.file` visibility.
+
+## Serial snapshot runner
+
+The separate runner accepts one saved, SHA-256 reviewed snapshot packet. Save
+the selector's single JSON output as `SNAPSHOT_JSON` in `SNAPSHOT_DIR`, hash
+those exact bytes, and review every manifest. Place owner-prepared evidence
+for each run at `EVIDENCE_DIR/RUN_ID.json`. Each file must bind that run,
+manifest digest, account, writer, and a writer exclusion through its deadline;
+`observed_at` expires after five minutes. The runner never asserts these facts
+from a command-line flag. If fresh evidence is absent it records
+`awaiting_fresh_evidence` and starts no next pair.
+
+```sh
+python3 -B gcs_drive_retained_runner.py \
+  --snapshot-json SNAPSHOT_JSON --snapshot-sha256 REVIEWED_SHA256 \
+  --snapshot-dir SNAPSHOT_DIR --authority-db LEDGER \
+  --evidence-dir EVIDENCE_DIR --account-id DRIVE_PERMISSION_ID \
+  --writer-id WRITER_ID --oauth-file EXISTING_OAUTH_FILE \
+  --status-file /data/gcs-buffer/retained_runner_status.jsonl
+```
+
+Read the latest complete valid status line for this run from
+`/data/gcs-buffer/retained_runner_status.jsonl` and inspect the retained
+per-pair log after any stop. `tail -n 4` is a quick view; a crash can leave
+an incomplete last line, so monitoring must parse backward to the last
+complete valid line with the current `run_id`. `state`, `stop_reason`,
+`pairs_closed`, `last_pair`, `last_mapping_sha256`, `cooldown_until`, and
+`updated_epoch` are the key fields. The collector can be healthy and
+`uploading` while the retained runner is active; do not require collector
+idleness.
+
+One invocation runs at most eight pairs and 8 × 320 MiB of reserved transfer
+bytes, serially against the same imported ledger. It starts each pair only
+after read-only authority inspection shows no nonterminal run, unresolved
+attempt, quota cooldown, duplicate source, or exhausted 32 MiB mapping
+partition. A child exit alone never permits the next pair: the runner requires
+the exact durable `closed` mapping and another account inspection. A 403/429,
+uncertain outcome, or failed child stops the batch without a replay. The
+absolute capture STOP is 2026-10-24 10:10 UTC, and the runner does not begin a
+pair without its full reviewed duration plus stop margin. Its Linux child
+watchdog and parent-death guard terminate the transfer process tree if the
+runner times out or dies.
+
+The runner measures the same filesystem as `/data/jetstream/segments`, caps
+cumulative retained staging at 32 GiB, and reserves a 100 GiB free floor for
+capture before and during each pair. The worker checks the floor again before
+each GCS download; the runner checks it every ten seconds while a child runs,
+with an allowance for the remaining pair bytes. Concurrent capture writes can
+occur between checks, so this is periodic fail-closed monitoring rather than
+an atomic free-space guarantee. The runner appends and fsyncs its own
+`retained_runner_status.jsonl` heartbeat and writes per-pair logs; it does not
+overwrite the collector supervisor status. The monitor reads the last complete
+valid JSON line for the current run and computes heartbeat age from
+`updated_epoch`; a torn final line remains for inspection. The runner never
+deletes GCS objects, local staging,
+Drive copies, collector data, or checkpoints. The collector may remain active
+while the runner copies. Generated-cache cleanup is a separate reviewed
+protocol; a candidate cache file could be removed only after exact original
+GCS generation and immutable Drive ID mapping verification, and such removal
+would not refund cumulative GCS admission. No cleanup is implemented here.
+
+The selector covers current live receipt metadata only. A later bounded
+snapshot can follow after the previous one is closed and reviewed, but an
+empty snapshot does not prove complete historic or soft-deleted coverage.
+After a pair closes, take a fresh selector snapshot for the remaining work;
+for the current seven-candidate batch, use `--max-pairs 7` after segment 3671
+is durably closed. An old snapshot containing the closed pair is rejected to
+avoid a second copy.
+Any `active`, `verified`, or `index_pending` pair, `file_upload_inflight`, or
+uncertain index create requires manual reconciliation; the serial runner will
+not auto-recover it.

@@ -277,6 +277,16 @@ class TransferAuthority:
             pair_key=pair_key, manifest_sha256=manifest_sha256)
 
     @classmethod
+    def inspect_retained_account(
+        cls, db_path: Path, *, writer_id: str, account_id: str,
+        clock: Callable[[], float] = time.time,
+    ) -> dict:
+        """Read validated account-wide retained stop gates without a writer claim."""
+        from retained_transfer_authority import RetainedObservationAuthority
+        return RetainedObservationAuthority.inspect_account(
+            db_path, writer_id=writer_id, account_id=account_id, clock=clock)
+
+    @classmethod
     def open_retained_run(
         cls, db_path: Path, *, run_id: str, writer_id: str, account_id: str,
         manifest_bytes: bytes, evidence: dict, deadline_at: float,

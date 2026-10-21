@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import shutil
 import sys
 import time
 import urllib.error
@@ -40,6 +41,8 @@ CONTROL_ALLOWANCE = 1 << 20
 INDEX_PREFIX = "indexes/drive-retained-overflow/v1/"
 INDEX_OBJECT_LIMIT = 16 << 10
 WATCHDOG_MARGIN_SECONDS = 30
+CAPTURE_SEGMENTS_DIR = Path("/data/jetstream/segments")
+CAPTURE_RESTART_FLOOR_BYTES = 100 * (1 << 30)
 
 
 def _no_duplicate_keys(pairs):
@@ -204,7 +207,9 @@ class RetainedOverflow(Drain):
     """One exact GCS pair per call, copied to a new app-created Drive folder."""
 
     def __init__(self, cloud, drive, authority, work: Path, manifest: dict,
-                 manifest_sha256: str, manifest_bytes: bytes):
+                 manifest_sha256: str, manifest_bytes: bytes, *,
+                 capture_segments_dir: Path = CAPTURE_SEGMENTS_DIR,
+                 min_capture_free_bytes: int = CAPTURE_RESTART_FLOOR_BYTES):
         if (authority is None or authority.manifest_sha256 != manifest_sha256
                 or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256)):
             raise Conflict("Overflow authority does not bind the reviewed manifest")
@@ -240,10 +245,29 @@ class RetainedOverflow(Drain):
             raise
         self.index_path = work / "retained-index.jsonl"
         self._verified_manifest = _canonical(verified)
+        self.capture_segments_dir = capture_segments_dir
+        if (type(min_capture_free_bytes) is not int or
+                not 0 < min_capture_free_bytes <= CAPTURE_RESTART_FLOOR_BYTES):
+            raise Conflict("Overflow capture floor is invalid")
+        self.min_capture_free_bytes = min_capture_free_bytes
 
     def _assert_manifest_unchanged(self) -> None:
         if _canonical(self.pilot_manifest) != self._verified_manifest:
             raise Conflict("Overflow manifest changed after construction")
+
+    def space(self, required):
+        """Protect capture restart headroom before each GCS stage download."""
+        if type(required) is not int or required <= 0:
+            raise Conflict("Overflow stage reservation is invalid")
+        try:
+            if os.stat(self.capture_segments_dir).st_dev != os.stat(self.work).st_dev:
+                raise Conflict("Overflow stage and capture use different filesystems")
+            free = shutil.disk_usage(self.capture_segments_dir).free
+        except OSError as error:
+            raise Conflict("Capture segment filesystem is unavailable") from error
+        if free - required < self.min_capture_free_bytes:
+            raise Conflict("Overflow stage would breach capture restart headroom")
+        super().space(required)
 
     def close(self) -> None:
         if not self._lock.closed:

@@ -430,6 +430,65 @@ class DrainTests(unittest.TestCase):
         self.assertLess(events.index(("dispatch", "synthetic-attempt")), events.index(("urlopen",)))
         self.assertNotIn(("finish", 200), events)
         self.assertFalse(any(event[0] == "finish" for event in events))
+    def test_retained_dispatch_wait_uses_one_precharged_attempt(self):
+        drive = object.__new__(SafeDrive)
+        events = []
+        class Authority:
+            def clock(self):
+                return time.time()
+            def assert_active(self, timeout, *, slot_at=None):
+                events.append(("active", slot_at))
+            def start_request(self, body_bytes, timeout, kind, **identity):
+                events.append(("start", body_bytes))
+                return "one-attempt", time.time()
+            def seconds_until_dispatch(self, attempt_id):
+                events.append(("wait", attempt_id))
+                return 0.45 if events.count(("wait", attempt_id)) == 1 else 0
+            def mark_dispatch(self, attempt_id):
+                events.append(("dispatch", attempt_id))
+            def finish_request(self, attempt_id, status):
+                events.append(("finish", status))
+        drive.authority = Authority()
+        drive.auth = type("Auth", (), {"token": lambda self: "synthetic-token"})()
+        class Response(io.BytesIO):
+            status = 200
+        def fake_open(request, timeout=60):
+            events.append(("urlopen",))
+            return Response(b"{}")
+        with patch("gcs_drive_drain.time.sleep", side_effect=lambda seconds: events.append(("sleep", seconds))), \
+             patch.object(_NO_REDIRECT_OPENER, "open", side_effect=fake_open):
+            with drive.request("https://www.googleapis.com/drive/v3/files"):
+                pass
+        self.assertEqual([event[0] for event in events].count("start"), 1)
+        self.assertEqual([event[0] for event in events].count("dispatch"), 1)
+        self.assertEqual([event[0] for event in events].count("urlopen"), 1)
+        self.assertLess(events.index(("wait", "one-attempt")),
+                        events.index(("dispatch", "one-attempt")))
+        self.assertLess(events.index(("dispatch", "one-attempt")),
+                        events.index(("urlopen",)))
+        self.assertIn(("sleep", 0.451), events)
+    def test_retained_dispatch_deadline_refusal_never_sends(self):
+        drive = object.__new__(SafeDrive)
+        events = []
+        class Authority:
+            def clock(self):
+                return time.time()
+            def assert_active(self, timeout, *, slot_at=None):
+                return None
+            def start_request(self, body_bytes, timeout, kind, **identity):
+                events.append("start")
+                return "one-attempt", time.time()
+            def seconds_until_dispatch(self, attempt_id):
+                events.append("wait")
+                raise RuntimeError("deadline before pacing floor")
+            def mark_dispatch(self, attempt_id):
+                events.append("dispatch")
+        drive.authority = Authority()
+        drive.auth = type("Auth", (), {"token": lambda self: "synthetic-token"})()
+        with patch.object(_NO_REDIRECT_OPENER, "open", side_effect=AssertionError("unexpected send")):
+            with self.assertRaisesRegex(RuntimeError, "deadline before pacing floor"):
+                drive.request("https://www.googleapis.com/drive/v3/files")
+        self.assertEqual(events, ["start", "wait"])
     def test_same_endpoint_upload_starts_have_distinct_hashed_body_identity(self):
         drive = object.__new__(SafeDrive)
         identities = []

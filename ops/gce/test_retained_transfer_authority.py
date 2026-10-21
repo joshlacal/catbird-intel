@@ -920,7 +920,36 @@ class RetainedAuthorityTests(unittest.TestCase):
         second.mark_dispatch(b2)
         second.finish_request(b2, 200)
         self.finish_index(second, manifest_2, digest_2)
-        self.open_run(3, boot_id="boot-2")
+        with sqlite3.connect(self.db_path) as db:
+            db.execute(
+                "UPDATE retained_account SET boot_id='boot-3', process_host=NULL, "
+                "process_pid=NULL, process_nonce=NULL, last_dispatch_wall=NULL, "
+                "last_dispatch_monotonic=NULL WHERE id=1"
+            )
+        self.clock.advance(60.0)
+        # Uptime on boot-3 is 0.15s higher than boot-2's final dispatch (2500.55),
+        # which previously triggered a false-positive monotonic pacing error.
+        self.monotonic.value = 2500.70
+        third, manifest_3, digest_3 = self.open_run(3, boot_id="boot-3")
+        self.reserve(third, manifest_3, digest_3)
+        c1, _ = self.request(third, manifest_3["payload"]["bytes"], "media_chunk")
+        third.mark_dispatch(c1)
+        third.finish_request(c1, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        c2, _ = self.request(third, manifest_3["receipt"]["bytes"], "media_chunk")
+        third.mark_dispatch(c2)
+        third.finish_request(c2, 200)
+        self.finish_index(third, manifest_3, digest_3)
+
+        # Verify within-run monotonic pacing violation is still caught by _validate_all.
+        with sqlite3.connect(self.db_path) as db:
+            db.execute(
+                "UPDATE retained_attempt SET dispatch_monotonic=? WHERE id=?",
+                (2500.80, c2),
+            )
+        with self.assertRaisesRegex(AuthorityBlocked, "violate monotonic pacing"):
+            self.open_run(4, boot_id="boot-3")
 
 
 if __name__ == "__main__":

@@ -185,7 +185,7 @@ def main():
         local = local_writer_preflight()
         state = subprocess.run(['systemctl','is-active','catbird-drive-retained-continuous-20261021.service'],
                                capture_output=True,text=True,timeout=5).stdout.strip()
-        require(state == 'inactive','continuous_controller_not_inactive')
+        require(state in ('inactive','failed'),'continuous_controller_not_inactive')
         require(subprocess.run(['systemctl','is-active','--quiet','catbird-gcs-buffer.service'],timeout=5).returncode == 0,
                 'capture_not_active')
         require(shutil.disk_usage('/data').free > 103*(1<<30),'capture_disk_floor')

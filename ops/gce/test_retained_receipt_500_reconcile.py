@@ -1244,6 +1244,124 @@ class Receipt500ReconciliationTests(unittest.TestCase):
             reconciled_ids,
             {self.receipt_attempt, companion_probe_id},
         )
+        # Tampering parent_attempt_id on the companion probe proof to point to a
+        # non-reconciled or nonexistent attempt must be rejected by _reconciled_state.
+        with closing(sqlite3.connect(self.db)) as db, db:
+            orig_row = db.execute(
+                "SELECT proof_json, proof_sha256 FROM retained_reconciliation "
+                "WHERE attempt_id=?",
+                (companion_probe_id,),
+            ).fetchone()
+            bad_proof = json.loads(orig_row[0])
+            bad_proof["parent_attempt_id"] = "f" * 32
+            bad_raw = json.dumps(bad_proof, sort_keys=True, separators=(",", ":"))
+            bad_sha = hashlib.sha256(bad_raw.encode()).hexdigest()
+            db.execute(
+                "UPDATE retained_reconciliation SET proof_json=?, proof_sha256=? "
+                "WHERE attempt_id=?",
+                (bad_raw, bad_sha, companion_probe_id),
+            )
+        with self.assertRaisesRegex(
+            recovery_module.AuthorityBlocked,
+            "Retained reconciliation attempt identity differs",
+        ):
+            TransferAuthority.inspect_retained_account(
+                self.db, writer_id=self.writer_id, account_id=ACCOUNT,
+                clock=self.clock,
+            )
+        with closing(sqlite3.connect(self.db)) as db, db:
+            db.execute(
+                "UPDATE retained_reconciliation SET proof_json=?, proof_sha256=? "
+                "WHERE attempt_id=?",
+                (orig_row[0], orig_row[1], companion_probe_id),
+            )
+
+    def test_adopted_legacy_budget_payload_tail_lease_upgrades_budget_for_full_payload_restart(self) -> None:
+        prefix_len = 7
+        tail_bytes = PAYLOAD_BYTES[prefix_len:]
+        payload_target_sha = hashlib.sha256(self.payload_session.encode()).hexdigest()
+        tail_range = f"bytes {prefix_len}-{len(PAYLOAD_BYTES)-1}/{len(PAYLOAD_BYTES)}"
+        tail_op_key = hashlib.sha256("\0".join((
+            "PUT", "media_chunk", payload_target_sha, tail_range,
+            hashlib.sha256(tail_bytes).hexdigest(),
+        )).encode()).hexdigest()
+        with closing(sqlite3.connect(self.db)) as db, db:
+            db.execute(
+                "UPDATE retained_attempt SET bytes=?,http_status=308,status='settled' "
+                "WHERE id=?",
+                (prefix_len, self.payload_attempt),
+            )
+            db.execute(
+                "UPDATE retained_attempt SET bytes=?,target_sha256=?,operation_key=?,"
+                "http_status=500,status='unresolved' WHERE id=?",
+                (len(tail_bytes), payload_target_sha, tail_op_key, self.receipt_attempt),
+            )
+            db.execute(
+                "UPDATE retained_run SET reserved_remaining=budget_bytes-? WHERE id=?",
+                (prefix_len + len(tail_bytes), RELEASE),
+            )
+        evidence = {
+            **self._recovery_evidence(),
+            "session_sha256": payload_target_sha,
+            "permitted_branch": "payload_tail_and_receipt_auto",
+            "payload_name": NAME,
+            "payload_stage_path": str(self.payload_path),
+            "payload_sha256": self.manifest["payload"]["sha256"],
+        }
+        first = self._open_recovery(
+            session_url=self.payload_session,
+            evidence=evidence,
+        )
+        probe_range = f"bytes */{len(PAYLOAD_BYTES)}"
+        first.prepare_request(
+            self.payload_session, "PUT", "resumable_status",
+            b"", {"Content-Range": probe_range},
+        )
+        probe_key = recovery_module._operation_key(
+            "PUT", "resumable_status", payload_target_sha,
+            probe_range, b"",
+        )
+        attempt_id, slot = first.start_request(
+            0, 60, "resumable_status", method="PUT",
+            target_category="resumable_status",
+            target_sha256=payload_target_sha, operation_key=probe_key,
+        )
+        self._dispatch_probe(first, attempt_id, slot)
+        legacy_budget = len(tail_bytes) + len(self.receipt_bytes) + (1 << 20)
+        first.db.execute(
+            "UPDATE retained_receipt_recovery SET budget_bytes=?,reserved_remaining=? "
+            "WHERE id=?",
+            (legacy_budget, legacy_budget, first.release_id),
+        )
+        first.db.execute(
+            "UPDATE retained_receipt_recovery_attempt SET status='unresolved',"
+            "http_status=410,charge_through=MAX(charge_through,?) WHERE id=?",
+            (self.clock(), attempt_id),
+        )
+        first.db.commit()
+        first.close()
+
+        self.clock.advance(5)
+        self.mono.advance(5)
+        adopted = self._open_recovery(
+            recovery_id="e" * 32,
+            session_url=self.payload_session,
+            evidence={
+                **evidence,
+                "observed_at": self.clock(),
+                "exclusion_valid_until": self.clock() + 600,
+            },
+        )
+        self.addCleanup(adopted.close)
+        expected_upgraded_budget = len(PAYLOAD_BYTES) + len(self.receipt_bytes) + (2 << 20)
+        row = adopted.db.execute(
+            "SELECT budget_bytes, reserved_remaining FROM retained_receipt_recovery WHERE id=?",
+            (adopted.release_id,),
+        ).fetchone()
+        self.assertEqual(
+            (row["budget_bytes"], row["reserved_remaining"]),
+            (expected_upgraded_budget, expected_upgraded_budget),
+        )
 
 
 if __name__ == "__main__":

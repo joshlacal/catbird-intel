@@ -293,6 +293,19 @@ class RecoveryAuthority:
                     evidence["receipt_name"] or
                 len(open_recoveries) > 1):
                 raise AuthorityBlocked("Only the exact unresolved receipt may enter recovery")
+            rolling = db.execute(
+                "SELECT COALESCE(SUM(bytes),0) FROM retained_attempt "
+                "WHERE status='unresolved' OR charge_through>?",
+                (now - WINDOW_SECONDS,),
+            ).fetchone()[0]
+            rolling += db.execute(
+                "SELECT COALESCE(SUM(bytes),0) FROM retained_import "
+                "WHERE charge_through>?", (now - WINDOW_SECONDS,),
+            ).fetchone()[0]
+            rolling += db.execute(
+                "SELECT COALESCE(SUM(reserved_remaining),0) FROM retained_run "
+                "WHERE status IN ('active','verified')",
+            ).fetchone()[0]
             if len(open_recoveries) == 1:
                 existing = open_recoveries[0]
                 prior_attempts = db.execute(
@@ -330,6 +343,8 @@ class RecoveryAuthority:
                     prior_attempts[0]["dispatched_at"] is None or
                     prior_attempts[0]["http_status"] not in (404, 410)):
                     raise AuthorityBlocked("Existing receipt recovery lease cannot be adopted")
+                if rolling + budget > GLOBAL_ROLLING_CAP_BYTES:
+                    raise AuthorityBlocked("Recovery reservation exceeds account upload cap")
                 authority.release_id = existing["id"]
                 probe_record = {
                     "state": "expired", "acknowledged": 0,
@@ -347,29 +362,17 @@ class RecoveryAuthority:
                     )
                 db.execute(
                     "UPDATE retained_receipt_recovery SET "
-                    "started_at=MIN(started_at,?),deadline_at=?,evidence_json=?,"
+                    "started_at=MIN(started_at,?),deadline_at=?,budget_bytes=?,"
+                    "reserved_remaining=?,evidence_json=?,"
                     "process_host=?,process_pid=?,process_nonce=?,"
                     "probe_json=?,probe_sha256=? WHERE id=?", (
                         now, min(existing["started_at"] + MAX_RECOVERY_SECONDS, deadline),
-                        _canonical(evidence), authority.process_host,
+                        budget, budget, _canonical(evidence), authority.process_host,
                         authority.process_pid, authority.process_nonce,
                         probe_raw, probe_digest, existing["id"],
                     ),
                 )
             else:
-                rolling = db.execute(
-                    "SELECT COALESCE(SUM(bytes),0) FROM retained_attempt "
-                    "WHERE status='unresolved' OR charge_through>?",
-                    (now - WINDOW_SECONDS,),
-                ).fetchone()[0]
-                rolling += db.execute(
-                    "SELECT COALESCE(SUM(bytes),0) FROM retained_import "
-                    "WHERE charge_through>?", (now - WINDOW_SECONDS,),
-                ).fetchone()[0]
-                rolling += db.execute(
-                    "SELECT COALESCE(SUM(reserved_remaining),0) FROM retained_run "
-                    "WHERE status IN ('active','verified')",
-                ).fetchone()[0]
                 if rolling + budget > GLOBAL_ROLLING_CAP_BYTES:
                     raise AuthorityBlocked("Recovery reservation exceeds account upload cap")
                 db.execute("INSERT INTO retained_receipt_recovery "

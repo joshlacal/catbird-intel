@@ -744,13 +744,41 @@ class RetainedObservationAuthority:
             is_payload_tail = (
                 proof.get("permitted_branch") == "payload_tail_and_receipt_auto"
             )
+            parent_id = proof.get("parent_attempt_id")
+            parent = (
+                self.db.execute(
+                    "SELECT * FROM retained_attempt WHERE id=?",
+                    (parent_id,),
+                ).fetchone()
+                if isinstance(parent_id, str) and parent_id != attempt["id"]
+                else None
+            )
+            parent_reconciled = (
+                self.db.execute(
+                    "SELECT 1 FROM retained_reconciliation WHERE attempt_id=?",
+                    (parent_id,),
+                ).fetchone()
+                is not None
+                if parent is not None
+                else False
+            )
             is_companion_status_probe = (
                 attempt["kind"] == "resumable_status" and
                 attempt["target_category"] == "resumable_status" and
                 attempt["bytes"] == 0 and
                 attempt["http_status"] in (404, 410, 500, 502, 503, 504) and
-                isinstance(proof.get("parent_attempt_id"), str) and
-                bool(proof["parent_attempt_id"]) and
+                parent is not None and
+                parent_reconciled and
+                parent["run_id"] == run["id"] and
+                parent["status"] == "unresolved" and
+                parent["http_status"] == 500 and
+                parent["kind"] == "media_chunk" and
+                parent["target_category"] == "media_chunk" and
+                parent["method"] == "PUT" and
+                parent["target_sha256"] == attempt["target_sha256"] and
+                parent["dispatched_at"] is not None and
+                attempt["dispatched_at"] is not None and
+                attempt["dispatched_at"] >= parent["dispatched_at"] and
                 proof.get("original_http_status") == attempt["http_status"] and
                 proof.get("original_charge_bytes") == 0 and
                 (proof.get("payload_session_sha256") == attempt["target_sha256"]
@@ -1084,12 +1112,22 @@ class RetainedObservationAuthority:
             key=lambda a: (a["dispatched_at"], a["dispatch_monotonic"]),
         )
         for a, b in zip(dispatched, dispatched[1:]):
-            owner_a = a["run_id"] if "run_id" in a.keys() else a["recovery_id"]
-            owner_b = b["run_id"] if "run_id" in b.keys() else b["recovery_id"]
-            if owner_a == owner_b or b["dispatch_monotonic"] >= a["dispatch_monotonic"]:
-                if b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9:
-                    raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
-            elif b["dispatched_at"] - a["dispatched_at"] < PACING_SECONDS - 1e-9:
+            owner_a = (
+                ("run", a["run_id"])
+                if "run_id" in a.keys()
+                else ("recovery", a["recovery_id"])
+            )
+            owner_b = (
+                ("run", b["run_id"])
+                if "run_id" in b.keys()
+                else ("recovery", b["recovery_id"])
+            )
+            if b["dispatched_at"] - a["dispatched_at"] < PACING_SECONDS - 1e-6:
+                raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+            if (
+                owner_a == owner_b and
+                b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9
+            ):
                 raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
 
     @staticmethod

@@ -239,6 +239,61 @@ class TransferAuthority:
         self.process_nonce = _PROCESS_NONCE
 
     @classmethod
+    def initialize_retained_observation(
+        cls, db_path: Path, *, writer_id: str, account_id: str,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        """Create a separate, opt-in durable ledger for reviewed retained pairs."""
+        from retained_transfer_authority import RetainedObservationAuthority
+        RetainedObservationAuthority.initialize(
+            db_path, writer_id=writer_id, account_id=account_id, clock=clock)
+
+    @classmethod
+    def import_retained_legacy_diagnostic(
+        cls, db_path: Path, *, result_bytes: bytes, writer_id: str,
+        account_id: str, clock: Callable[[], float] = time.time,
+    ) -> None:
+        """Import the exact reviewed segment-3677 result into the retained ledger."""
+        from retained_transfer_authority import RetainedObservationAuthority
+        RetainedObservationAuthority.import_legacy_result(
+            db_path, result_bytes=result_bytes, writer_id=writer_id,
+            account_id=account_id, clock=clock)
+
+    @classmethod
+    def list_retained_pairs(cls, db_path: Path, *, writer_id: str,
+                            account_id: str) -> tuple[dict, ...]:
+        from retained_transfer_authority import RetainedObservationAuthority
+        return RetainedObservationAuthority.list_pairs(
+            db_path, writer_id=writer_id, account_id=account_id)
+
+    @classmethod
+    def inspect_retained_pair(
+        cls, db_path: Path, *, writer_id: str, account_id: str,
+        run_id: str, pair_key: str, manifest_sha256: str,
+    ) -> dict:
+        from retained_transfer_authority import RetainedObservationAuthority
+        return RetainedObservationAuthority.inspect_pair(
+            db_path, writer_id=writer_id, account_id=account_id, run_id=run_id,
+            pair_key=pair_key, manifest_sha256=manifest_sha256)
+
+    @classmethod
+    def open_retained_run(
+        cls, db_path: Path, *, run_id: str, writer_id: str, account_id: str,
+        manifest_bytes: bytes, evidence: dict, deadline_at: float,
+        clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] = time.monotonic,
+        boot_id: str | None = None, recovery_only: bool = False,
+    ):
+        """Begin one reviewed pair, or recover only its pending index commit."""
+        from retained_transfer_authority import RetainedObservationAuthority
+        return RetainedObservationAuthority.open_run(
+            db_path, run_id=run_id, writer_id=writer_id, account_id=account_id,
+            manifest_bytes=manifest_bytes, evidence=evidence, deadline_at=deadline_at,
+            clock=clock, monotonic_clock=monotonic_clock, boot_id=boot_id,
+            recovery_only=recovery_only,
+        )
+
+    @classmethod
     def initialize_release(
         cls, db_path: Path, *, release_id: str, writer_id: str, account_id: str,
         manifest_sha256: str, evidence: dict, prior_charges: Iterable[dict],

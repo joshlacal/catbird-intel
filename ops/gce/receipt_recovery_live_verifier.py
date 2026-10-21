@@ -31,7 +31,7 @@ from gcs_drive_drain import Conflict
 
 
 PACE_SECONDS = 0.60
-MAX_SESSION_SECONDS = 240
+MAX_SESSION_SECONDS = 600
 MAX_STREAM_SECONDS = 90
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_PAYLOAD_BYTES = 320 << 20
@@ -420,6 +420,29 @@ class ReceiptRecoveryLiveVerifier:
                 or value.get("trashed") is not False):
             raise Conflict("Recovery Drive folder metadata differs")
         self._folder_ok = True
+
+    def verify_exact_payload_absent(self, account_id, root_id, folder_id, payload_id):
+        if (account_id != self.account or root_id != self.root
+                or folder_id != self.ids["folder"] or payload_id != self.ids["payload"]):
+            raise Conflict("Recovery absence proof IDs differ")
+        if not self._account_ok:
+            self.verify_account(account_id)
+        if not self._folder_ok:
+            self.verify_folder(folder_id, self.folder_name, root_id)
+        with self._get("drive", self._drive_url(payload_id), allow_absent=True) as response:
+            if response.status_code == 404:
+                return {"account_id": account_id, "root_id": root_id, "folder_id": folder_id,
+                        "payload_id": payload_id, "http_status": 404, "observed_at": self.clock()}
+            meta = _json(self._body(response, MAX_JSON_BYTES, self.mono_deadline))
+        wanted = self.manifest["payload"]
+        if (meta.get("id") != payload_id or meta.get("name") != self.names["payload"]
+                or meta.get("parents") != [self.ids["folder"]]
+                or meta.get("trashed") is not False
+                or meta.get("mimeType") != "application/octet-stream"
+                or str(meta.get("size")) != str(wanted["bytes"])
+                or meta.get("md5Checksum") != self.digests["payload"]["md5"]):
+            raise Conflict("Recovery exact Drive payload metadata differs")
+        return None
 
     def verify_exact_receipt_absent(self, account_id, root_id, folder_id, receipt_id):
         if (account_id != self.account or root_id != self.root

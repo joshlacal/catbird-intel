@@ -872,7 +872,59 @@ class RetainedAuthorityTests(unittest.TestCase):
         self.finish_index(authority, manifest, digest)
         self.open_run(2)
 
+    def test_zero_byte_resumable_status_404_and_410_settle_in_finish_request(self):
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+        for code in (404, 410):
+            probe, _ = self.request(authority, 0, "resumable_status")
+            authority.mark_dispatch(probe)
+            authority.finish_request(probe, code)
+            self.assertEqual(authority.snapshot()["unresolved_attempts"], 0)
+            self.clock.advance(0.55)
+            self.monotonic.advance(0.55)
+        media, _ = self.request(authority, manifest["payload"]["bytes"], "media_chunk")
+        authority.mark_dispatch(media)
+        authority.finish_request(media, 410)
+        self.assertEqual(authority.snapshot()["unresolved_attempts"], 1)
+
+    def test_controlled_reboot_monotonic_reset_does_not_collide_with_prior_boot_uptime(self):
+        self.monotonic.value = 2500.0
+        first, manifest_1, digest_1 = self.open_run(1, boot_id="boot-1")
+        self.reserve(first, manifest_1, digest_1)
+        a1, _ = self.request(first, manifest_1["payload"]["bytes"], "media_chunk")
+        first.mark_dispatch(a1)
+        first.finish_request(a1, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        a2, _ = self.request(first, manifest_1["receipt"]["bytes"], "media_chunk")
+        first.mark_dispatch(a2)
+        first.finish_request(a2, 200)
+        self.finish_index(first, manifest_1, digest_1)
+
+        with sqlite3.connect(self.db_path) as db:
+            db.execute(
+                "UPDATE retained_account SET boot_id='boot-2', process_host=NULL, "
+                "process_pid=NULL, process_nonce=NULL, last_dispatch_wall=NULL, "
+                "last_dispatch_monotonic=NULL WHERE id=1"
+            )
+        self.clock.advance(60.0)
+        self.monotonic.value = 2500.0  # Exact same uptime as boot-1's first dispatch
+        second, manifest_2, digest_2 = self.open_run(2, boot_id="boot-2")
+        self.reserve(second, manifest_2, digest_2)
+        b1, _ = self.request(second, manifest_2["payload"]["bytes"], "media_chunk")
+        second.mark_dispatch(b1)
+        second.finish_request(b1, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        b2, _ = self.request(second, manifest_2["receipt"]["bytes"], "media_chunk")
+        second.mark_dispatch(b2)
+        second.finish_request(b2, 200)
+        self.finish_index(second, manifest_2, digest_2)
+        self.open_run(3, boot_id="boot-2")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 

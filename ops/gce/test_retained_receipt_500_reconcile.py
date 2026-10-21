@@ -53,6 +53,7 @@ class ReadOnlyVerifier:
         self.receipt_id = "synthetic-receipt-id"
         self.calls: list[tuple] = []
         self.present = True
+        self.payload_present = True
 
     def verify_account(self, account_id: str) -> None:
         self.calls.append(("account", account_id))
@@ -65,6 +66,17 @@ class ReadOnlyVerifier:
                 name != "catbird-overflow-" + pair_key(self.manifest)[:32] or
                 root_id != DRIVE_ROOT):
             raise Conflict("Synthetic folder differs")
+
+    def verify_exact_payload_absent(self, **pins) -> dict | None:
+        self.calls.append(("exact_payload_absence", pins.get("payload_id")))
+        expected = {"account_id": self.account, "root_id": DRIVE_ROOT,
+                    "folder_id": self.folder_id,
+                    "payload_id": self.payload_id}
+        if pins != expected:
+            raise Conflict("Synthetic payload absence pins differ")
+        if self.payload_present:
+            return None
+        return {**expected, "http_status": 404, "observed_at": self.clock()}
 
     def verify_exact_receipt_absent(self, **pins) -> dict:
         self.calls.append(("exact_absence", pins.get("receipt_id")))
@@ -92,6 +104,8 @@ class ReadOnlyVerifier:
 
     def drive_digest(self, file_id: str) -> dict:
         self.calls.append(("drive", file_id))
+        if file_id == self.payload_id and not self.payload_present:
+            raise Conflict("Synthetic Drive payload media is absent")
         if not self.present:
             raise Conflict("Synthetic Drive media is absent")
         data = {self.payload_id: self.payload_bytes,
@@ -1052,6 +1066,183 @@ class Receipt500ReconciliationTests(unittest.TestCase):
                 ("resumable_start", sends[0][1]),
                 ("media_chunk", len(self.receipt_bytes)),
             ],
+        )
+
+    def test_payload_tail_500_expired_session_absent_payload_restarts_both_and_reconciles_companion_410_probe(self) -> None:
+        import fcntl
+        import os
+        from gcs_drive_retained_receipt_recovery import finalize_reconciled_journal
+
+        prefix_len = 7
+        tail_bytes = PAYLOAD_BYTES[prefix_len:]
+        payload_target_sha = hashlib.sha256(self.payload_session.encode()).hexdigest()
+        tail_range = f"bytes {prefix_len}-{len(PAYLOAD_BYTES)-1}/{len(PAYLOAD_BYTES)}"
+        tail_op_key = hashlib.sha256("\0".join((
+            "PUT", "media_chunk", payload_target_sha, tail_range,
+            hashlib.sha256(tail_bytes).hexdigest(),
+        )).encode()).hexdigest()
+        probe_range = f"bytes */{len(PAYLOAD_BYTES)}"
+        probe_op_key = hashlib.sha256("\0".join((
+            "PUT", "resumable_status", payload_target_sha, probe_range,
+            hashlib.sha256(b"").hexdigest(),
+        )).encode()).hexdigest()
+        companion_probe_id = "12484a31f4df470883b846a6d7e484ec"
+        self.clock.advance(0.56)
+        self.mono.advance(0.56)
+        now = self.clock()
+        with closing(sqlite3.connect(self.db)) as db, db:
+            db.execute(
+                "UPDATE retained_attempt SET bytes=?,http_status=308,status='settled' "
+                "WHERE id=?",
+                (prefix_len, self.payload_attempt),
+            )
+            db.execute(
+                "UPDATE retained_attempt SET bytes=?,target_sha256=?,operation_key=?,"
+                "http_status=500,status='unresolved' WHERE id=?",
+                (len(tail_bytes), payload_target_sha, tail_op_key, self.receipt_attempt),
+            )
+            db.execute(
+                "INSERT INTO retained_attempt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    companion_probe_id, RELEASE, now, now, now + 60,
+                    60.0, now, self.mono(), 0, "resumable_status", "PUT",
+                    "resumable_status", payload_target_sha, probe_op_key,
+                    "unresolved", 410,
+                ),
+            )
+            db.execute(
+                "UPDATE retained_run SET reserved_remaining=budget_bytes-? WHERE id=?",
+                (prefix_len + len(tail_bytes), RELEASE),
+            )
+            db.execute(
+                "UPDATE retained_account SET last_clock=?,next_slot=?,"
+                "last_dispatch_wall=?,last_dispatch_monotonic=? WHERE id=1",
+                (now, now + 0.55, now, self.mono()),
+            )
+        self.clock.advance(1.0)
+        self.mono.advance(1.0)
+        doc = json.loads(self.journal.read_text())
+        doc["segments"][self.pair]["drive"]["receipt"] = {"id": self.verifier.receipt_id}
+        self.journal.write_text(json.dumps(doc, sort_keys=True))
+        os.chmod(self.journal, 0o600)
+        os.chmod(self.work / "overflow.lock", 0o600)
+
+        evidence = {
+            **self._recovery_evidence(),
+            "session_sha256": payload_target_sha,
+            "permitted_branch": "payload_tail_and_receipt_auto",
+            "payload_name": NAME,
+            "payload_stage_path": str(self.payload_path),
+            "payload_sha256": self.manifest["payload"]["sha256"],
+        }
+        recovery = self._open_recovery(
+            session_url=self.payload_session,
+            evidence=evidence,
+        )
+        self.addCleanup(recovery.close)
+        self.verifier.payload_present = False
+        self.verifier.present = False
+        new_payload_session = (
+            "https://www.googleapis.com/upload/drive/v3/files"
+            "?uploadType=resumable&upload_id=restarted-payload-after-410"
+        )
+        new_receipt_session = (
+            "https://www.googleapis.com/upload/drive/v3/files"
+            "?uploadType=resumable&upload_id=restarted-receipt-after-payload-410"
+        )
+        sends: list[tuple[str, int, str]] = []
+
+        def safe_request(url, method="GET", data=None, headers=None, *,
+                         timeout=60, kind="drive_api"):
+            body = data or b""
+            content_range = next((value for key, value in (headers or {}).items()
+                                  if key.lower() == "content-range"), "")
+            target_sha = hashlib.sha256(url.encode()).hexdigest()
+            key = recovery_module._operation_key(method, kind, target_sha,
+                                                 content_range, body)
+            r_id, r_slot = recovery.start_request(
+                len(body), timeout, kind, method=method,
+                target_category=kind, target_sha256=target_sha,
+                operation_key=key,
+            )
+            self._dispatch_probe(recovery, r_id, r_slot)
+            sends.append((kind, len(body), url))
+            if kind == "resumable_status":
+                recovery.finish_request(r_id, 410)
+                raise urllib.error.HTTPError(
+                    url, 410, "Gone", {}, io.BytesIO(),
+                )
+            if kind == "resumable_start":
+                req_doc = json.loads(body)
+                recovery.finish_request(r_id, 200)
+                if req_doc["id"] == self.verifier.payload_id:
+                    return FakeRecoveryResponse(
+                        url, 200, headers={"Location": new_payload_session},
+                    )
+                if req_doc["id"] == self.verifier.receipt_id:
+                    return FakeRecoveryResponse(
+                        url, 200, headers={"Location": new_receipt_session},
+                    )
+                self.fail(f"Unexpected start id: {req_doc}")
+            if kind == "media_chunk" and url == new_payload_session:
+                self.assertEqual(body, PAYLOAD_BYTES)
+                recovery.finish_request(r_id, 200)
+                self.verifier.payload_present = True
+                return FakeRecoveryResponse(
+                    url, 200,
+                    body=json.dumps({"id": self.verifier.payload_id}).encode(),
+                )
+            if kind == "media_chunk" and url == new_receipt_session:
+                self.assertEqual(body, self.receipt_bytes)
+                recovery.finish_request(r_id, 200)
+                self.verifier.present = True
+                return FakeRecoveryResponse(
+                    url, 200,
+                    body=json.dumps({"id": self.verifier.receipt_id}).encode(),
+                )
+            self.fail(f"Unexpected recovery request: {kind} {url}")
+
+        controller = ReceiptRecoveryController(
+            manifest_raw=self.manifest_raw,
+            journal_raw=self.journal.read_bytes(),
+            original_run_id=RELEASE, original_attempt_id=self.receipt_attempt,
+            account_id=ACCOUNT, writer_id=self.writer_id, work_dir=self.work,
+            authority=recovery, drive_request=safe_request,
+            verifier=self.verifier, clock=self.clock,
+        )
+        result = controller.run_authorized(operator_reference="synthetic-owner")
+        self.assertEqual(result["state"], "forensically_verified")
+        self.assertEqual(
+            [(s[0], s[1]) for s in sends],
+            [
+                ("resumable_status", 0),
+                ("resumable_start", sends[1][1]),
+                ("media_chunk", len(PAYLOAD_BYTES)),
+                ("resumable_start", sends[3][1]),
+                ("media_chunk", len(self.receipt_bytes)),
+            ],
+        )
+        lock_fd = os.open(self.work / "overflow.lock", os.O_RDONLY)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            repaired = finalize_reconciled_journal(controller, held_lock_fd=lock_fd)
+        finally:
+            os.close(lock_fd)
+        self.assertEqual(repaired["state"], "drive_verified_no_send")
+        state = TransferAuthority.inspect_retained_account(
+            self.db, writer_id=self.writer_id, account_id=ACCOUNT,
+            clock=self.clock,
+        )
+        self.assertEqual(state["unresolved_attempts"], 0)
+        with closing(sqlite3.connect(self.db)) as db, db:
+            reconciled_ids = {
+                row[0] for row in db.execute(
+                    "SELECT attempt_id FROM retained_reconciliation"
+                ).fetchall()
+            }
+        self.assertEqual(
+            reconciled_ids,
+            {self.receipt_attempt, companion_probe_id},
         )
 
 

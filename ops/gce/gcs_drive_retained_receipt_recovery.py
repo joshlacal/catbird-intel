@@ -184,6 +184,7 @@ class ReceiptRecoveryController:
         self.folder_id, self.payload_id, self.receipt_id = ids
         self.session, self.session_sha = original_session, session_sha
         self.payload_path, self.receipt_path = stage / payload_name, stage / receipt_name
+        self.payload_name = payload_name
         self.receipt_name = receipt_name
         self.authority, self.verifier, self.clock = authority, verifier, clock
 
@@ -429,7 +430,49 @@ class ReceiptRecoveryController:
                 if payload_res["state"] != "complete":
                     return {"state": "payload_recovery_partial_stopped",
                             "acknowledged": payload_res.get("acknowledged")}
-            elif state not in ("complete", "expired"):
+            elif state == "expired":
+                payload_absent = self.verifier.verify_exact_payload_absent(
+                    account_id=self.account_id,
+                    root_id=self.manifest["drive_root"],
+                    folder_id=self.folder_id,
+                    payload_id=self.payload_id,
+                )
+                if payload_absent is not None:
+                    if (not isinstance(payload_absent, dict) or
+                            payload_absent.get("account_id") != self.account_id or
+                            payload_absent.get("root_id") != self.manifest["drive_root"] or
+                            payload_absent.get("folder_id") != self.folder_id or
+                            payload_absent.get("payload_id") != self.payload_id or
+                            payload_absent.get("http_status") != 404 or
+                            type(payload_absent.get("observed_at")) not in (int, float) or
+                            not payload_absent["observed_at"] <= self.clock() <=
+                                payload_absent["observed_at"] + MAX_PROBE_AGE_SECONDS):
+                        raise AuthorityBlocked("Fresh exact-ID payload absence is unproven")
+                    self.authority.record_id_absence({
+                        "payload_id": self.payload_id,
+                        "folder_id": self.folder_id,
+                        "account_id": self.account_id,
+                        "http_status": 404,
+                        "observed_at": payload_absent["observed_at"],
+                        "operator_reference": operator_reference,
+                    })
+                    payload_session = self.transport.restart_same_id(
+                        self.payload_id, self.folder_id, self.payload_name,
+                        self.manifest["payload"]["bytes"],
+                        max_bytes=MAX_LOCAL_PAYLOAD_BYTES)
+                    payload_session_sha = self.authority.record_new_session(
+                        payload_session)
+                    payload_res = self.transport.resume(
+                        payload_session, self.payload_path, 0,
+                        self.manifest["payload"]["bytes"], self.payload_id,
+                        self.manifest["payload"]["sha256"],
+                        self.entry["payload_digest"]["md5"],
+                        payload_session_sha,
+                        max_bytes=MAX_LOCAL_PAYLOAD_BYTES)
+                    if payload_res["state"] != "complete":
+                        return {"state": "payload_recovery_partial_stopped",
+                                "acknowledged": payload_res.get("acknowledged")}
+            elif state != "complete":
                 raise AuthorityBlocked("Payload probe result is not a reviewed branch")
             self.verifier.verify_account(self.account_id)
             self.verifier.verify_folder(self.folder_id,

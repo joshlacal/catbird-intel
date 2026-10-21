@@ -512,6 +512,27 @@ class RecoveryVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(live.Conflict, "closed"):
             self.verifier.verify_account(self.manifest["account_id"])
 
+    def test_verify_exact_payload_absent_returns_none_when_present_and_dict_when_404(self):
+        self.identity()
+        present = self.verifier.verify_exact_payload_absent(
+            self.manifest["account_id"], self.manifest["drive_root"],
+            self.ids["folder"], self.ids["payload"])
+        self.assertIsNone(present)
+        self.http.routes[HTTP.key(self._drive(self.ids["payload"]))] = lambda: Response(status=404)
+        absent = self.verifier.verify_exact_payload_absent(
+            self.manifest["account_id"], self.manifest["drive_root"],
+            self.ids["folder"], self.ids["payload"])
+        self.assertEqual(absent["http_status"], 404)
+        self.assertEqual(absent["payload_id"], self.ids["payload"])
+        bad_meta = self._drive_meta("payload")
+        bad_meta["size"] = "1"
+        self._json_route(self.http, self._drive(self.ids["payload"]), bad_meta)
+        with self.assertRaisesRegex(live.Conflict, "payload metadata"):
+            self.verifier.verify_exact_payload_absent(
+                self.manifest["account_id"], self.manifest["drive_root"],
+                self.ids["folder"], self.ids["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

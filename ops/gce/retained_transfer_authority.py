@@ -744,22 +744,38 @@ class RetainedObservationAuthority:
             is_payload_tail = (
                 proof.get("permitted_branch") == "payload_tail_and_receipt_auto"
             )
+            is_companion_status_probe = (
+                attempt["kind"] == "resumable_status" and
+                attempt["target_category"] == "resumable_status" and
+                attempt["bytes"] == 0 and
+                attempt["http_status"] in (404, 410, 500, 502, 503, 504) and
+                isinstance(proof.get("parent_attempt_id"), str) and
+                bool(proof["parent_attempt_id"]) and
+                proof.get("original_http_status") == attempt["http_status"] and
+                proof.get("original_charge_bytes") == 0 and
+                (proof.get("payload_session_sha256") == attempt["target_sha256"]
+                 if is_payload_tail else True)
+            )
             expected_bytes_ok = (
                 (0 < attempt["bytes"] <= min(8 << 20, payload["bytes"]) and
                  proof.get("payload_session_sha256") == attempt["target_sha256"])
                 if is_payload_tail else attempt["bytes"] == receipt["bytes"]
             )
+            primary_media_ok = (
+                attempt["http_status"] == 500 and
+                attempt["kind"] == "media_chunk" and
+                attempt["target_category"] == "media_chunk" and
+                expected_bytes_ok and
+                proof.get("original_http_status") == 500 and
+                proof.get("original_charge_bytes") == attempt["bytes"]
+            )
             if (attempt["run_id"] != run["id"] or run["pair_key"] != key or
                 row["pair_key"] != key or attempt["status"] != "unresolved" or
-                attempt["http_status"] != 500 or attempt["kind"] != "media_chunk" or
-                attempt["target_category"] != "media_chunk" or
                 attempt["method"] != "PUT" or attempt["dispatched_at"] is None or
-                not expected_bytes_ok or
+                not (primary_media_ok or is_companion_status_probe) or
                 proof.get("manifest_sha256") != digest or
                 proof.get("account_id") != self.account_id or
                 proof.get("writer_id") != self.writer_id or
-                proof.get("original_http_status") != 500 or
-                proof.get("original_charge_bytes") != attempt["bytes"] or
                 proof.get("target_sha256") != attempt["target_sha256"] or
                 proof.get("operation_key") != attempt["operation_key"] or
                 proof.get("receipt_ref") != receipt or
@@ -868,9 +884,12 @@ class RetainedObservationAuthority:
                 isinstance(evidence, dict) and
                 evidence.get("permitted_branch") == "payload_tail_and_receipt_auto"
             )
-            expected_budget = (
-                attempt["bytes"] + receipt["bytes"] + (1 << 20)
-                if is_payload_tail else receipt["bytes"] + (1 << 20)
+            expected_budgets = (
+                {
+                    payload["bytes"] + receipt["bytes"] + (2 << 20),
+                    attempt["bytes"] + receipt["bytes"] + (1 << 20),
+                }
+                if is_payload_tail else {receipt["bytes"] + (1 << 20)}
             )
             attempt_bytes_ok = (
                 0 < attempt["bytes"] <= min(8 << 20, payload["bytes"])
@@ -896,7 +915,7 @@ class RetainedObservationAuthority:
                 not attempt_bytes_ok or
                 attempt["target_sha256"] != row["session_sha256"] or
                 row["manifest_sha256"] != digest or row["pair_key"] != key or
-                row["budget_bytes"] != expected_budget or
+                row["budget_bytes"] not in expected_budgets or
                 not 0 <= row["reserved_remaining"] <= row["budget_bytes"] or
                 not 0 < row["deadline_at"] - row["started_at"] <= 1200 or
                 row["status"] not in ("open", "closed", "blocked")):
@@ -1060,9 +1079,18 @@ class RetainedObservationAuthority:
             recovery_attempts = self.db.execute(
                 "SELECT * FROM retained_receipt_recovery_attempt").fetchall()
             all_attempts += recovery_attempts
-        actual = sorted(a["dispatch_monotonic"] for a in all_attempts if a["dispatch_monotonic"] is not None)
-        if any(b - a < PACING_SECONDS - 1e-9 for a, b in zip(actual, actual[1:])):
-            raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+        dispatched = sorted(
+            (a for a in all_attempts if a["dispatch_monotonic"] is not None),
+            key=lambda a: (a["dispatched_at"], a["dispatch_monotonic"]),
+        )
+        for a, b in zip(dispatched, dispatched[1:]):
+            owner_a = a["run_id"] if "run_id" in a.keys() else a["recovery_id"]
+            owner_b = b["run_id"] if "run_id" in b.keys() else b["recovery_id"]
+            if owner_a == owner_b or b["dispatch_monotonic"] >= a["dispatch_monotonic"]:
+                if b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9:
+                    raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+            elif b["dispatched_at"] - a["dispatched_at"] < PACING_SECONDS - 1e-9:
+                raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
 
     @staticmethod
     def _validate_attempt(attempt: sqlite3.Row, run: sqlite3.Row) -> int:
@@ -1095,7 +1123,13 @@ class RetainedObservationAuthority:
         if http is not None and (not isinstance(http, int) or not 100 <= http <= 599):
             raise AuthorityBlocked("Malformed retained HTTP status")
         settled = http == 308 or http is not None and 200 <= http < 300
-        if (attempt["status"] == "settled" and not settled or
+        legacy_or_settled_status_probe = (
+            attempt["kind"] == "resumable_status" and
+            amount == 0 and
+            http in (404, 410)
+        )
+        if not legacy_or_settled_status_probe and (
+            attempt["status"] == "settled" and not settled or
             attempt["status"] == "unresolved" and settled):
             raise AuthorityBlocked("Retained attempt settlement is inconsistent")
         return amount
@@ -1304,7 +1338,13 @@ class RetainedObservationAuthority:
                 raise AuthorityBlocked("Unknown retained request attempt")
             if attempt["status"] == "settled" and attempt["http_status"] != status_code:
                 raise AuthorityBlocked("Retained attempt result changed")
-            settled = status_code == 308 or status_code is not None and 200 <= status_code < 300
+            settled = (
+                status_code == 308 or
+                status_code is not None and 200 <= status_code < 300 or
+                attempt["kind"] == "resumable_status" and
+                attempt["bytes"] == 0 and
+                status_code in (404, 410)
+            )
             self.db.execute("UPDATE retained_attempt SET status=?,http_status=?,"
                             "charge_through=MAX(charge_through,?) WHERE id=?",
                             ("settled" if settled else "unresolved", status_code, now, attempt_id))

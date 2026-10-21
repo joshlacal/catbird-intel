@@ -127,6 +127,7 @@ class CrossPathPacedVerifier:
         return getattr(self.verifier,name)(*args,**kwargs)
     def verify_account(self,*args,**kwargs):return self._call('verify_account',*args,**kwargs)
     def verify_folder(self,*args,**kwargs):return self._call('verify_folder',*args,**kwargs)
+    def verify_exact_payload_absent(self,*args,**kwargs):return self._call('verify_exact_payload_absent',*args,**kwargs)
     def verify_exact_receipt_absent(self,*args,**kwargs):return self._call('verify_exact_receipt_absent',*args,**kwargs)
     def gcs_digest(self,*args,**kwargs):return self._call('gcs_digest',*args,**kwargs)
     def drive_digest(self,*args,**kwargs):return self._call('drive_digest',*args,**kwargs)

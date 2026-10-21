@@ -217,9 +217,10 @@ class ReceiptRecoveryTransport:
         data = _receipt_bytes(path, size, expected_sha256, expected_md5)[offset:]
         headers = {"Content-Length": str(len(data)),
                    "Content-Range": f"bytes {offset}-{size-1}/{size}"}
+        timeout = 180 if len(data) > MAX_RECEIPT_BYTES else REQUEST_TIMEOUT_SECONDS
         try:
             with self.request(session, "PUT", data, headers,
-                              timeout=REQUEST_TIMEOUT_SECONDS,
+                              timeout=timeout,
                               kind="media_chunk") as response:
                 if response.status not in (200, 201):
                     raise Conflict("Drive receipt continuation response is unexpected")
@@ -242,13 +243,17 @@ class ReceiptRecoveryTransport:
             raise Conflict("Drive receipt continuation transport is uncertain") from None
 
     def restart_same_id(self, pinned_id: str, parent_id: str,
-                        name: str, size: int) -> str:
+                        name: str, size: int, *,
+                        max_bytes: int = MAX_RECEIPT_BYTES) -> str:
         """Start one new session with the original pre-generated receipt ID."""
         pinned_id = _check_id(pinned_id, "ID")
         parent_id = _check_id(parent_id, "parent")
-        size = _check_size(size)
+        size = _check_size(size, max_bytes)
+        expected_suffix = (
+            ".jss" if max_bytes > MAX_RECEIPT_BYTES else ".receipt.json"
+        )
         if (not isinstance(name, str) or len(name.encode("utf-8")) > 255 or
-                not name.endswith(".receipt.json") or "/" in name or "\\" in name or
+                not name.endswith(expected_suffix) or "/" in name or "\\" in name or
                 any(ord(char) < 32 for char in name)):
             raise Conflict("Pinned receipt name is invalid")
         body = json.dumps({"id": pinned_id, "name": name,

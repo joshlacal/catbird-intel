@@ -4,6 +4,8 @@
 One sealed payload/receipt at a time, strict duplicate refusal, durable journal,
 generation-pinned reads/deletes. GCS release additionally needs the buffer's
 local-release marker. HTTP 403 exits 75 with a retry deadline; no retry loop.
+The CLI accepts only a pinned, metered, retain-GCS pilot; the historical timer
+arguments fail before any cloud or OAuth access.
 See docs/execution-plans/2026-10-20-gce-archive-buffer.md.
 """
 from __future__ import annotations
@@ -19,16 +21,32 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 
+from drive_transfer_authority import TransferAuthority
+
 GIB = 1 << 30
 RECEIPT_LIMIT = 1 << 20
+PILOT_PAYLOAD_LIMIT = 300 << 20
+PILOT_CHARGE_LIMIT = 320 << 20
+PILOT_DURATION_LIMIT = 20 * 60
 FIELDS = "id,name,size,md5Checksum,mimeType,parents,trashed"
 FOLDER = "application/vnd.google-apps.folder"
+_DRIVE_REQUEST_LOCK = threading.Lock()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is a separate Drive request and needs a separate ledger slot."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect())
 
 
 class Conflict(RuntimeError):
@@ -75,21 +93,126 @@ def matches_drive(info: dict, name: str, expected: dict, parent: str) -> bool:
             and parent in info.get("parents", []))
 
 
+def load_pilot_manifest(path: Path, *, bucket: str, source_id: str,
+                        source_epoch: str, drive_root: str, release_id: str) -> tuple[dict, str]:
+    """Freeze one exact source pair and an already existing Drive shard parent."""
+    raw = path.read_bytes()
+    manifest = json.loads(raw)
+    if not isinstance(manifest, dict) or manifest.get("schema") != "catbird.drive.pilot.v1":
+        raise Conflict("Unsupported pilot manifest")
+    for key, value in (("bucket", bucket), ("source_id", source_id),
+                       ("source_epoch", source_epoch), ("drive_root", drive_root),
+                       ("release_id", release_id)):
+        if manifest.get(key) != value:
+            raise Conflict("Pilot manifest mismatch: " + key)
+    if manifest.get("retain_gcs") is not True:
+        raise Conflict("Pilot must retain GCS and local artifacts")
+    if (type(manifest.get("max_duration_seconds")) is not int
+            or not 0 < manifest["max_duration_seconds"] <= PILOT_DURATION_LIMIT):
+        raise Conflict("Pilot duration exceeds 20 minutes")
+    if (type(manifest.get("max_charged_bytes")) is not int
+            or not 0 < manifest["max_charged_bytes"] <= PILOT_CHARGE_LIMIT):
+        raise Conflict("Pilot charged-byte cap exceeds 320 MiB")
+    control = manifest.get("control_allowance_bytes")
+    if type(control) is not int or not 0 < control <= RECEIPT_LIMIT:
+        raise Conflict("Pilot control allowance must be at most 1 MiB")
+    objects = []
+    for kind, limit in (("payload", PILOT_PAYLOAD_LIMIT), ("receipt", RECEIPT_LIMIT)):
+        item = manifest.get(kind)
+        if not isinstance(item, dict) or not isinstance(item.get("object"), str):
+            raise Conflict("Pilot " + kind + " identity is missing")
+        if (type(item.get("generation")) is not int or item["generation"] <= 0
+                or type(item.get("bytes")) is not int or not 0 < item["bytes"] <= limit
+                or not isinstance(item.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])):
+            raise Conflict("Pilot " + kind + " identity is invalid")
+        objects.append(item)
+    payload, receipt = objects
+    if receipt["object"] != payload["object"] + f".g{payload['generation']}.receipt.json":
+        raise Conflict("Pilot receipt does not name pinned payload generation")
+    if payload["bytes"] + receipt["bytes"] + control > manifest["max_charged_bytes"]:
+        raise Conflict("Pilot media and control allowance exceed charged-byte cap")
+    expected_prefix = f"sources/{source_id}/{source_epoch}/segments/"
+    if not payload["object"].startswith(expected_prefix):
+        raise Conflict("Pilot payload outside source namespace")
+    name = payload["object"].split("/")[-2]
+    if not re.fullmatch(r"seg_[0-9a-z]{10}\.jss", name):
+        raise Conflict("Pilot payload segment name is invalid")
+    index = int(name[4:-4], 36)
+    shard = f"{index//256:08x}"
+    if payload["object"] != expected_prefix + f"{shard}/{name}/{payload['sha256']}.jss":
+        raise Conflict("Pilot payload path is not content-addressed as expected")
+    parent = manifest.get("drive_parent")
+    if (not isinstance(parent, dict) or parent.get("shard") != shard
+            or not isinstance(parent.get("id"), str) or not parent["id"]):
+        raise Conflict("Pilot Drive shard parent is not pinned")
+    return manifest, hashlib.sha256(raw).hexdigest()
+
+
 class SafeDrive:
     """Reuse only legacy OAuth refresh; never legacy upload/duplicate behavior."""
-    def __init__(self, oauth: Path):
+    @staticmethod
+    def assert_complete_visibility():
+        # drive.file can omit preexisting files the app has not created/opened.
+        # No independently verifiable global listing proof is available yet.
+        raise Conflict("Drive file-list uniqueness is unproven under drive.file; independent visibility proof required")
+
+    def __init__(self, oauth: Path, authority: TransferAuthority):
+        if authority is None:
+            raise Conflict("Drive requests require a transfer authority")
+        self.authority = authority
         from gce_segment_offloader import DriveClient
         self.auth = DriveClient(oauth)
 
-    def request(self, url, method="GET", data=None, headers=None, timeout=60):
-        req = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": "Bearer " + self.auth.token(), **(headers or {})})
-        return urllib.request.urlopen(req, timeout=timeout)
+    def request(self, url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+        # The SQLite slot alone is insufficient if one thread is delayed after
+        # booking it. Serialize actual dispatch in this single writer too.
+        with _DRIVE_REQUEST_LOCK:
+            target = urllib.parse.urlsplit(url)
+            if target.scheme != "https" or target.netloc != "www.googleapis.com":
+                raise Conflict("Drive request target is not the approved Google API host")
+            target_sha256 = hashlib.sha256(url.encode()).hexdigest()
+            body_sha256 = hashlib.sha256(data or b"").hexdigest()
+            content_range = next((value for key, value in (headers or {}).items()
+                                  if key.lower() == "content-range"), "")
+            operation_key = hashlib.sha256("\0".join(
+                (method.upper(), kind, target_sha256, content_range, body_sha256)).encode()).hexdigest()
+            # No credential refresh or Drive request is allowed before validation.
+            self.authority.assert_active(timeout)
+            token = self.auth.token()
+            attempt_id, slot_epoch = self.authority.start_request(
+                len(data or b""), timeout, kind, method=method.upper(),
+                target_category=kind, target_sha256=target_sha256,
+                operation_key=operation_key)
+            delay = slot_epoch - self.authority.clock()
+            if delay > 0:
+                time.sleep(delay)
+            self.authority.assert_active(timeout, slot_at=slot_epoch)
+            req = urllib.request.Request(url, data=data, method=method, headers={
+                "Authorization": "Bearer " + token, **(headers or {})})
+            # Persist the real start time while holding the process dispatch lock.
+            # A delayed first request must not let the next one start in a burst.
+            self.authority.mark_dispatch(attempt_id)
+            try:
+                response = _NO_REDIRECT_OPENER.open(req, timeout=timeout)
+            except urllib.error.HTTPError as error:
+                self.authority.finish_request(attempt_id, error.code)
+                raise
+            # A timeout/transport failure leaves the precharged attempt unresolved.
+            self.authority.finish_request(attempt_id, response.status)
+            return response
 
     def json_request(self, url, method="GET", body=None):
         with self.request(url, method, None if body is None else json.dumps(body).encode(),
                           {"Content-Type": "application/json"}) as response:
             return json.load(response)
+
+    def verify_account(self, account_id: str):
+        # about.get is read-only and supports drive.file; failure is a hard gate.
+        about = self.json_request("https://www.googleapis.com/drive/v3/about?fields=user(permissionId)")
+        observed = about.get("user", {}).get("permissionId")
+        if not isinstance(observed, str) or not observed or observed != account_id:
+            raise Conflict("Drive OAuth account identity is unavailable or mismatched")
 
     def named(self, parent: str, name: str):
         escape = lambda s: s.replace("\\", "\\\\").replace("'", "\\'")
@@ -150,7 +273,7 @@ class SafeDrive:
             with self.request(url, "POST", json.dumps(metadata).encode(), {
                 "Content-Type": "application/json", "X-Upload-Content-Type": "application/octet-stream",
                 "X-Upload-Content-Length": str(expected["size"]),
-            }) as response:
+            }, kind="resumable_start") as response:
                 state["session"] = response.headers["Location"]
             save()
         session = state["session"]
@@ -159,7 +282,7 @@ class SafeDrive:
         # Query acknowledged offset on every invocation, including recovery after a lost response.
         offset = 0
         try:
-            with self.request(session, "PUT", b"", {"Content-Length": "0", "Content-Range": f"bytes */{expected['size']}"}) as response:
+            with self.request(session, "PUT", b"", {"Content-Length": "0", "Content-Range": f"bytes */{expected['size']}"}, kind="resumable_status") as response:
                 completed = json.load(response)
                 return self.metadata(completed["id"])
         except urllib.error.HTTPError as error:
@@ -184,7 +307,8 @@ class SafeDrive:
                 end = offset + len(chunk)
                 try:
                     with self.request(session, "PUT", chunk, {"Content-Length": str(len(chunk)),
-                        "Content-Range": f"bytes {offset}-{end-1}/{expected['size']}"}, timeout=300) as response:
+                        "Content-Range": f"bytes {offset}-{end-1}/{expected['size']}"}, timeout=300,
+                        kind="media_chunk") as response:
                         uploaded = json.load(response)
                         if end != expected["size"]:
                             raise Conflict("Drive completed before all bytes")
@@ -235,9 +359,13 @@ class GCS:
 
 class Drain:
     def __init__(self, cloud, drive, work: Path, root, source_id, source_epoch,
-                 max_segment_bytes=GIB, max_temp_bytes=2*GIB, min_free_bytes=GIB):
+                 max_segment_bytes=GIB, max_temp_bytes=2*GIB, min_free_bytes=GIB,
+                 pilot_manifest=None, manifest_sha256=None, authority=None):
         self.cloud, self.drive, self.work, self.root = cloud, drive, work, root
         self.source_id, self.source_epoch = source_id, source_epoch
+        self.pilot_manifest, self.manifest_sha256, self.authority = pilot_manifest, manifest_sha256, authority
+        if pilot_manifest is not None and (authority is None or not manifest_sha256):
+            raise Conflict("Pilot requires a pinned manifest and transfer authority")
         for component in (source_id, source_epoch):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", component):
                 raise Conflict("Invalid source namespace")
@@ -270,6 +398,8 @@ class Drain:
             if temporary.exists():
                 raise Conflict("Preserved partial download requires review: " + str(temporary))
             self.space(ref.size)
+            if self.pilot_manifest is not None:
+                self.authority.assert_active(300)
             self.cloud.download(ref, temporary)
             result = digest(temporary)
             if result["size"] != ref.size or result["sha256"] != expected_sha:
@@ -297,6 +427,8 @@ class Drain:
             raise Conflict("Receipt GCS identity mismatch")
         if (ref.metadata.get("payload_object") != expected_object or str(ref.metadata.get("payload_generation")) != str(generation)):
             raise Conflict("Receipt metadata pointer mismatch")
+        if self.pilot_manifest is not None:
+            self.authority.assert_active(60)
         payload = self.cloud.lookup(expected_object, generation)
         if payload is None or payload.size != receipt["bytes"] or payload.metadata.get("sha256") != sha:
             raise Conflict("Pinned payload missing or identity differs")
@@ -390,6 +522,8 @@ class Drain:
         return "complete"
 
     def one(self, ref):
+        if self.pilot_manifest is not None:
+            return self.pilot_one(ref)
         key = hashlib.sha256(f"{ref.name}:{ref.generation}".encode()).hexdigest()
         entry = self.state["segments"].get(key)
         if entry and entry["status"] == "complete":
@@ -457,7 +591,127 @@ class Drain:
         self.save()
         return self.finish(entry)
 
+    def pilot_one(self, ref):
+        """Copy exactly the approved pair and retain every GCS/local artifact."""
+        manifest = self.pilot_manifest
+        if manifest is None or self.authority is None:
+            raise Conflict("Pilot authority is absent")
+        self.authority.assert_active(300)
+        expected_receipt, expected_payload = manifest["receipt"], manifest["payload"]
+        if (ref.name != expected_receipt["object"] or ref.generation != expected_receipt["generation"]
+                or ref.size != expected_receipt["bytes"]
+                or ref.metadata.get("sha256") != expected_receipt["sha256"]):
+            raise Conflict("Pinned pilot receipt differs from GCS metadata")
+        key = hashlib.sha256(f"{ref.name}:{ref.generation}".encode()).hexdigest()
+        entry = self.state["segments"].get(key)
+        if entry and (entry.get("pilot_release_id") != manifest["release_id"]
+                      or entry.get("pilot_manifest_sha256") != self.manifest_sha256):
+            raise Conflict("Pilot journal belongs to a different release")
+        if entry and entry.get("status") == "drive_verified_retained":
+            raise Conflict("Pilot already verified; a new release is required for further requests")
+        if entry and entry.get("status") not in ("receipt_verified", "downloaded"):
+            raise Conflict("Pilot journal has an unreconciled state")
+        stage = self.work / "stage" / key
+        stage.mkdir(parents=True, exist_ok=True)
+        name = ref.metadata.get("segment_name", "")
+        if not re.fullmatch(r"seg_[0-9a-z]{10}\.jss", name):
+            raise Conflict("Missing safe receipt metadata segment name")
+        receipt_path = stage / (name + ".receipt.json")
+        receipt_digest = self.download_checked(ref, receipt_path, expected_receipt["sha256"], RECEIPT_LIMIT)
+        receipt, payload_ref = self.parse_receipt(ref, receipt_path)
+        if (payload_ref.name != expected_payload["object"]
+                or payload_ref.generation != expected_payload["generation"]
+                or payload_ref.size != expected_payload["bytes"]
+                or payload_ref.metadata.get("sha256") != expected_payload["sha256"]
+                or receipt["sha256"] != expected_payload["sha256"]
+                or receipt["name"] != name):
+            raise Conflict("Pinned pilot payload differs from receipt or GCS metadata")
+        try:
+            payload_md5 = base64.b64decode(receipt["gcs"]["md5_hash"], validate=True)
+        except (KeyError, ValueError) as error:
+            raise Conflict("Missing or invalid payload MD5 in pilot receipt") from error
+        if len(payload_md5) != 16:
+            raise Conflict("Invalid payload MD5 in pilot receipt")
+        payload_digest = {"size": payload_ref.size, "sha256": receipt["sha256"], "md5": payload_md5.hex()}
+        self.drive.assert_complete_visibility()
+        self.authority.reserve_pair(key, payload_ref.size + ref.size,
+                                    manifest["control_allowance_bytes"], {
+            "manifest_sha256": self.manifest_sha256,
+            "payload_object": payload_ref.name,
+            "payload_generation": payload_ref.generation,
+            "receipt_object": ref.name,
+            "receipt_generation": ref.generation,
+        })
+        parent_id = manifest["drive_parent"]["id"]
+        if entry is None:
+            entry = {"key": key, "status": "receipt_verified", "pilot_release_id": manifest["release_id"],
+                     "pilot_manifest_sha256": self.manifest_sha256,
+                     "payload_ref": asdict(payload_ref), "receipt_ref": asdict(ref),
+                     "payload_name": name, "receipt_name": receipt_path.name,
+                     "payload_digest": payload_digest, "receipt_digest": receipt_digest,
+                     "parent": parent_id,
+                     "drive": {"payload": {}, "receipt": {}}}
+            self.state["segments"][key] = entry
+            self.save()
+        elif (entry["parent"] != parent_id or entry["payload_digest"] != payload_digest
+              or entry["receipt_digest"] != receipt_digest):
+            raise Conflict("Pilot journal pair identity changed")
+        self.drive.verify_account(self.authority.account_id)
+        # The shard must already exist under the approved root. Never create one in a pilot.
+        parent = self.drive.metadata(parent_id)
+        named = self.drive.named(self.root, manifest["drive_parent"]["shard"])
+        if (parent.get("id") != parent_id or parent.get("name") != manifest["drive_parent"]["shard"]
+                or parent.get("mimeType") != FOLDER or parent.get("trashed", False)
+                or self.root not in parent.get("parents", []) or len(named) != 1
+                or named[0].get("id") != parent_id):
+            raise Conflict("Approved Drive shard parent is not uniquely visible")
+        # Pin both Drive IDs durably before either file can be created or sent.
+        # generateIds is a metered Drive request through SafeDrive.json_request.
+        for kind in ("payload", "receipt"):
+            existing = self.drive.preflight(parent_id, entry[kind + "_name"], entry[kind + "_digest"])
+            pinned_id = entry["drive"][kind].get("id")
+            if existing:
+                if pinned_id is not None and existing["id"] != pinned_id:
+                    raise Conflict("Pilot Drive file ID changed before upload")
+                entry["drive"][kind]["id"] = existing["id"]
+            elif pinned_id is None:
+                entry["drive"][kind]["id"] = self.drive.reserve_id()
+            self.save()
+        payload_path = stage / name
+        if self.download_checked(payload_ref, payload_path, expected_payload["sha256"], PILOT_PAYLOAD_LIMIT) != payload_digest:
+            raise Conflict("Pilot payload MD5 differs from receipt")
+        entry["status"] = "downloaded"
+        self.save()
+        for kind, path in (("payload", payload_path), ("receipt", receipt_path)):
+            uploaded = self.drive.ensure_file(path, parent_id, entry[kind + "_digest"], entry["drive"][kind], self.save)
+            pinned_id = entry["drive"][kind].get("id")
+            if (pinned_id is not None and uploaded.get("id") != pinned_id) or not matches_drive(
+                    uploaded, path.name, entry[kind + "_digest"], parent_id):
+                raise Conflict("Pilot Drive file ID or metadata differs from pinned journal")
+            entry["drive"][kind]["id"] = uploaded["id"]
+            self.save()
+        self.verify_remote(entry)
+        entry["status"] = "drive_verified_retained"
+        self.save()
+        self.authority.close_pair(key)
+        return "drive_verified_retained"
+
+    def run_pilot(self):
+        if self.pilot_manifest is None:
+            raise Conflict("Pinned pilot manifest required")
+        receipt = self.pilot_manifest["receipt"]
+        self.authority.assert_active(60)
+        ref = self.cloud.lookup(receipt["object"], receipt["generation"])
+        if ref is None:
+            raise Conflict("Pinned pilot receipt generation is missing")
+        result = self.pilot_one(ref)
+        print(json.dumps({"event": "drive_pilot", "receipt": ref.name,
+                          "generation": ref.generation, "status": result}), flush=True)
+        return result
+
     def run(self, maximum, retry_conflicts=False):
+        if self.pilot_manifest is not None:
+            raise Conflict("Pilot must use exact pinned one-pair selection")
         if not 1 <= maximum <= 1024:
             raise ValueError("max-segments must be between 1 and 1024")
         processed, seen = 0, set()
@@ -521,18 +775,35 @@ def main(argv=None):
     parser.add_argument("--drive-root", required=True)
     parser.add_argument("--oauth-file", type=Path, default=Path("/root/.config/catbird-drive/oauth.json"))
     parser.add_argument("--work-dir", type=Path, default=Path("/data/gcs-drive-drain"))
-    parser.add_argument("--max-segments", type=int, default=8)
+    parser.add_argument("--max-segments", type=int, default=1)
     parser.add_argument("--max-segment-bytes", type=int, default=GIB)
     parser.add_argument("--max-temp-bytes", type=int, default=2*GIB)
     parser.add_argument("--once", action="store_true", required=True)
-    parser.add_argument("--retry-conflicts", action="store_true",
-                        help="Explicitly retry preserved conflicts after operator reconciliation")
+    parser.add_argument("--retry-conflicts", action="store_true")
+    parser.add_argument("--authority-db", required=True, type=Path)
+    parser.add_argument("--release-id", required=True)
+    parser.add_argument("--writer-id", required=True)
+    parser.add_argument("--account-id", required=True)
+    parser.add_argument("--pilot-manifest", required=True, type=Path)
+    parser.add_argument("--retain-gcs", action="store_true")
     args = parser.parse_args(argv)
-    if not 1 <= args.max_segments <= 1024 or not 0 < args.max_segment_bytes <= args.max_temp_bytes <= 16*GIB:
-        parser.error("Invalid bounded segment/disk limits")
+    if (args.max_segments != 1 or args.retry_conflicts or not args.retain_gcs
+            or not 0 < args.max_segment_bytes <= args.max_temp_bytes <= 16*GIB):
+        parser.error("Invalid pinned retain-GCS pilot limits")
     if not args.work_dir.resolve().is_relative_to(Path("/data")):
         parser.error("work-dir must remain under /data")
     try:
+        manifest, manifest_sha256 = load_pilot_manifest(
+            args.pilot_manifest, bucket=args.bucket, source_id=args.source_id,
+            source_epoch=args.source_epoch, drive_root=args.drive_root,
+            release_id=args.release_id)
+        SafeDrive.assert_complete_visibility()
+        authority = TransferAuthority.open_existing(
+            args.authority_db, release_id=args.release_id, writer_id=args.writer_id,
+            account_id=args.account_id, manifest_sha256=manifest_sha256)
+        authority.validate_manifest_limits(manifest["max_charged_bytes"],
+                                           manifest["max_duration_seconds"])
+        authority.assert_active(300)
         region = gce_region()
         args.work_dir.mkdir(parents=True, exist_ok=True)
         with (args.work_dir / "drain.lock").open("a") as lock:
@@ -549,11 +820,11 @@ def main(argv=None):
                     with contextlib.suppress(FileNotFoundError, PermissionError):
                         if b"gce_segment_offloader.py" in cmdline.read_bytes():
                             raise Conflict("Stop legacy Drive offloader before drain")
-                drain = Drain(cloud, SafeDrive(args.oauth_file), args.work_dir, args.drive_root,
-                              args.source_id, args.source_epoch, args.max_segment_bytes, args.max_temp_bytes)
-                drain.run(args.max_segments, args.retry_conflicts)
-                if drain.last_counts["conflict"] and not (drain.last_counts["complete"] or drain.last_counts["awaiting_local_release"]):
-                    return 2
+                drain = Drain(cloud, SafeDrive(args.oauth_file, authority), args.work_dir, args.drive_root,
+                              args.source_id, args.source_epoch, min(args.max_segment_bytes, PILOT_PAYLOAD_LIMIT),
+                              args.max_temp_bytes, pilot_manifest=manifest,
+                              manifest_sha256=manifest_sha256, authority=authority)
+                drain.run_pilot()
             except Exception as error:
                 code = getattr(error, "code", None)
                 if code in (403, 429):
@@ -564,7 +835,8 @@ def main(argv=None):
                 raise
         return 0
     except Exception as error:
-        print(json.dumps({"event": "drain_failed_preserved", "error_type": type(error).__name__, "message": str(error)}), file=sys.stderr)
+        # HTTP errors can contain resumable URL tokens; never print their text.
+        print(json.dumps({"event": "drain_failed_preserved", "error_type": type(error).__name__}), file=sys.stderr)
         return 1
 
 

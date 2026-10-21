@@ -1,5 +1,7 @@
 # Temporary archive buffer: 20 October deployment
 
+**Successor run:** Josh authorized a new $200 capture/recovery window on October 21. Capture has resumed from the preserved checkpoint; the [October 21 run report](GCS_CAPTURE_RESUME_20261021.md) and [active plan](../../../docs/execution-plans/2026-10-21-network-capture-resume.md) govern current operation. The no-restart/Drive-wait restrictions below describe the closed October 20 run.
+
 **Post-deadline verification — October 21:** at **05:31:19 UTC**, after the original 05:29:29 UTC deadline, a fresh Compute Engine read confirmed **TERMINATED**. A fresh bucket inventory completed at **05:31:36 UTC**: **1,401 payloads, 1,401 generation/identity-matching receipt objects, 379,025,267,581 payload bytes, 379,027,611,753 total live-object bytes**, zero pairing mismatches. Object names, generations, sizes, CRC32C and custom metadata were unchanged from the 04:00 inventory; payload count and byte deltas were zero. Receipt bodies and payload contents were not reread. Both reads succeeded through the existing route; no jobs, settings, credentials, budgets or holds changed. Evidence: `gcs_vm_postdeadline_20261021.json`, `gcs_inventory_postdeadline_20261021.json`, and `gcs_postdeadline_summary_20261021.json` in the local graph-build output directory. Daily retention monitoring continues; the later-read requirement noted below is now satisfied.
 
 

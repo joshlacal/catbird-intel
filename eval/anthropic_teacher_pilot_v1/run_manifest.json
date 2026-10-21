@@ -1,0 +1,22 @@
+{
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "anthropic_api_key_present_in_env": "False"
+  },
+  "preparation_manifest_sha256": "75e47ef07e7c3d71b8f104773ff02b020f91a53f7f0f7d0c17d631b8a213884e",
+  "run_metadata": {
+    "budget_halted": 0,
+    "config_bundle_sha256": "73b188e20a0eb953e923d2b58e2cff4621f16bd8498d7b29c8dd1e15a44dd644",
+    "created_at": "2026-10-21T13:37:39.012019+00:00",
+    "generation_id": "gen-20261020-v1",
+    "halt_reason": null,
+    "id": 1,
+    "input_manifest_sha256": "75e47ef07e7c3d71b8f104773ff02b020f91a53f7f0f7d0c17d631b8a213884e",
+    "pricing_sha256": "6dfdb11d8384b4075a13e3746caee150aaff42888244581d9e48276877be53a2",
+    "rubric_sha256": "3aac23d5ff0382750b2b3018d12a45b88730ab5f7e8a0becd9084f72f74e1cf4",
+    "run_id": "catbird-anthropic-teacher-run-v1",
+    "schema_sha256": "219ecd9526454ffa6aa1d773f3a3acc678691aae3308747b52477f865b8780a7",
+    "updated_at": "2026-10-21T13:37:39.012019+00:00"
+  },
+  "schema": "catbird-anthropic-teacher-run-manifest-v1"
+}

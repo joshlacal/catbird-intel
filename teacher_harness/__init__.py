@@ -66,6 +66,7 @@ from .transport import (
     OfficialAnthropicSDKTransport,
     ProviderRateLimitError,
     build_systemone_clef_request,
+    parse_systemone_clef_response,
 )
 
 __all__ = [
@@ -106,6 +107,7 @@ __all__ = [
     "make_custom_id",
     "map_ordinal_to_training_score",
     "near_duplicate_fingerprint",
+    "parse_systemone_clef_response",
     "prepare_and_freeze_corpus",
     "resolve_post_observation",
     "route_review_candidates",

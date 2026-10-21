@@ -6,8 +6,15 @@ import json
 import re
 from typing import Any, Literal
 
-from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
-from anthropic.types.messages.batch_create_params import Request as AnthropicBatchRequest
+try:
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    from anthropic.types.messages.batch_create_params import Request as AnthropicBatchRequest
+except ModuleNotFoundError:  # pragma: no cover - fallback when anthropic SDK is not installed in a local ML venv
+    def MessageCreateParamsNonStreaming(**kwargs: Any) -> dict[str, Any]:  # type: ignore[misc]
+        return dict(kwargs)
+
+    def AnthropicBatchRequest(*, custom_id: str, params: Any) -> dict[str, Any]:  # type: ignore[misc]
+        return {"custom_id": custom_id, "params": params}
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import HarnessConfig, assert_no_credentials, canonical_json_bytes, canonical_sha256

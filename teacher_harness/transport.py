@@ -9,9 +9,18 @@ from pathlib import Path
 import time
 from typing import Any, Iterator, Protocol
 
-import anthropic
-from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
-from anthropic.types.messages.batch_create_params import Request as AnthropicBatchRequest
+try:
+    import anthropic
+    from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
+    from anthropic.types.messages.batch_create_params import Request as AnthropicBatchRequest
+except ModuleNotFoundError:  # pragma: no cover - fallback when anthropic SDK is not installed in a local ML venv
+    anthropic = None  # type: ignore[assignment]
+
+    def MessageCreateParamsNonStreaming(**kwargs: Any) -> dict[str, Any]:  # type: ignore[misc]
+        return dict(kwargs)
+
+    def AnthropicBatchRequest(*, custom_id: str, params: Any) -> dict[str, Any]:  # type: ignore[misc]
+        return {"custom_id": custom_id, "params": params}
 
 from .config import HarnessConfig, assert_no_credentials, canonical_sha256
 from .schemas import COMPONENT_ORDER, resolve_post_observation
@@ -692,3 +701,106 @@ def build_systemone_clef_request(
     }
     assert_no_credentials(payload, "systemone_request")
     return payload
+
+
+def parse_systemone_clef_response(
+    response: dict[str, Any],
+    *,
+    insufficient_threshold: float = 0.50,
+) -> dict[str, Any]:
+    """Parse a Jev / Cloudflare Clef `/v1/systemone` response into v3 ordinal/continuous targets + calibration metrics.
+
+    For each component in `COMPONENT_ORDER`:
+    - Reads `<comp>_score` (`type == "score"`) with Brier-calibrated probabilities `{"0": p0, "1": p1, "2": p2, "3": p3}`,
+      expected ordinal score `E[y] = sum(k * p_k)` in `[0.0, 3.0]`, normalized continuous score `E[y] / 3.0` in `[0.0, 1.0]`,
+      MAP ordinal class `argmax_k p_k` in `{0, 1, 2, 3}`, confidence `max_k p_k`, and normalized Shannon entropy.
+    - Reads `<comp>_insufficient` (`type == "noul"`) probability `noul` in `[0.0, 1.0]`.
+    - Sets `ordinal_score = "insufficient"` when `noul >= insufficient_threshold` (without coercing to 0).
+    """
+    import math
+
+    if not isinstance(response, dict) or not isinstance(response.get("answers"), dict):
+        raise ValueError("Invalid SystemOne response: missing 'answers' dict")
+    answers = response["answers"]
+
+    components_out: dict[str, dict[str, Any]] = {}
+    trainer_continuous_0_1: dict[str, float | None] = {}
+    ordinal_scores: dict[str, int | str] = {}
+    any_insufficient = False
+
+    for comp in COMPONENT_ORDER:
+        score_ans = answers.get(f"{comp}_score")
+        insuff_ans = answers.get(f"{comp}_insufficient")
+        if not isinstance(score_ans, dict) or score_ans.get("type") != "score":
+            raise ValueError(f"Missing or invalid score answer for '{comp}_score'")
+        if not isinstance(insuff_ans, dict) or insuff_ans.get("type") != "noul":
+            raise ValueError(f"Missing or invalid noul answer for '{comp}_insufficient'")
+
+        probs_raw = score_ans.get("probabilities") or {}
+        probs = {str(k): float(probs_raw.get(str(k), 0.0)) for k in range(4)}
+        prob_sum = sum(probs.values())
+        if prob_sum > 0:
+            probs = {k: v / prob_sum for k, v in probs.items()}
+
+        expected_ordinal_0_3 = sum(k * probs[str(k)] for k in range(4))
+        continuous_0_1 = round(expected_ordinal_0_3 / 3.0, 6)
+        map_level = max(range(4), key=lambda k: probs[str(k)])
+        confidence = round(float(score_ans.get("confidence", probs[str(map_level)])), 6)
+
+        # Normalized Shannon entropy over 4 levels (0 = point mass, 1 = uniform)
+        entropy_bits = -sum(p * math.log2(p) for p in probs.values() if p > 1e-12)
+        normalized_entropy = round(entropy_bits / 2.0, 6)
+
+        noul_prob = float(insuff_ans.get("noul", 0.0))
+        is_insufficient = noul_prob >= insufficient_threshold
+        if is_insufficient:
+            any_insufficient = True
+            ordinal_val: int | str = "insufficient"
+            trainer_val: float | None = None
+        else:
+            ordinal_val = int(map_level)
+            trainer_val = continuous_0_1
+
+        ordinal_scores[comp] = ordinal_val
+        trainer_continuous_0_1[comp] = trainer_val
+        components_out[comp] = {
+            "ordinal_score": ordinal_val,
+            "map_ordinal_0_3": int(map_level),
+            "expected_ordinal_0_3": round(expected_ordinal_0_3, 6),
+            "continuous_0_1": continuous_0_1,
+            "trainer_target_0_1": trainer_val,
+            "insufficient_evidence": is_insufficient,
+            "insufficient_noul_prob": round(noul_prob, 6),
+            "confidence": confidence,
+            "normalized_entropy": normalized_entropy,
+            "probabilities": {k: round(v, 6) for k, v in probs.items()},
+        }
+
+    topic_ans = answers.get("topic") or {}
+    context_dep_ans = answers.get("context_dependent") or {}
+    missing_kind_ans = answers.get("missing_context_kind") or {}
+    stance_ans = answers.get("stance_ambiguity") or {}
+
+    context_dep_noul = float(context_dep_ans.get("noul", 0.0))
+    context_dependent = context_dep_noul >= insufficient_threshold or any_insufficient
+    missing_context_kind = str(missing_kind_ans.get("choice", "none"))
+    if any_insufficient and missing_context_kind == "none":
+        missing_context_kind = "reply_parent"
+
+    return {
+        "model": response.get("model", "Cloudflare/clef-flash"),
+        "usage": response.get("usage", {"input_tokens": 0, "output_tokens": 0}),
+        "components": components_out,
+        "ordinal_scores": ordinal_scores,
+        "trainer_continuous_0_1": trainer_continuous_0_1,
+        "has_insufficient_component": any_insufficient,
+        "topic": str(topic_ans.get("choice", "other")),
+        "topic_confidence": float(topic_ans.get("confidence", 0.0)),
+        "context_dependent": context_dependent,
+        "context_dependent_noul_prob": round(context_dep_noul, 6),
+        "missing_context_kind": missing_context_kind,
+        "missing_context_confidence": float(missing_kind_ans.get("confidence", 0.0)),
+        "stance_ambiguity": str(stance_ans.get("choice", "none")),
+        "stance_ambiguity_confidence": float(stance_ans.get("confidence", 0.0)),
+    }
+

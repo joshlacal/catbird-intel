@@ -36,6 +36,7 @@ from teacher_harness import (
     canonical_sha256,
     export_annotation_bank_and_trainer_targets,
     fold_and_join_moderation_labels,
+    parse_systemone_clef_response,
     prepare_and_freeze_corpus,
     resolve_post_observation,
     route_review_candidates,
@@ -794,6 +795,76 @@ class TeacherHarnessAcceptanceTests(unittest.TestCase):
         self.assertEqual(clef_req["model"], "Cloudflare/clef-flash")
         self.assertIn("politicalness_score", clef_req["questions"])
         self.assertIn("politicalness_insufficient", clef_req["questions"])
+
+        # And parse_systemone_clef_response parses Brier-calibrated probabilities and noul insufficiency
+        mock_clef_resp = {
+            "model": "Cloudflare/clef-flash",
+            "answers": {
+                "politicalness_score": {
+                    "type": "score",
+                    "score": 2.4,
+                    "confidence": 0.65,
+                    "probabilities": {"0": 0.05, "1": 0.05, "2": 0.35, "3": 0.55},
+                },
+                "politicalness_insufficient": {"type": "noul", "noul": 0.02},
+                "outraged_score": {
+                    "type": "score",
+                    "score": 0.1,
+                    "confidence": 0.90,
+                    "probabilities": {"0": 0.90, "1": 0.10, "2": 0.0, "3": 0.0},
+                },
+                "outraged_insufficient": {"type": "noul", "noul": 0.01},
+                "critical_score": {
+                    "type": "score",
+                    "score": 1.8,
+                    "confidence": 0.60,
+                    "probabilities": {"0": 0.05, "1": 0.25, "2": 0.55, "3": 0.15},
+                },
+                "critical_insufficient": {"type": "noul", "noul": 0.04},
+                "engagement_bait_score": {
+                    "type": "score",
+                    "score": 0.0,
+                    "confidence": 0.96,
+                    "probabilities": {"0": 0.96, "1": 0.04, "2": 0.0, "3": 0.0},
+                },
+                "engagement_bait_insufficient": {"type": "noul", "noul": 0.01},
+                "spam_score": {
+                    "type": "score",
+                    "score": 0.0,
+                    "confidence": 0.99,
+                    "probabilities": {"0": 0.99, "1": 0.01, "2": 0.0, "3": 0.0},
+                },
+                "spam_insufficient": {"type": "noul", "noul": 0.72},
+                "topic": {
+                    "type": "choice",
+                    "choice": "politics_policy",
+                    "confidence": 0.81,
+                    "probabilities": {"politics_policy": 0.81, "other": 0.19},
+                },
+                "context_dependent": {"type": "noul", "noul": 0.12},
+                "missing_context_kind": {
+                    "type": "choice",
+                    "choice": "multi_post_history",
+                    "confidence": 0.77,
+                    "probabilities": {"multi_post_history": 0.77, "none": 0.23},
+                },
+                "stance_ambiguity": {
+                    "type": "choice",
+                    "choice": "none",
+                    "confidence": 0.88,
+                    "probabilities": {"none": 0.88, "quoted_or_reported": 0.12},
+                },
+            },
+            "usage": {"input_tokens": 612, "output_tokens": 0},
+        }
+        parsed_clef = parse_systemone_clef_response(mock_clef_resp)
+        self.assertEqual(parsed_clef["ordinal_scores"]["politicalness"], 3)
+        self.assertAlmostEqual(parsed_clef["components"]["politicalness"]["expected_ordinal_0_3"], 2.40, places=4)
+        self.assertAlmostEqual(parsed_clef["components"]["politicalness"]["continuous_0_1"], 0.80, places=4)
+        self.assertEqual(parsed_clef["ordinal_scores"]["spam"], "insufficient")
+        self.assertIsNone(parsed_clef["trainer_continuous_0_1"]["spam"])
+        self.assertTrue(parsed_clef["has_insufficient_component"])
+        self.assertEqual(parsed_clef["topic"], "politics_policy")
 
 
 if __name__ == "__main__":

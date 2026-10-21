@@ -7,10 +7,13 @@ Requires=docker.service
 [Service]
 Type=simple
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/catbird-gcs-buffer/venv/bin/python -u /opt/catbird-gcs-buffer/gcs_buffer_supervisor.py --bucket catbird-436600-jetstream-buffer-20261020 --deadline 2026-10-21T05:29:29Z --poweroff-on-exit
-ExecStopPost=-/usr/bin/docker stop --time 120 js
+# Required, operator-owned absolute limits; no implicit budget extension at boot.
+EnvironmentFile=/etc/catbird-gcs-buffer-run.env
+ExecStart=/opt/catbird-gcs-buffer/venv/bin/python -u /opt/catbird-gcs-buffer/gcs_buffer_supervisor.py --bucket ${CATBIRD_GCS_BUCKET} --deadline ${CATBIRD_GCS_DEADLINE} --max-bytes ${CATBIRD_GCS_MAX_BYTES} --source-epoch ${CATBIRD_GCS_SOURCE_EPOCH} --poweroff-on-exit
+# A failed duplicate instance must not stop another exclusive supervisor owner.
+ExecStopPost=-/usr/bin/flock --nonblock /data/gcs-buffer/supervisor.lock /usr/bin/timeout 70 /usr/bin/docker stop --time 60 js
 Restart=no
-TimeoutStopSec=300
+TimeoutStopSec=120
 KillMode=mixed
 MemoryMax=4G
 CPUQuota=400%

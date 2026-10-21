@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import struct
 import tempfile
+import contextlib
+import io
 from types import SimpleNamespace
 import unittest
 
@@ -213,6 +215,40 @@ class BufferTests(unittest.TestCase):
         p = self.segment(0)
         (self.segments / 'seg_0000000001.jss').symlink_to(p)
         with self.assertRaises(m.Stop): self.buffer.cycle()
+
+    def test_authorized_72_hour_limit_and_2_5_tib_capacity(self):
+        args = m.parse_args(['--bucket', 'fixture', '--source-epoch', 'admission-1',
+                             '--max-bytes', str(5 * m.TIB // 2), '--run-hours', '72'])
+        self.assertEqual(args.max_bytes, 2748779069440)
+        self.assertEqual(args.run_hours, 72)
+        for flag, value in [('--max-bytes', str(m.MAX_BYTES + 1)), ('--run-hours', '72.001'),
+                            ('--run-hours', 'nan'), ('--poll-seconds', 'nan')]:
+            with self.subTest(flag=flag, value=value), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    m.parse_args(['--bucket', 'fixture', '--source-epoch', 'admission-1', flag, value])
+
+    def test_bootstrap_live_segments_never_admitted_or_pruned(self):
+        live = self.root / 'bootstrap' / 'live_segments'
+        live.mkdir(parents=True)
+        retained = live / 'seg_0000000000.jss'
+        retained.write_bytes(b'unique unmerged bootstrap bytes')
+        self.args.segments_dir = str(live)
+        with self.assertRaisesRegex(m.Stop, 'bootstrap_live_segments'):
+            self.new_buffer()
+        self.assertEqual(retained.read_bytes(), b'unique unmerged bootstrap bytes')
+        self.assertEqual(self.client.b.objects, {})
+
+    def test_status_preserves_cumulative_accounting_and_supervisor_identity(self):
+        self.args.run_id = 'run-123'
+        self.segment(0)
+        self.buffer.cycle()
+        self.client.b.objects.clear()
+        self.buffer.inventory()
+        status = self.buffer.status('ready', 0)
+        self.assertEqual(status['run_id'], 'run-123')
+        self.assertEqual(status['cloud_inventory_bytes'], 0)
+        self.assertGreater(status['cumulative_admitted_bytes'], 0)
+        self.assertEqual(status['admission_accounting'], 'cumulative_observed_generations_no_refund')
 
 
 if __name__ == '__main__': unittest.main()

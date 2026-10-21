@@ -28,6 +28,8 @@ import time
 import uuid
 
 TIB = 1024 ** 4
+MAX_BYTES = 3 * TIB
+MAX_RUN_HOURS = 72
 RESERVE = 32768  # deterministic receipt + release marker + metadata allowance
 NAME = re.compile(r'^seg_([0-9a-z]+)\.jss$')
 
@@ -161,6 +163,10 @@ def verify_blob(blob, expected):
 
 class Buffer:
     def __init__(self, client, args, verifier=None, hasher=hashes):
+        # Bootstrap live segments have a separate sequence and must remain local
+        # until the collector merges them into its main archive.
+        if 'live_segments' in Path(args.segments_dir).resolve().parts:
+            raise Stop('bootstrap_live_segments_must_not_be_offloaded_or_pruned')
         self.client, self.args, self.hasher = client, args, hasher
         self.bucket = client.bucket(args.bucket)
         self.work = Path(args.work_dir)
@@ -368,8 +374,10 @@ class Buffer:
 
     def status(self, reason, pending, current_index=None):
         value = {'reason': reason, 'updated_at_unix': time.time(), 'pending_sealed': pending,
+                 'run_id': getattr(self.args, 'run_id', None),
                  'current_index': current_index, 'local_segments': len(local_segments(Path(self.args.segments_dir))),
                  'cloud_inventory_bytes': self.cloud_bytes, 'cumulative_admitted_bytes': self.journal.admitted_bytes,
+                 'admission_accounting': 'cumulative_observed_generations_no_refund',
                  'max_bytes': self.args.max_bytes, 'durable_pairs': len(self.journal.pairs),
                  'local_releases': len(self.journal.released), 'source_epoch': self.args.source_epoch,
                  'epoch_semantics': 'admission_namespace_only'}
@@ -447,6 +455,7 @@ def parser():
     p.add_argument('--bucket', required=True)
     p.add_argument('--source-id', default='gce-selfhost-001')
     p.add_argument('--source-epoch', required=True)
+    p.add_argument('--run-id', default=None, help='supervisor execution identity; not a source epoch')
     p.add_argument('--segments-dir', default='/data/jetstream/segments')
     p.add_argument('--work-dir', default='/data/gcs-buffer')
     p.add_argument('--receipt-script', default='/opt/catbird-offloader/backfill/make_receipt.mjs')
@@ -459,13 +468,18 @@ def parser():
     return p
 
 
-def main():
+def parse_args(argv=None):
     p = parser()
-    args = p.parse_args()
-    if not 0 < args.max_bytes <= TIB or not 0 < args.run_hours <= 24 or args.poll_seconds <= 0 or args.max_segments <= 0:
-        p.error('max-bytes must be <=1TiB; run-hours <=24; all bounds positive')
+    args = p.parse_args(argv)
+    if not 0 < args.max_bytes <= MAX_BYTES or not 0 < args.run_hours <= MAX_RUN_HOURS or not 0 < args.poll_seconds < float('inf') or args.max_segments <= 0:
+        p.error('max-bytes must be <=3TiB; run-hours <=72; all bounds positive and finite')
     if not all(re.fullmatch('[A-Za-z0-9_.-]+', x) for x in [args.source_id, args.source_epoch]):
         p.error('source namespace contains unsupported characters')
+    return args
+
+
+def main():
+    args = parse_args()
     work = Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     try:
@@ -480,7 +494,8 @@ def main():
                     return 0
                 time.sleep(args.poll_seconds)
     except Exception as error:
-        status = {'reason': str(error), 'error_type': type(error).__name__, 'updated_at_unix': time.time()}
+        status = {'reason': str(error), 'error_type': type(error).__name__, 'updated_at_unix': time.time(),
+                  'run_id': args.run_id}
         atomic(work / 'status.json', encode(status))
         print(json.dumps(status), flush=True)
         return error.code if isinstance(error, Stop) else 2

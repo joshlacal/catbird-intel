@@ -523,6 +523,87 @@ class ContinuousTests(unittest.TestCase):
         ]
         self.assertTrue(any(row["state"] == "standing_renewed" for row in status_lines))
 
+    def test_atomic_renewal_heals_interrupted_commit_and_clamps_stop_at(self):
+        self.assertEqual(continuous.DEFAULT_CONCURRENT_PAIRS, 1)
+        self.assertEqual(continuous._clamped_stop_at(continuous.STOP_AT + 99999), continuous.STOP_AT)
+        healthy_unit = lambda _: {"ActiveState": "inactive", "UnitFileState": "disabled"}
+        with mock.patch.object(continuous.TransferAuthority, "inspect_retained_account",
+                               return_value=self._account()):
+            renewed_1, digest_1 = continuous.renew_standing_envelope(
+                self.envelope, self.digest, authority_db=self.db,
+                oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                now=self.now + 12 * 3600, unit_state=healthy_unit,
+                proc_cmdlines=lambda: [], require_root=False)
+        # Simulate crash during second renewal after .renewed.commit.json and .renewed.json
+        # were written, before .renewed.sha256 was updated (leaving stale digest_1).
+        renewed_2 = dict(renewed_1, issued_at=self.now + 20 * 3600, renewed_from_sha256=digest_1)
+        raw_2 = json.dumps(renewed_2, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        digest_2 = hashlib.sha256(raw_2).hexdigest()
+        commit_path = continuous.renewal_commit_path(self.envelope)
+        commit_path.write_bytes(json.dumps({"raw": raw_2.decode("utf-8"), "sha256": digest_2}).encode())
+        commit_path.chmod(0o600)
+        continuous.renewal_envelope_path(self.envelope).write_bytes(raw_2)
+        # Notice renewal_digest_path still holds digest_1!
+        loaded_env, loaded_sha = continuous._load_active_standing(
+            self.envelope, self.digest, authority_db=self.db,
+            oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+            now=self.now + 20 * 3600, stop_at=self.now + 72 * 3600, require_root=False)
+        self.assertEqual(loaded_sha, digest_2)
+        self.assertEqual(loaded_env["issued_at"], self.now + 20 * 3600)
+        self.assertFalse(commit_path.exists())
+        self.assertEqual(continuous.renewal_digest_path(self.envelope).read_text().strip(), digest_2)
+
+    def test_run_cycles_recovers_crashed_open_pair_before_new_selection(self):
+        crashed_account = dict(
+            self._account(),
+            nonterminal_run_id=RUN,
+            nonterminal_status="active",
+            nonterminal_run_ids=[RUN],
+        )
+        accounts = [crashed_account, crashed_account, self._account(), self._account()]
+        open_manifest = {"max_charged_bytes": 1000, "max_duration_seconds": 600}
+        open_raw = json.dumps(open_manifest, sort_keys=True, separators=(",", ":")).encode()
+        open_info = {
+            "run_id": RUN,
+            "pair_key": "e" * 64,
+            "status": "active",
+            "manifest": open_manifest,
+            "manifest_raw": open_raw,
+            "manifest_sha256": MANIFEST,
+            "owner_host_matches": True,
+            "owner_alive": False,
+        }
+        snapshot_called = []
+
+        def snapshot_fn(**_kwargs):
+            snapshot_called.append(True)
+            value = {"schema": continuous.SNAPSHOT_SCHEMA, "candidates": []}
+            return value, json.dumps(value, sort_keys=True).encode()
+
+        def runner_fn(**kwargs):
+            self.assertTrue((kwargs["evidence_dir"] / (RUN + ".json")).is_file())
+            return 0, {"state": "completed", "pairs_closed": 1}
+
+        with mock.patch.object(continuous.TransferAuthority, "inspect_retained_account",
+                               side_effect=lambda *_a, **_kw: accounts.pop(0) if accounts else self._account()), \
+             mock.patch.object(continuous.TransferAuthority, "inspect_open_retained_run",
+                               return_value=open_info), \
+             mock.patch.object(continuous, "STOP_AT", self.now + 72 * 3600), \
+             mock.patch.object(continuous, "CONTINUOUS_ROOT", self.work.resolve()), \
+             mock.patch("gcs_drive_retained_continuous.sys.platform", "linux"):
+            result = continuous.run_cycles(
+                envelope_path=self.envelope, envelope_sha256=self.digest,
+                authority_db=self.db, oauth_file=self.oauth,
+                account_id=ACCOUNT, writer_id=WRITER, work_root=self.work,
+                snapshot_fn=snapshot_fn, runner_fn=runner_fn,
+                local_check=lambda: {"legacy_units": {}, "processes_inspected": 2},
+                clock=lambda: self.now, monotonic=lambda: 0.0,
+                sleep=lambda _: None, capture_dir=self.work,
+                cache_check=lambda *_: {}, require_root=False, max_cycles=1,
+                stop_at=self.now + 72 * 3600)
+        self.assertEqual(result["pairs_closed"], 1)
+        self.assertEqual(snapshot_called, [])
+
 
 if __name__ == "__main__":
     unittest.main()

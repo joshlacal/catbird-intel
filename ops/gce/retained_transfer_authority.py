@@ -42,6 +42,9 @@ RECONCILIATION_SCHEMA = "catbird.drive.retained-receipt-500-reconciliation.v1"
 STATUS_PROBE_RECONCILIATION_SCHEMA = (
     "catbird.drive.retained-status-probe-reconciliation.v1"
 )
+CRASH_ADOPTION_RECONCILIATION_SCHEMA = (
+    "catbird.drive.retained-crash-adoption-reconciliation.v1"
+)
 
 
 def _boot_id() -> str:
@@ -227,7 +230,8 @@ class RetainedObservationAuthority:
                  writer_id: str, account_id: str, manifest: dict,
                  manifest_sha256: str, pair_key: str, boot_id: str,
                  clock: Callable[[], float], monotonic_clock: Callable[[], float],
-                 recovery_only: bool, max_concurrent_runs: int = 1):
+                 recovery_only: bool, max_concurrent_runs: int = 1,
+                 resume_open: bool = False):
         self.db = db
         self.db_path = str(path.resolve())
         self.release_id = run_id
@@ -241,6 +245,7 @@ class RetainedObservationAuthority:
         self.monotonic_clock = monotonic_clock
         self.recovery_only = recovery_only
         self.max_concurrent_runs = max_concurrent_runs
+        self.resume_open = resume_open
         self.process_host = socket.gethostname()
         self.process_pid = os.getpid()
         self.process_nonce = _PROCESS_NONCE
@@ -354,9 +359,40 @@ class RetainedObservationAuthority:
             return True
         try:
             os.kill(claim["process_pid"], 0)
-        except (ProcessLookupError, PermissionError, OSError):
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
             return False
         return True
+
+    def _has_run_adoption_table(self) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_run_adoption'"
+        ).fetchone() is not None
+
+    def _ensure_run_adoption_table(self) -> None:
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS retained_run_adoption (
+                adoption_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES retained_run(id),
+                prior_started_at REAL NOT NULL,
+                prior_deadline_at REAL NOT NULL,
+                prior_evidence_json TEXT NOT NULL,
+                adopted_at REAL NOT NULL,
+                deadline_at REAL NOT NULL,
+                evidence_json TEXT NOT NULL
+            )
+        """)
+
+    def _run_adoptions(self, run_id: str) -> list[sqlite3.Row]:
+        if not self._has_run_adoption_table():
+            return []
+        return self.db.execute(
+            "SELECT * FROM retained_run_adoption WHERE run_id=? ORDER BY adopted_at, rowid",
+            (run_id,),
+        ).fetchall()
 
     def _blocking_unresolved_count(self, now: float, active_run_ids: set[str]) -> int:
         resolved = self._reconciled_attempt_ids()
@@ -364,9 +400,7 @@ class RetainedObservationAuthority:
         for row in self.db.execute("SELECT * FROM retained_attempt WHERE status='unresolved'"):
             if row["id"] in resolved:
                 continue
-            if (row["run_id"] in active_run_ids and
-                row["http_status"] is None and
-                now < row["charge_through"]):
+            if row["run_id"] in active_run_ids:
                 continue
             count += 1
         if self.db.execute(
@@ -565,21 +599,77 @@ class RetainedObservationAuthority:
             db.close()
 
     @classmethod
+    def inspect_open_run(cls, db_path: Path, *, writer_id: str, account_id: str,
+                         run_id: str) -> dict:
+        """Read nonterminal run state and whether its prior owner process is stopped."""
+        db, authority = cls._inspect(db_path, writer_id=writer_id, account_id=account_id)
+        try:
+            account = db.execute("SELECT * FROM retained_account WHERE id=1").fetchone()
+            row = db.execute("SELECT * FROM retained_run WHERE id=?", (run_id,)).fetchone()
+            if row is None:
+                raise AuthorityBlocked("Retained open-run inspection target is absent")
+            manifest, digest, key = _reviewed_manifest(
+                row["manifest_raw"], row["id"], account_id)
+            claim = authority._run_claim(run_id)
+            owner_alive = False
+            host_ok = True
+            for p_host, p_pid in (
+                ((claim["process_host"], claim["process_pid"]),)
+                if claim is not None else ()
+            ) + (
+                ((account["process_host"], account["process_pid"]),)
+                if (account["process_host"] is not None or
+                    account["process_pid"] is not None) else ()
+            ):
+                if p_host != authority.process_host or type(p_pid) is not int or p_pid <= 0:
+                    host_ok = False
+                    break
+                if p_pid == authority.process_pid:
+                    owner_alive = True
+                    break
+                try:
+                    os.kill(p_pid, 0)
+                except ProcessLookupError:
+                    pass
+                except (PermissionError, OSError):
+                    owner_alive = True
+                    break
+                else:
+                    owner_alive = True
+                    break
+            return {
+                "run_id": row["id"],
+                "pair_key": key,
+                "manifest_sha256": digest,
+                "manifest_raw": bytes(row["manifest_raw"]),
+                "manifest": manifest,
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "deadline_at": row["deadline_at"],
+                "owner_host_matches": host_ok,
+                "owner_alive": owner_alive,
+            }
+        finally:
+            db.close()
+
+    @classmethod
     def open_run(
         cls, db_path: Path, *, run_id: str, writer_id: str, account_id: str,
         manifest_bytes: bytes, evidence: dict, deadline_at: float,
         clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
         boot_id: str | None = None, recovery_only: bool = False,
-        max_concurrent_runs: int = 1,
+        max_concurrent_runs: int = 1, resume_open: bool = False,
     ) -> "RetainedObservationAuthority":
         _required_identity(run_id, "run ID")
         _required_identity(writer_id, "writer ID")
         _required_identity(account_id, "account ID")
         if type(max_concurrent_runs) is not int or not 1 <= max_concurrent_runs <= MAX_CONCURRENT_RUNS:
             raise AuthorityBlocked("Retained max_concurrent_runs must be 1..4")
-        if recovery_only and max_concurrent_runs != 1:
+        if (recovery_only or resume_open) and max_concurrent_runs != 1:
             raise AuthorityBlocked("Retained recovery_only requires single-run mode")
+        if recovery_only and resume_open:
+            raise AuthorityBlocked("Cannot combine recovery_only and resume_open")
         manifest, digest, key = _reviewed_manifest(manifest_bytes, run_id, account_id)
         now = _finite_nonnegative(clock(), "clock")
         deadline = _finite_nonnegative(deadline_at, "deadline")
@@ -598,13 +688,15 @@ class RetainedObservationAuthority:
                         manifest_sha256=digest, pair_key=key, boot_id=boot,
                         clock=clock, monotonic_clock=monotonic_clock,
                         recovery_only=recovery_only,
-                        max_concurrent_runs=max_concurrent_runs)
+                        max_concurrent_runs=max_concurrent_runs,
+                        resume_open=resume_open)
         try:
             with authority._transaction():
                 account = authority._account(require_process=False)
                 if now < account["last_clock"]:
                     raise AuthorityBlocked("Retained ledger clock regressed")
-                if account["boot_id"] is not None and account["boot_id"] != boot and not recovery_only:
+                if (account["boot_id"] is not None and account["boot_id"] != boot and
+                    not (recovery_only or resume_open)):
                     raise AuthorityBlocked("Retained ledger boot changed; reconciliation required")
                 if max_concurrent_runs > 1:
                     authority._ensure_run_claim_table()
@@ -619,18 +711,23 @@ class RetainedObservationAuthority:
                     raise AuthorityBlocked("Verified diagnostic payload must not be recopied")
                 prior = db.execute("SELECT * FROM retained_run ORDER BY started_at DESC").fetchall()
                 same = next((r for r in prior if r["id"] == run_id), None)
-                if recovery_only:
-                    if (same is None or same["manifest_sha256"] != digest or
-                        same["pair_key"] != key or same["status"] not in
-                        ("verified", "index_pending") or
-                        authority._effective_unresolved_count(run_id)):
-                        raise AuthorityBlocked("No verified retained pair is eligible for no-upload recovery")
-                    if any(r["id"] != run_id and r["status"] != "closed" for r in prior):
-                        raise AuthorityBlocked("Another retained run remains open")
-                    prior_host, prior_pid, prior_nonce = (
-                        account["process_host"], account["process_pid"],
-                        account["process_nonce"])
-                    if prior_host is not None or prior_pid is not None or prior_nonce is not None:
+
+                def _assert_prior_process_stopped() -> None:
+                    claim = authority._run_claim(run_id)
+                    checks = []
+                    if claim is not None:
+                        checks.append((
+                            claim["process_host"], claim["process_pid"],
+                            claim["process_nonce"],
+                        ))
+                    if (account["process_host"] is not None or
+                        account["process_pid"] is not None or
+                        account["process_nonce"] is not None):
+                        checks.append((
+                            account["process_host"], account["process_pid"],
+                            account["process_nonce"],
+                        ))
+                    for prior_host, prior_pid, _prior_nonce in checks:
                         if (prior_host != authority.process_host or
                             type(prior_pid) is not int or prior_pid <= 0):
                             raise AuthorityBlocked("Prior recovery writer cannot be proven stopped")
@@ -642,6 +739,121 @@ class RetainedObservationAuthority:
                             raise AuthorityBlocked("Prior recovery writer state is uncertain") from error
                         else:
                             raise AuthorityBlocked("Prior recovery writer may still be running")
+
+                def _assert_other_open_runs_stopped() -> int:
+                    other_open = [
+                        r for r in prior
+                        if r["id"] != run_id and r["status"] != "closed"
+                    ]
+                    if not other_open:
+                        return 1
+                    total_open = len(other_open) + 1
+                    if total_open > MAX_CONCURRENT_RUNS:
+                        raise AuthorityBlocked("Another retained run remains open")
+                    for other_r in other_open:
+                        other_claim = authority._run_claim(other_r["id"])
+                        if (other_claim is None or
+                            other_claim["max_concurrent_runs"] < total_open or
+                            other_claim["process_host"] != authority.process_host or
+                            type(other_claim["process_pid"]) is not int or
+                            other_claim["process_pid"] <= 0 or
+                            authority._claim_process_alive(other_claim)):
+                            raise AuthorityBlocked("Another retained run remains open")
+                    return total_open
+
+                if recovery_only:
+                    if (same is None or same["manifest_sha256"] != digest or
+                        same["pair_key"] != key or same["status"] not in
+                        ("verified", "index_pending") or
+                        authority._effective_unresolved_count(run_id)):
+                        raise AuthorityBlocked("No verified retained pair is eligible for no-upload recovery")
+                    total_open = _assert_other_open_runs_stopped()
+                    _assert_prior_process_stopped()
+                    if authority._has_run_claim_table():
+                        if total_open > 1:
+                            db.execute(
+                                "INSERT OR REPLACE INTO retained_run_claim VALUES (?,?,?,?,?)",
+                                (run_id, authority.process_host, authority.process_pid,
+                                 authority.process_nonce, max(total_open, max_concurrent_runs)),
+                            )
+                        else:
+                            db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (run_id,))
+                elif resume_open:
+                    if (same is None or same["manifest_sha256"] != digest or
+                        same["pair_key"] != key or
+                        same["status"] not in ("active", "verified", "index_pending")):
+                        raise AuthorityBlocked("No open retained pair is eligible for crash recovery")
+                    total_open = _assert_other_open_runs_stopped()
+                    if account["cooldown_until"] > now:
+                        raise AuthorityBlocked("Provider quota cooldown remains active")
+                    _assert_prior_process_stopped()
+                    if authority._has_run_claim_table():
+                        if total_open > 1:
+                            db.execute(
+                                "INSERT OR REPLACE INTO retained_run_claim VALUES (?,?,?,?,?)",
+                                (run_id, authority.process_host, authority.process_pid,
+                                 authority.process_nonce, max(total_open, max_concurrent_runs)),
+                            )
+                        else:
+                            db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (run_id,))
+                    authority._ensure_run_adoption_table()
+                    existing_adoptions = authority._run_adoptions(run_id)
+                    if existing_adoptions:
+                        last_ad = existing_adoptions[-1]
+                        p_start = last_ad["adopted_at"]
+                        p_dead = last_ad["deadline_at"]
+                        p_ev = last_ad["evidence_json"]
+                    else:
+                        p_start = same["started_at"]
+                        p_dead = same["deadline_at"]
+                        p_ev = same["evidence_json"]
+                    db.execute(
+                        "INSERT INTO retained_run_adoption VALUES (?,?,?,?,?,?,?,?)",
+                        (uuid.uuid4().hex, run_id, p_start, p_dead, p_ev,
+                         now, deadline, _canonical(evidence)),
+                    )
+                    db.execute(
+                        "UPDATE retained_run SET deadline_at=? WHERE id=?",
+                        (deadline, run_id),
+                    )
+                    reconciled_ids = authority._reconciled_attempt_ids()
+                    for att in db.execute(
+                        "SELECT * FROM retained_attempt WHERE run_id=? AND status='unresolved'",
+                        (run_id,),
+                    ).fetchall():
+                        if att["id"] in reconciled_ids:
+                            continue
+                        if att["dispatched_at"] is None:
+                            credit = int(att["bytes"])
+                        elif att["kind"] != "media_chunk" and att["http_status"] is None and att["bytes"] <= 4096:
+                            credit = 0
+                        else:
+                            continue
+                        proof = {
+                            "schema": CRASH_ADOPTION_RECONCILIATION_SCHEMA,
+                            "attempt_id": att["id"],
+                            "run_id": run_id,
+                            "pair_key": key,
+                            "manifest_sha256": digest,
+                            "account_id": account_id,
+                            "writer_id": writer_id,
+                            "original_http_status": att["http_status"],
+                            "original_charge_bytes": att["bytes"],
+                            "dispatched": att["dispatched_at"] is not None,
+                            "uncommitted_retry_bytes": credit,
+                            "applied_at": now,
+                        }
+                        p_raw = _canonical(proof)
+                        p_digest = hashlib.sha256(p_raw.encode()).hexdigest()
+                        db.execute(
+                            "INSERT INTO retained_reconciliation VALUES (?,?,?,?,?,?)",
+                            (att["id"], run_id, key, p_raw, p_digest, now),
+                        )
+                        if credit > 0:
+                            db.execute(
+                                "UPDATE retained_run SET reserved_remaining=reserved_remaining+? WHERE id=?",
+                                (credit, run_id),
+                            )
                 else:
                     if same is not None or any(r["pair_key"] == key for r in prior):
                         raise AuthorityBlocked("Retained run or source pair replay")
@@ -669,7 +881,9 @@ class RetainedObservationAuthority:
                             if (claim is None or
                                 claim["max_concurrent_runs"] != max_concurrent_runs or
                                 open_r["deadline_at"] <= now or
-                                not authority._claim_process_alive(claim)):
+                                claim["process_host"] != authority.process_host or
+                                (not authority._claim_process_alive(claim) and
+                                 abs(open_r["deadline_at"] - deadline) > 5.0)):
                                 raise AuthorityBlocked("Prior retained pair is not index committed")
                         if authority._blocking_unresolved_count(
                             now, {r["id"] for r in nonterminal_runs}
@@ -704,9 +918,10 @@ class RetainedObservationAuthority:
                     elif authority._has_run_claim_table():
                         db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (run_id,))
                 db.execute(
-                    "UPDATE retained_account SET boot_id=COALESCE(boot_id,?),process_host=?,"
-                    "process_pid=?,process_nonce=?,last_clock=? WHERE id=1",
-                    (boot, authority.process_host, authority.process_pid,
+                    "UPDATE retained_account SET boot_id=CASE WHEN ? THEN ? ELSE COALESCE(boot_id,?) END,"
+                    "process_host=?,process_pid=?,process_nonce=?,last_clock=? WHERE id=1",
+                    (1 if (recovery_only or resume_open) else 0, boot, boot,
+                     authority.process_host, authority.process_pid,
                      authority.process_nonce, now),
                 )
             authority._run(allow_recovery=True)
@@ -748,7 +963,8 @@ class RetainedObservationAuthority:
                 account["process_host"], account["process_pid"], account["process_nonce"]
             ) != (self.process_host, self.process_pid, self.process_nonce):
                 raise AuthorityBlocked("Retained writer process claim changed")
-        if account["boot_id"] is not None and account["boot_id"] != self.boot_id and not self.recovery_only:
+        if (account["boot_id"] is not None and account["boot_id"] != self.boot_id and
+            not (self.recovery_only or self.resume_open)):
             raise AuthorityBlocked("Retained boot identity changed")
         if (account["next_slot"] < 0 or account["last_clock"] < 0 or
             account["cooldown_until"] < 0):
@@ -784,7 +1000,8 @@ class RetainedObservationAuthority:
                 not _valid_digest(row["proof_sha256"]) or
                 hashlib.sha256(row["proof_json"].encode()).hexdigest() != row["proof_sha256"] or
                 schema not in (RECONCILIATION_SCHEMA,
-                               STATUS_PROBE_RECONCILIATION_SCHEMA) or
+                               STATUS_PROBE_RECONCILIATION_SCHEMA,
+                               CRASH_ADOPTION_RECONCILIATION_SCHEMA) or
                 proof.get("attempt_id") != row["attempt_id"] or
                 proof.get("run_id") != row["run_id"] or
                 proof.get("pair_key") != row["pair_key"] or
@@ -801,6 +1018,37 @@ class RetainedObservationAuthority:
                                                        self.account_id)
             receipt = manifest["receipt"]
             payload = manifest["payload"]
+            if schema == CRASH_ADOPTION_RECONCILIATION_SCHEMA:
+                credit = proof.get("uncommitted_retry_bytes")
+                undispatched = (
+                    attempt["dispatched_at"] is None and
+                    proof.get("dispatched") is False and
+                    credit == attempt["bytes"]
+                )
+                control_interrupted = (
+                    attempt["dispatched_at"] is not None and
+                    proof.get("dispatched") is True and
+                    attempt["http_status"] is None and
+                    attempt["kind"] != "media_chunk" and
+                    attempt["bytes"] <= 4096 and
+                    credit == 0
+                )
+                if (attempt["run_id"] != run["id"] or run["pair_key"] != key or
+                    row["pair_key"] != key or attempt["status"] != "unresolved" or
+                    attempt["http_status"] is not None or
+                    not (undispatched or control_interrupted) or
+                    proof.get("manifest_sha256") != digest or
+                    proof.get("account_id") != self.account_id or
+                    proof.get("writer_id") != self.writer_id or
+                    proof.get("original_http_status") is not None or
+                    proof.get("original_charge_bytes") != attempt["bytes"] or
+                    type(credit) is not int):
+                    raise AuthorityBlocked(
+                        "Retained crash-adoption reconciliation attempt identity differs"
+                    )
+                resolved.add(row["attempt_id"])
+                credits_by_run[run["id"]] = credits_by_run.get(run["id"], 0) + credit
+                continue
             if schema == STATUS_PROBE_RECONCILIATION_SCHEMA:
                 probe_id = proof.get("probe_attempt_id")
                 probe = (self.db.execute("SELECT * FROM retained_attempt WHERE id=?",
@@ -823,7 +1071,7 @@ class RetainedObservationAuthority:
                 )
                 if (attempt["run_id"] != run["id"] or run["pair_key"] != key or
                     row["pair_key"] != key or attempt["status"] != "unresolved" or
-                    attempt["http_status"] not in (500, 502, 503, 504) or
+                    attempt["http_status"] not in (None, 500, 502, 503, 504) or
                     not (is_media_attempt or is_status_attempt) or
                     attempt["method"] != "PUT" or attempt["dispatched_at"] is None or
                     probe is None or probe["id"] == attempt["id"] or
@@ -1174,16 +1422,34 @@ class RetainedObservationAuthority:
             if source in payload_identities:
                 raise AuthorityBlocked("Retained ledger repeats a payload generation")
             payload_identities.add(source)
+            adoptions = self._run_adoptions(run["id"])
+            initial_deadline = (
+                adoptions[0]["prior_deadline_at"] if adoptions else run["deadline_at"]
+            )
             if (run["manifest_sha256"] != digest or run["pair_key"] != key or
                 run["media_bytes"] != manifest["payload"]["bytes"] + manifest["receipt"]["bytes"] or
                 run["control_allowance"] != manifest["control_allowance_bytes"] or
                 run["budget_bytes"] != manifest["max_charged_bytes"] or
-                not 0 < run["deadline_at"] - run["started_at"] <= manifest["max_duration_seconds"]):
+                not 0 < initial_deadline - run["started_at"] <= manifest["max_duration_seconds"]):
                 raise AuthorityBlocked("Retained run manifest or limits changed")
             evidence = json.loads(run["evidence_json"])
             _review_evidence(evidence, run_id=run["id"], writer_id=self.writer_id,
                              account_id=self.account_id, manifest_sha256=digest,
-                             now=run["started_at"], deadline_at=run["deadline_at"])
+                             now=run["started_at"], deadline_at=initial_deadline)
+            prev_deadline = initial_deadline
+            for ad in adoptions:
+                if (ad["run_id"] != run["id"] or
+                    ad["prior_deadline_at"] != prev_deadline or
+                    ad["adopted_at"] < run["started_at"] or
+                    not 0 < ad["deadline_at"] - ad["adopted_at"] <= manifest["max_duration_seconds"]):
+                    raise AuthorityBlocked("Retained run adoption window is malformed")
+                ad_evidence = json.loads(ad["evidence_json"])
+                _review_evidence(ad_evidence, run_id=run["id"], writer_id=self.writer_id,
+                                 account_id=self.account_id, manifest_sha256=digest,
+                                 now=ad["adopted_at"], deadline_at=ad["deadline_at"])
+                prev_deadline = ad["deadline_at"]
+            if adoptions and prev_deadline != run["deadline_at"]:
+                raise AuthorityBlocked("Retained run deadline differs from latest adoption")
             if (run["reserved"] not in (0, 1) or
                 not 0 <= run["reserved_remaining"] <= run["budget_bytes"]):
                 raise AuthorityBlocked("Retained reservation is malformed")
@@ -1192,10 +1458,15 @@ class RetainedObservationAuthority:
                     raise AuthorityBlocked("Retained pair metadata changed")
             elif run["metadata_json"] is not None or run["reserved_remaining"] != 0:
                 raise AuthorityBlocked("Unreserved retained pair has a charge")
+            max_deadline = max(
+                [run["deadline_at"]] +
+                [ad["prior_deadline_at"] for ad in adoptions] +
+                [ad["deadline_at"] for ad in adoptions]
+            )
             attempts = self.db.execute("SELECT * FROM retained_attempt WHERE run_id=?", (run["id"],)).fetchall()
             spent = 0
             for attempt in attempts:
-                spent += self._validate_attempt(attempt, run)
+                spent += self._validate_attempt(attempt, run, max_deadline=max_deadline)
             net_spent = spent - self._status_probe_reconciled_credits(run["id"])
             if net_spent < 0:
                 raise AuthorityBlocked("Retained pair status-probe credit exceeds spend")
@@ -1263,14 +1534,24 @@ class RetainedObservationAuthority:
             )
             if b["dispatched_at"] - a["dispatched_at"] < PACING_SECONDS - 1e-6:
                 raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+            same_adoption_epoch = True
+            if owner_a == owner_b and owner_a[0] == "run":
+                if any(
+                    a["dispatched_at"] <= ad["adopted_at"] <= b["dispatched_at"]
+                    for ad in self._run_adoptions(owner_a[1])
+                ):
+                    same_adoption_epoch = False
             if (
                 owner_a == owner_b and
+                same_adoption_epoch and
                 b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9
             ):
                 raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
 
     @staticmethod
-    def _validate_attempt(attempt: sqlite3.Row, run: sqlite3.Row) -> int:
+    def _validate_attempt(attempt: sqlite3.Row, run: sqlite3.Row, *,
+                          max_deadline: float | None = None) -> int:
+        deadline_limit = run["deadline_at"] if max_deadline is None else max_deadline
         amount = attempt["bytes"]
         if (not isinstance(amount, int) or amount < 0 or
             attempt["method"] not in ("GET", "POST", "PUT", "PATCH", "DELETE") or
@@ -1284,7 +1565,7 @@ class RetainedObservationAuthority:
         through = _finite_nonnegative(attempt["charge_through"], "charge-through time")
         timeout = _finite_nonnegative(attempt["timeout_s"], "request timeout")
         if (timeout <= 0 or not run["started_at"] <= at <= slot or
-            slot + timeout >= run["deadline_at"] or through < slot + timeout):
+            slot + timeout >= deadline_limit or through < slot + timeout):
             raise AuthorityBlocked("Malformed retained attempt timing")
         dispatch = attempt["dispatched_at"]
         mono = attempt["dispatch_monotonic"]
@@ -1293,7 +1574,7 @@ class RetainedObservationAuthority:
         if dispatch is not None:
             dispatch = _finite_nonnegative(dispatch, "actual dispatch")
             _finite_nonnegative(mono, "monotonic dispatch")
-            if (dispatch < slot or dispatch + timeout >= run["deadline_at"] or
+            if (dispatch < slot or dispatch + timeout >= deadline_limit or
                 through < dispatch + timeout):
                 raise AuthorityBlocked("Malformed retained dispatch timing")
         http = attempt["http_status"]
@@ -1347,9 +1628,11 @@ class RetainedObservationAuthority:
 
     def validate_manifest_limits(self, max_charged_bytes: int, max_duration_seconds: int) -> None:
         account, run = self._run()
+        adoptions = self._run_adoptions(run["id"])
+        window_start = adoptions[-1]["adopted_at"] if adoptions else run["started_at"]
         if (_positive_int(max_charged_bytes, "manifest byte limit") != run["budget_bytes"] or
             _positive_int(max_duration_seconds, "manifest duration") <
-            run["deadline_at"] - run["started_at"]):
+            run["deadline_at"] - window_start):
             raise AuthorityBlocked("Retained run differs from reviewed manifest limits")
         self._active(account, run, self._now(account))
 
@@ -1525,21 +1808,42 @@ class RetainedObservationAuthority:
             self.db.execute("UPDATE retained_attempt SET status=?,http_status=?,"
                             "charge_through=MAX(charge_through,?) WHERE id=?",
                             ("settled" if settled else "unresolved", status_code, now, attempt_id))
-            if not settled and self._has_run_claim_table():
-                self.db.execute(
-                    "UPDATE retained_run_claim SET max_concurrent_runs=1 WHERE run_id=?",
-                    (self.release_id,),
-                )
             if status_code in (403, 429):
                 self.db.execute("UPDATE retained_account SET cooldown_until=MAX(cooldown_until,?) WHERE id=1",
                                 (now + QUOTA_COOLDOWN_SECONDS,))
             self.db.execute("UPDATE retained_account SET last_clock=? WHERE id=1", (now,))
 
+    def unresolved_session_media_attempts(self, session_url: str) -> list[dict]:
+        """Return unreconciled media_chunk attempts for a resumable session URL."""
+        _required_identity(session_url, "resumable session URL")
+        self._run()
+        target_sha256 = hashlib.sha256(session_url.encode("utf-8")).hexdigest()
+        resolved = self._reconciled_attempt_ids()
+        rows = self.db.execute(
+            "SELECT * FROM retained_attempt WHERE run_id=? AND target_sha256=? "
+            "AND kind='media_chunk' ORDER BY at, rowid",
+            (self.release_id, target_sha256),
+        ).fetchall()
+        settled_prior_bytes = 0
+        out: list[dict] = []
+        for row in rows:
+            if row["status"] == "settled":
+                settled_prior_bytes += int(row["bytes"])
+            elif row["id"] not in resolved:
+                out.append({
+                    "attempt_id": row["id"],
+                    "bytes": int(row["bytes"]),
+                    "http_status": row["http_status"],
+                    "dispatched_at": row["dispatched_at"],
+                    "settled_prior_bytes": settled_prior_bytes,
+                })
+        return out
+
     def reconcile_attempt_by_status_probe(
         self, *, failed_attempt_id: str, probe_attempt_id: str,
         acknowledged_bytes: int, committed_bytes: int,
     ) -> str:
-        """Reconcile a transient 5xx media_chunk attempt after a settled status probe.
+        """Reconcile a transient 5xx or crash-interrupted session attempt after a settled status probe.
 
         The original retained_attempt row and its byte charge are never rewritten.
         An append-only proof row records the settled status probe and credits any
@@ -1570,13 +1874,25 @@ class RetainedObservationAuthority:
             ).fetchone()
             max_media = max(self.manifest["payload"]["bytes"],
                             self.manifest["receipt"]["bytes"])
+            is_status_attempt = (
+                failed is not None and
+                failed["kind"] == "resumable_status" and
+                failed["target_category"] == "resumable_status" and
+                failed["bytes"] == 0 and committed_bytes == 0
+            )
+            is_media_attempt = (
+                failed is not None and
+                failed["kind"] == "media_chunk" and
+                failed["target_category"] == "media_chunk" and
+                0 < failed["bytes"] <= (8 << 20) and
+                (probe is None or probe["http_status"] not in (200, 201) or
+                 committed_bytes == failed["bytes"])
+            )
             if (prior is not None or failed is None or probe is None or
                 failed["status"] != "unresolved" or
-                failed["http_status"] not in (500, 502, 503, 504) or
-                failed["kind"] != "media_chunk" or
-                failed["target_category"] != "media_chunk" or
+                failed["http_status"] not in (None, 500, 502, 503, 504) or
+                not (is_media_attempt or is_status_attempt) or
                 failed["method"] != "PUT" or failed["dispatched_at"] is None or
-                not 0 < failed["bytes"] <= (8 << 20) or
                 probe["status"] != "settled" or
                 probe["http_status"] not in (200, 201, 308) or
                 probe["kind"] != "resumable_status" or
@@ -1589,9 +1905,7 @@ class RetainedObservationAuthority:
                 type(committed_bytes) is not int or
                 not 0 <= acknowledged_bytes <= max_media or
                 not 0 <= committed_bytes <= failed["bytes"] or
-                committed_bytes > acknowledged_bytes or
-                (probe["http_status"] in (200, 201) and
-                 committed_bytes != failed["bytes"])):
+                committed_bytes > acknowledged_bytes):
                 raise AuthorityBlocked(
                     "Transient 5xx media attempt cannot be reconciled by status probe"
                 )
@@ -1630,7 +1944,7 @@ class RetainedObservationAuthority:
                 (self.release_id, failed["target_sha256"]),
             ).fetchall()
             for item in intermediate_probes:
-                if (item["http_status"] in (500, 502, 503, 504) and
+                if (item["http_status"] in (None, 500, 502, 503, 504) and
                     item["dispatched_at"] is not None and
                     failed["dispatched_at"] <= item["dispatched_at"] <=
                         probe["dispatched_at"]):
@@ -1665,12 +1979,6 @@ class RetainedObservationAuthority:
                 "WHERE id=?",
                 (uncommitted_retry_bytes, self.release_id),
             )
-            if (self._has_run_claim_table() and self.max_concurrent_runs > 1 and
-                self._effective_unresolved_count(self.release_id) == 0):
-                self.db.execute(
-                    "UPDATE retained_run_claim SET max_concurrent_runs=? WHERE run_id=?",
-                    (self.max_concurrent_runs, self.release_id),
-                )
             self.db.execute(
                 "UPDATE retained_account SET last_clock=? WHERE id=1", (now,),
             )

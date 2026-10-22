@@ -46,7 +46,7 @@ RELEASE_SCHEMA = "catbird.drive.retained-cache-release.v1"
 STAGE_RELEASE_APPROVAL_REF = "josh-authorized-2026-10-22-verified-local-stage-release"
 MAX_PAIRS = 8
 MAX_CONCURRENT_PAIRS = 4
-DEFAULT_CONCURRENT_PAIRS = 3
+DEFAULT_CONCURRENT_PAIRS = 1
 MAX_RESERVED_BYTES = MAX_PAIRS * PILOT_CHARGE_LIMIT
 MAX_STAGED_BYTES = 32 * (1 << 30)
 DATA_ROOT = Path("/data")
@@ -514,11 +514,22 @@ def _kill_child_tree(child: subprocess.Popen) -> None:
         raise Conflict("Runner could not reap timed-out worker")
 
 
+def _effective_stop_at(stop_at: float | None) -> float:
+    if stop_at is None:
+        return STOP_AT
+    if isinstance(stop_at, bool) or not isinstance(stop_at, (int, float)):
+        raise Conflict("Runner stop_at epoch is invalid")
+    value = float(stop_at)
+    if not math.isfinite(value) or value <= 0:
+        raise Conflict("Runner stop_at epoch is invalid")
+    return min(value, STOP_AT)
+
+
 def _run_child(command: list[str], *, deadline: float, status: Status,
                log_path: Path, runner_stop_monotonic: float,
                capture_dir: Path, inflight_allowance: int,
                stop_at: float | None = None) -> int:
-    effective_stop = STOP_AT if stop_at is None else stop_at
+    effective_stop = _effective_stop_at(stop_at)
     if not sys.platform.startswith("linux"):
         raise Conflict("Retained runner watchdog requires Linux")
     if log_path.exists() or log_path.is_symlink():
@@ -578,7 +589,7 @@ def _run_children_concurrent(
                 for task in wave_tasks
             ]
             return [f.result() for f in futures]
-    effective_stop = STOP_AT if stop_at is None else stop_at
+    effective_stop = _effective_stop_at(stop_at)
     if not sys.platform.startswith("linux"):
         raise Conflict("Retained runner watchdog requires Linux")
     for task in wave_tasks:
@@ -602,11 +613,6 @@ def _run_children_concurrent(
         status.update(state="transferring", child_pid=children[0].pid,
                       child_pids=[c.pid for c in children])
         while any(c.poll() is None for c in children):
-            if any(c.poll() not in (None, 0) for c in children):
-                for c in children:
-                    if c.poll() is None:
-                        _kill_child_tree(c)
-                break
             if time.monotonic() >= cutoff or time.time() >= effective_stop - 30:
                 for c in children:
                     if c.poll() is None:
@@ -672,15 +678,13 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
     if (type(max_concurrent_pairs) is not int or
             not 1 <= max_concurrent_pairs <= MAX_CONCURRENT_PAIRS):
         raise Conflict("Runner max_concurrent_pairs must be 1..4")
-    effective_stop = STOP_AT if stop_at is None else stop_at
-    if type(effective_stop) not in (int, float) or not math.isfinite(effective_stop) or effective_stop <= 0:
-        raise Conflict("Runner stop_at epoch is invalid")
+    effective_stop = _effective_stop_at(stop_at)
     if (not account_id or not writer_id or evidence_dir.is_symlink()
             or not evidence_dir.is_dir() or data_root.resolve() != DATA_ROOT):
         raise Conflict("Runner identity, evidence directory, or data root differs")
     if oauth_file.is_symlink() or not oauth_file.is_file():
         raise Conflict("Existing OAuth file is unavailable")
-    candidates = load_snapshot(snapshot_json, snapshot_sha256, snapshot_dir, account_id)
+    candidates = list(load_snapshot(snapshot_json, snapshot_sha256, snapshot_dir, account_id))
     if not candidates:
         raise Conflict("Empty current-live snapshot is not historical coverage proof")
     seconds = effective_stop - time.time()
@@ -697,6 +701,102 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = Status(status_file, runner_id, snapshot_sha256)
         try:
+            initial_account = TransferAuthority.inspect_retained_account(
+                authority_db, writer_id=writer_id, account_id=account_id)
+            open_ids = list(
+                initial_account.get("nonterminal_run_ids") or
+                ([initial_account["nonterminal_run_id"]]
+                 if initial_account.get("nonterminal_run_id") else [])
+            )
+            inspect_open = getattr(TransferAuthority, "inspect_open_retained_run", None)
+            if open_ids and callable(inspect_open):
+                for open_id in open_ids:
+                    open_info = inspect_open(
+                        authority_db, writer_id=writer_id,
+                        account_id=account_id, run_id=open_id,
+                    )
+                    review_path = evidence_dir / (open_id + ".json")
+                    if (open_info.get("status") not in ("active", "verified", "index_pending")
+                            or open_info.get("owner_host_matches") is not True
+                            or open_info.get("owner_alive") is not False
+                            or not _under(review_path, evidence_dir)
+                            or not review_path.is_file()):
+                        break
+                    now = time.time()
+                    manifest = open_info["manifest"]
+                    duration = manifest["max_duration_seconds"]
+                    deadline = min(now + duration, effective_stop - STOP_MARGIN_SECONDS,
+                                   now + monotonic_stop - time.monotonic() - STOP_MARGIN_SECONDS)
+                    if deadline - now <= 330:
+                        raise Conflict("Insufficient reviewed transfer window before capture STOP")
+                    open_cand = {
+                        "run_id": open_id,
+                        "pair_key": open_info["pair_key"],
+                        "manifest_sha256": open_info["manifest_sha256"],
+                        "manifest": manifest,
+                    }
+                    _evidence(review_path, open_cand, account_id, writer_id, deadline, now)
+                    match_cand = next((c for c in candidates if c["run_id"] == open_id), None)
+                    if match_cand is not None:
+                        manifest_path = match_cand["manifest_path"]
+                    else:
+                        manifest_path = evidence_dir / f"open-manifest-{open_id}.json"
+                        manifest_path.write_bytes(open_info["manifest_raw"])
+                    run_work = data_root / ("gcs-drive-retained-" + open_id)
+                    log_path = data_root / ("retained-run-" + runner_id + "-" + open_id + ".log")
+                    mode_flag = (
+                        "--resume-open" if open_info["status"] == "active"
+                        else "--recovery-only"
+                    )
+                    command = [
+                        sys.executable, "-B",
+                        str(Path(__file__).with_name("gcs_drive_retained_overflow.py")),
+                        "--overflow-manifest", str(manifest_path),
+                        "--run-id", open_id, "--account-id", account_id,
+                        "--writer-id", writer_id, "--authority-db", str(authority_db),
+                        "--review-evidence", str(review_path),
+                        "--deadline-epoch", str(deadline), "--work-dir", str(run_work),
+                        "--oauth-file", str(oauth_file), "--once", "--retain-gcs",
+                        "--quota-observation", mode_flag,
+                    ]
+                    allowance = (
+                        manifest["payload"]["bytes"] + manifest["receipt"]["bytes"]
+                        + CONTROL_STAGING_BYTES
+                    )
+                    status.update(state="recovering_open_pair",
+                                  last_pair=open_info["pair_key"],
+                                  child_deadline_epoch=deadline)
+                    code = child_runner(
+                        command, deadline=deadline, status=status,
+                        log_path=log_path, runner_stop_monotonic=monotonic_stop,
+                        capture_dir=capture_dir, inflight_allowance=allowance,
+                    )
+                    if code != 0:
+                        reason = _child_stop_reason(code, log_path)
+                        status.update(state="stopped", stop_reason=reason)
+                        raise Conflict("Retained pair exited without verified closure")
+                    row = TransferAuthority.inspect_retained_pair(
+                        authority_db, writer_id=writer_id, account_id=account_id,
+                        run_id=open_id, pair_key=open_info["pair_key"],
+                        manifest_sha256=open_info["manifest_sha256"])
+                    if (row.get("status") != "closed"
+                            or not SHA256.fullmatch(str(row.get("mapping_sha256") or ""))):
+                        raise Conflict("Child exited without durable shared mapping commit")
+                    release_closed_pair_stage(
+                        open_id, open_info["pair_key"], row["mapping_sha256"],
+                        data_root=data_root)
+                    account_after = TransferAuthority.inspect_retained_account(
+                        authority_db, writer_id=writer_id, account_id=account_id)
+                    status.update(state="pair_closed",
+                                  pairs_closed=status.base["pairs_closed"] + 1,
+                                  last_pair=open_info["pair_key"],
+                                  last_mapping_sha256=row["mapping_sha256"],
+                                  charged_bytes_observed=account_after["known_local_rolling_bytes"],
+                                  cooldown_until=account_after["cooldown_until"])
+                    candidates = [
+                        c for c in candidates
+                        if c["run_id"] != open_id and c["pair_key"] != open_info["pair_key"]
+                    ]
             index = 0
             while index < len(candidates):
                 wave = list(candidates[index:index + max_concurrent_pairs])
@@ -776,15 +876,11 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                     runner_stop_monotonic=monotonic_stop, capture_dir=capture_dir,
                     stop_at=effective_stop, child_runner=child_runner,
                 )
-                for task, code in zip(wave_tasks, codes):
-                    if code != 0:
-                        reason = _child_stop_reason(code, task["log_path"])
-                        status.update(state="stopped", stop_reason=reason)
-                        raise Conflict("Retained pair exited without verified closure")
                 account_after = TransferAuthority.inspect_retained_account(
                     authority_db, writer_id=writer_id, account_id=account_id)
-                _account_gate(account_after, time.time())
-                for task in wave_tasks:
+                for task, code in zip(wave_tasks, codes):
+                    if code != 0:
+                        continue
                     candidate = task["candidate"]
                     row = TransferAuthority.inspect_retained_pair(
                         authority_db, writer_id=writer_id, account_id=account_id,
@@ -801,6 +897,12 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                                   last_mapping_sha256=row["mapping_sha256"],
                                   charged_bytes_observed=account_after["known_local_rolling_bytes"],
                                   cooldown_until=account_after["cooldown_until"])
+                for task, code in zip(wave_tasks, codes):
+                    if code != 0:
+                        reason = _child_stop_reason(code, task["log_path"])
+                        status.update(state="stopped", stop_reason=reason)
+                        raise Conflict("Retained pair exited without verified closure")
+                _account_gate(account_after, time.time())
                 if missing_evidence_pair is not None:
                     status.update(state="awaiting_fresh_evidence",
                                   stop_reason="fresh_pair_evidence_missing",

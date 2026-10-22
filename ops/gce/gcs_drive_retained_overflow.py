@@ -411,16 +411,27 @@ class RetainedOverflow(Drain):
             raise Conflict("Pinned overflow folder identity differs")
 
     def _ensure_folder(self, entry: dict) -> None:
+        resume_open = bool(getattr(self.authority, "resume_open", False))
         if entry["status"] == "folder_create_inflight":
             try:
                 self._verify_folder(entry)
             except urllib.error.HTTPError as error:
                 if error.code == 404:
-                    raise Conflict("Uncertain overflow folder create is not visible; no retry") from error
-                raise
-            entry["status"] = "folder_reconciled_unsettled"
-            self.save()
-            raise Conflict("Uncertain overflow folder create needs charge review")
+                    if resume_open:
+                        entry["status"] = "ids_pinned"
+                        self.save()
+                    else:
+                        raise Conflict("Uncertain overflow folder create is not visible; no retry") from error
+                else:
+                    raise
+            else:
+                if resume_open:
+                    entry["status"] = "folder_verified"
+                    self.save()
+                    return
+                entry["status"] = "folder_reconciled_unsettled"
+                self.save()
+                raise Conflict("Uncertain overflow folder create needs charge review")
         if entry["status"] == "ids_pinned":
             entry["status"] = "folder_create_inflight"
             self.save()
@@ -430,7 +441,9 @@ class RetainedOverflow(Drain):
                 raise Conflict("Overflow folder create returned different ID")
             entry["status"] = "folder_create_ack"
             self.save()
-        if entry["status"] in ("folder_create_ack", "folder_verified"):
+        if entry["status"] in ("folder_create_ack", "folder_verified") or (
+            resume_open and entry["status"] == "file_upload_inflight"
+        ):
             self._verify_folder(entry)
             entry["status"] = "folder_verified"
             self.save()
@@ -586,12 +599,15 @@ class RetainedOverflow(Drain):
                     or entry.get("release_id") != manifest["release_id"]
                     or entry.get("archive_qualified") is not False):
                 raise Conflict("Overflow journal identity differs")
-            if entry.get("status") in ("file_upload_inflight", "folder_reconciled_unsettled"):
+            resume_open = bool(getattr(self.authority, "resume_open", False))
+            if entry.get("status") == "folder_reconciled_unsettled" or (
+                entry.get("status") == "file_upload_inflight" and not resume_open
+            ):
                 raise Conflict("Overflow replay requires review; no second media send")
             if entry.get("status") not in ("source_verified", "ids_pinned", "folder_create_inflight",
-                                           "folder_create_ack", "folder_verified", "drive_verified",
-                                           "index_pending", "index_put_inflight", "index_verified",
-                                           FINAL_STATUS):
+                                           "folder_create_ack", "folder_verified", "file_upload_inflight",
+                                           "drive_verified", "index_pending", "index_put_inflight",
+                                           "index_verified", FINAL_STATUS):
                 raise Conflict("Overflow journal state is not resumable")
             pair_state = self.authority.pair_status(key, self.manifest_sha256)
             if pair_state in ("verified", "index_pending", "closed"):
@@ -707,8 +723,11 @@ def main(argv=None) -> int:
     parser.add_argument("--retain-gcs", action="store_true")
     parser.add_argument("--quota-observation", action="store_true")
     parser.add_argument("--recovery-only", action="store_true")
+    parser.add_argument("--resume-open", action="store_true")
     parser.add_argument("--max-concurrent-runs", type=int, default=1, choices=(1, 2, 3, 4))
     args = parser.parse_args(argv)
+    if args.recovery_only and args.resume_open:
+        parser.error("--recovery-only and --resume-open are mutually exclusive")
     try:
         manifest, manifest_sha256 = load_overflow_manifest(
             args.overflow_manifest, release_id=args.run_id, account_id=args.account_id)
@@ -784,7 +803,8 @@ def _run_worker_guarded(args, manifest: dict, digest: str, evidence: dict) -> in
             args.authority_db, run_id=args.run_id, writer_id=args.writer_id,
             account_id=args.account_id, manifest_bytes=raw, evidence=evidence,
             deadline_at=args.deadline_epoch, recovery_only=args.recovery_only,
-            max_concurrent_runs=getattr(args, "max_concurrent_runs", 1))
+            max_concurrent_runs=getattr(args, "max_concurrent_runs", 1),
+            resume_open=getattr(args, "resume_open", False))
         for required in ("reserve_index_create", "mark_pair_verified", "close_pair",
                          "mark_index_committed", "pair_status"):
             if not callable(getattr(authority, required, None)):

@@ -300,9 +300,18 @@ class SafeDrive:
         return existing[0] if existing else None
 
     def ensure_file(self, path, parent, expected, state, save):
-        existing = self.preflight(parent, path.name, expected)
-        if existing:
-            return self.metadata(existing["id"])
+        authority = getattr(self, "authority", None)
+        unresolved_fn = getattr(authority, "unresolved_session_media_attempts", None)
+        reconcile = getattr(authority, "reconcile_attempt_by_status_probe", None)
+        pending_media = (
+            unresolved_fn(state["session"])
+            if "session" in state and callable(unresolved_fn)
+            else []
+        )
+        if not pending_media:
+            existing = self.preflight(parent, path.name, expected)
+            if existing:
+                return self.metadata(existing["id"])
         # Preallocated, durably saved IDs prevent duplicate creates after uncertain outcomes.
         if "id" not in state:
             state["id"] = self.reserve_id()
@@ -320,22 +329,71 @@ class SafeDrive:
         if not session.startswith("https://www.googleapis.com/"):
             raise Conflict("Untrusted resumable-upload URL")
         # Query acknowledged offset on every invocation, including recovery after a lost response.
-        offset = 0
-        try:
-            with self.request(session, "PUT", b"", {"Content-Length": "0", "Content-Range": f"bytes */{expected['size']}"}, kind="resumable_status") as response:
-                completed = json.load(response)
-                return self.metadata(completed["id"])
-        except urllib.error.HTTPError as error:
-            if error.code in (404, 410):
-                raise Conflict(f"Expired Drive resumable session (HTTP {error.code}); preserved ID/session require reconciliation") from error
-            if error.code != 308:
-                raise
-            acknowledged = error.headers.get("Range", "")
-            if acknowledged:
-                match = re.fullmatch(r"bytes=0-(\d+)", acknowledged)
-                if not match:
-                    raise Conflict("Invalid Drive upload range")
-                offset = int(match[1]) + 1
+        offset = None
+        failed_status_ids = []
+        last_status_err = None
+        for delay in (0.0, 1.0, 2.0, 4.0):
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                with self.request(session, "PUT", b"", {"Content-Length": "0", "Content-Range": f"bytes */{expected['size']}"}, kind="resumable_status") as response:
+                    completed = json.load(response)
+                    probe_attempt_id = getattr(self, "last_attempt_id", None)
+                    if callable(reconcile):
+                        for pm in pending_media:
+                            reconcile(
+                                failed_attempt_id=pm["attempt_id"],
+                                probe_attempt_id=probe_attempt_id,
+                                acknowledged_bytes=expected["size"],
+                                committed_bytes=pm["bytes"],
+                            )
+                        for fid in failed_status_ids:
+                            reconcile(
+                                failed_attempt_id=fid,
+                                probe_attempt_id=probe_attempt_id,
+                                acknowledged_bytes=expected["size"],
+                                committed_bytes=0,
+                            )
+                    return self.metadata(completed["id"])
+            except urllib.error.HTTPError as error:
+                if error.code in (404, 410):
+                    raise Conflict(f"Expired Drive resumable session (HTTP {error.code}); preserved ID/session require reconciliation") from error
+                if error.code in (500, 502, 503, 504):
+                    last_status_err = error
+                    fid = getattr(error, "attempt_id", getattr(self, "last_attempt_id", None))
+                    if fid and not pending_media:
+                        failed_status_ids.append(fid)
+                    continue
+                if error.code != 308:
+                    raise
+                acknowledged = error.headers.get("Range", "")
+                if acknowledged:
+                    match = re.fullmatch(r"bytes=0-(\d+)", acknowledged)
+                    if not match:
+                        raise Conflict("Invalid Drive upload range")
+                    offset = int(match[1]) + 1
+                else:
+                    offset = 0
+                probe_attempt_id = getattr(error, "attempt_id", getattr(self, "last_attempt_id", None))
+                if callable(reconcile):
+                    for pm in pending_media:
+                        committed = max(0, min(pm["bytes"], offset - pm["settled_prior_bytes"]))
+                        reconcile(
+                            failed_attempt_id=pm["attempt_id"],
+                            probe_attempt_id=probe_attempt_id,
+                            acknowledged_bytes=offset,
+                            committed_bytes=committed,
+                        )
+                    for fid in failed_status_ids:
+                        reconcile(
+                            failed_attempt_id=fid,
+                            probe_attempt_id=probe_attempt_id,
+                            acknowledged_bytes=offset,
+                            committed_bytes=0,
+                        )
+                break
+        if offset is None:
+            raise last_status_err
         if not 0 <= offset < expected["size"]:
             raise Conflict("Drive upload offset outside payload")
         recoveries_used = 0
@@ -495,7 +553,10 @@ class Drain:
         else:
             temporary = path.with_name(path.name + ".partial")
             if temporary.exists():
-                raise Conflict("Preserved partial download requires review: " + str(temporary))
+                if getattr(self.authority, "resume_open", False) and not temporary.is_symlink():
+                    temporary.unlink()
+                else:
+                    raise Conflict("Preserved partial download requires review: " + str(temporary))
             self.space(ref.size)
             if self.pilot_manifest is not None:
                 self.authority.assert_active(300)

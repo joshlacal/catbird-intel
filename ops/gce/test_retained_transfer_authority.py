@@ -1008,14 +1008,143 @@ class RetainedAuthorityTests(unittest.TestCase):
         self.assertEqual(inspected["active_run_count"], 0)
         self.assertEqual(inspected["unresolved_attempts"], 0)
 
-    def test_concurrent_run_blocks_new_peer_admission_when_attempt_unresolved(self):
+    def test_non_settled_result_does_not_block_sibling_pairs_or_own_5xx_recovery(self):
         run1, m1, d1 = self.open_run(1, max_concurrent_runs=3)
         self.reserve(run1, m1, d1)
-        fail_att, _ = self.request(run1, m1["payload"]["bytes"], "media_chunk")
+        session1 = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=s1"
+        session1_sha = hashlib.sha256(session1.encode("utf-8")).hexdigest()
+        fail_att, _ = run1.start_request(
+            m1["payload"]["bytes"], 20, "media_chunk", method="PUT",
+            target_category="media_chunk", target_sha256=session1_sha,
+            operation_key="b" * 64,
+        )
         run1.mark_dispatch(fail_att)
         run1.finish_request(fail_att, 503)
-        with self.assertRaises(AuthorityBlocked):
-            self.open_run(2, max_concurrent_runs=3)
+
+        # Sibling run2 is NOT blocked by run1's non-settled 503 attempt
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        run2, m2, d2 = self.open_run(2, max_concurrent_runs=3)
+        self.reserve(run2, m2, d2)
+        p2, _ = self.request(run2, m2["payload"]["bytes"], "media_chunk")
+        run2.mark_dispatch(p2)
+        run2.finish_request(p2, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r2, _ = self.request(run2, m2["receipt"]["bytes"], "media_chunk")
+        run2.mark_dispatch(r2)
+        run2.finish_request(r2, 200)
+        self.finish_index(run2, m2, d2)
+
+        # And run1 can still perform its own 5xx status probe recovery and close
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        probe_att, _ = run1.start_request(
+            0, 20, "resumable_status", method="PUT",
+            target_category="resumable_status", target_sha256=session1_sha,
+            operation_key="c" * 64,
+        )
+        run1.mark_dispatch(probe_att)
+        run1.finish_request(probe_att, 200)
+        run1.reconcile_attempt_by_status_probe(
+            failed_attempt_id=fail_att, probe_attempt_id=probe_att,
+            acknowledged_bytes=m1["payload"]["bytes"],
+            committed_bytes=m1["payload"]["bytes"],
+        )
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r1, _ = self.request(run1, m1["receipt"]["bytes"], "media_chunk")
+        run1.mark_dispatch(r1)
+        run1.finish_request(r1, 200)
+        self.finish_index(run1, m1, d1)
+
+        inspected = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+            clock=self.clock)
+        self.assertIsNone(inspected["nonterminal_run_id"])
+        self.assertEqual(inspected["unresolved_attempts"], 0)
+
+    def test_crash_open_run_adoption_and_session_probe_reconciliation(self):
+        dead_pid = 999999
+        m1 = self.manifest(1)
+        raw1, d1 = self.raw_and_digest(m1)
+        ev1 = self.evidence(m1, d1)
+        with patch.object(retained_module.os, "getpid", return_value=dead_pid):
+            run1 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw1, evidence=ev1,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="synthetic-boot",
+            )
+            self.addCleanup(run1.close)
+            self.reserve(run1, m1, d1)
+            session1 = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=crash1"
+            session1_sha = hashlib.sha256(session1.encode("utf-8")).hexdigest()
+            crash_att, _ = run1.start_request(
+                m1["payload"]["bytes"], 20, "media_chunk", method="PUT",
+                target_category="media_chunk", target_sha256=session1_sha,
+                operation_key="d" * 64,
+            )
+            run1.mark_dispatch(crash_att)
+            # Simulate crash: close sqlite connection without finish_request
+            run1.close()
+
+        with patch.object(retained_module.os, "kill", side_effect=ProcessLookupError):
+            open_info = TransferAuthority.inspect_open_retained_run(
+                self.db_path, writer_id=self.writer_id,
+                account_id=self.account_id, run_id=m1["release_id"],
+            )
+            self.assertEqual(open_info["status"], "active")
+            self.assertTrue(open_info["owner_host_matches"])
+            self.assertFalse(open_info["owner_alive"])
+
+            self.clock.advance(1.0)
+            self.monotonic.advance(1.0)
+            ev_resumed = self.evidence(m1, d1, observed_at=self.clock())
+            resumed = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw1, evidence=ev_resumed,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="synthetic-boot",
+                resume_open=True,
+            )
+            self.addCleanup(resumed.close)
+        pending = resumed.unresolved_session_media_attempts(session1)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["attempt_id"], crash_att)
+
+        probe_att, _ = resumed.start_request(
+            0, 20, "resumable_status", method="PUT",
+            target_category="resumable_status", target_sha256=session1_sha,
+            operation_key="e" * 64,
+        )
+        resumed.mark_dispatch(probe_att)
+        resumed.finish_request(probe_att, 308)
+        resumed.reconcile_attempt_by_status_probe(
+            failed_attempt_id=crash_att, probe_attempt_id=probe_att,
+            acknowledged_bytes=0, committed_bytes=0,
+        )
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        retry_att, _ = resumed.start_request(
+            m1["payload"]["bytes"], 20, "media_chunk", method="PUT",
+            target_category="media_chunk", target_sha256=session1_sha,
+            operation_key="f" * 64,
+        )
+        resumed.mark_dispatch(retry_att)
+        resumed.finish_request(retry_att, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r_att, _ = self.request(resumed, m1["receipt"]["bytes"], "media_chunk")
+        resumed.mark_dispatch(r_att)
+        resumed.finish_request(r_att, 200)
+        self.finish_index(resumed, m1, d1)
+
+        inspected = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+            clock=self.clock)
+        self.assertIsNone(inspected["nonterminal_run_id"])
+        self.assertEqual(inspected["unresolved_attempts"], 0)
 
 
 if __name__ == "__main__":

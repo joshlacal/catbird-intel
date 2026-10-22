@@ -124,13 +124,61 @@ def renewal_digest_path(envelope_path: Path) -> Path:
     return envelope_path.with_name(envelope_path.name + ".renewed.sha256")
 
 
+def renewal_commit_path(envelope_path: Path) -> Path:
+    return envelope_path.with_name(envelope_path.name + ".renewed.commit.json")
+
+
+def renewal_lock_path(envelope_path: Path) -> Path:
+    return envelope_path.with_name(envelope_path.name + ".renewal.lock")
+
+
+def _clamped_stop_at(stop_at: float | None) -> float:
+    return STOP_AT if stop_at is None else min(_finite(stop_at, "stop_at"), STOP_AT)
+
+
+def _recoverable_open_runs(
+    canonical_db: Path, account: dict, *, writer_id: str, account_id: str, now: float
+) -> list[dict]:
+    open_ids = list(
+        account.get("nonterminal_run_ids") or
+        ([account["nonterminal_run_id"]] if account.get("nonterminal_run_id") else [])
+    )
+    if not open_ids:
+        _account_gate(account, now)
+        return []
+    inspect_open = getattr(TransferAuthority, "inspect_open_retained_run", None)
+    if not callable(inspect_open):
+        _account_gate(account, now)
+        return []
+    recovered: list[dict] = []
+    for open_id in open_ids:
+        info = inspect_open(
+            canonical_db, writer_id=writer_id, account_id=account_id, run_id=open_id
+        )
+        if (not isinstance(info, dict) or
+            info.get("status") not in ("active", "verified", "index_pending") or
+            info.get("owner_host_matches") is not True or
+            info.get("owner_alive") is not False):
+            _account_gate(account, now)
+            return []
+        recovered.append(info)
+    cleared_account = {
+        **account,
+        "nonterminal_run_id": None,
+        "nonterminal_status": None,
+        "nonterminal_run_ids": [],
+    }
+    _account_gate(cleared_account, now)
+    return recovered
+
+
 def _verify_envelope_identity(
     path: Path, expected_sha256: str, *, authority_db: Path,
     oauth_file: Path, account_id: str, writer_id: str,
     now: float, stop_at: float | None = None,
     require_root: bool = True, require_active_window: bool = True,
 ) -> tuple[dict, str]:
-    effective_stop_at = STOP_AT if stop_at is None else _finite(stop_at, "stop_at")
+    effective_stop_at = _clamped_stop_at(stop_at)
     if not SHA256.fullmatch(expected_sha256):
         raise Conflict("Standing envelope digest is invalid")
     if require_root and (os.geteuid() != 0 or path.stat().st_uid != 0 or
@@ -312,11 +360,55 @@ def _atomic_write_private(path: Path, raw: bytes) -> None:
         raise
 
 
+def _heal_interrupted_renewal_commit(
+    envelope_path: Path, *, require_root: bool = True
+) -> None:
+    commit_path = renewal_commit_path(envelope_path)
+    if not (commit_path.exists() or commit_path.is_symlink()):
+        return
+    if require_root and (os.geteuid() != 0 or commit_path.stat().st_uid != 0 or
+                         stat.S_IMODE(commit_path.stat().st_mode) & 0o077):
+        raise Conflict("Standing envelope must be root-owned and private")
+    commit_doc, _ = _read_json(commit_path, 32 * 1024)
+    raw_text = commit_doc.get("raw")
+    commit_sha = commit_doc.get("sha256")
+    if (not isinstance(raw_text, str) or not isinstance(commit_sha, str) or
+        not SHA256.fullmatch(commit_sha)):
+        raise Conflict("Renewed standing commit record is invalid")
+    raw_bytes = raw_text.encode("utf-8")
+    if hashlib.sha256(raw_bytes).hexdigest() != commit_sha:
+        raise Conflict("Renewed standing commit digest mismatch")
+    _atomic_write_private(renewal_envelope_path(envelope_path), raw_bytes)
+    _atomic_write_private(
+        renewal_digest_path(envelope_path), (commit_sha + "\n").encode("ascii")
+    )
+    commit_path.unlink()
+    parent_fd = os.open(commit_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def _load_active_standing(
     envelope_path: Path, expected_sha256: str, *,
     authority_db: Path, oauth_file: Path, account_id: str, writer_id: str,
     now: float, stop_at: float | None = None, require_root: bool = True,
+    _already_locked: bool = False,
 ) -> tuple[dict, str]:
+    if not _already_locked and envelope_path.parent.is_dir() and not envelope_path.parent.is_symlink():
+        env_lock_path = renewal_lock_path(envelope_path)
+        lock_fd = os.open(env_lock_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            return _load_active_standing(
+                envelope_path, expected_sha256, authority_db=authority_db,
+                oauth_file=oauth_file, account_id=account_id,
+                writer_id=writer_id, now=now, stop_at=stop_at,
+                require_root=require_root, _already_locked=True)
+        finally:
+            os.close(lock_fd)
+    _heal_interrupted_renewal_commit(envelope_path, require_root=require_root)
     renewed_path = renewal_envelope_path(envelope_path)
     digest_path = renewal_digest_path(envelope_path)
     has_renewed = renewed_path.exists() or renewed_path.is_symlink()
@@ -368,20 +460,26 @@ def renew_standing_envelope(
     canonical_db = authority_db.resolve(strict=True)
     current_now = time.time() if now is None else _finite(now, "renewal time")
     lock_path = canonical_db.with_name(canonical_db.name + ".renewal.lock")
+    env_lock_path = renewal_lock_path(envelope_path)
     fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    env_fd = os.open(env_lock_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(env_fd, fcntl.LOCK_EX)
         preflight = renewal_writer_preflight(
             authority_db=canonical_db, account_id=account_id,
             writer_id=writer_id, unit_state=unit_state,
             proc_cmdlines=proc_cmdlines)
         account = TransferAuthority.inspect_retained_account(
             canonical_db, writer_id=writer_id, account_id=account_id)
-        _account_gate(account, current_now)
+        _recoverable_open_runs(
+            canonical_db, account, writer_id=writer_id, account_id=account_id, now=current_now
+        )
         active_envelope, active_digest = _load_active_standing(
             envelope_path, expected_sha256, authority_db=canonical_db,
             oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
-            now=current_now, stop_at=stop_at, require_root=require_root)
+            now=current_now, stop_at=stop_at, require_root=require_root,
+            _already_locked=True)
         renewed = {
             "schema": ENVELOPE_SCHEMA,
             "account_id": account_id,
@@ -403,15 +501,28 @@ def renew_standing_envelope(
         raw = json.dumps(renewed, sort_keys=True, separators=(",", ":"),
                          allow_nan=False).encode()
         renewed_digest = hashlib.sha256(raw).hexdigest()
+        commit_path = renewal_commit_path(envelope_path)
         renewed_path = renewal_envelope_path(envelope_path)
         digest_path = renewal_digest_path(envelope_path)
+        commit_raw = json.dumps(
+            {"raw": raw.decode("utf-8"), "sha256": renewed_digest},
+            sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+        _atomic_write_private(commit_path, commit_raw)
         _atomic_write_private(renewed_path, raw)
         _atomic_write_private(digest_path, (renewed_digest + "\n").encode("ascii"))
+        commit_path.unlink()
+        parent_fd = os.open(commit_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         return standing_envelope(
             renewed_path, renewed_digest, authority_db=canonical_db,
             oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
             now=current_now, stop_at=stop_at, require_root=require_root)
     finally:
+        os.close(env_fd)
         os.close(fd)
 
 
@@ -571,7 +682,7 @@ def _runner(*, snapshot_path: Path, snapshot_sha256: str, snapshot_dir: Path,
             monotonic_stop: float | None = None,
             max_concurrent_pairs: int = DEFAULT_CONCURRENT_PAIRS,
             stop_at: float | None = None) -> tuple[int, dict]:
-    effective_stop_at = STOP_AT if stop_at is None else _finite(stop_at, "stop_at")
+    effective_stop_at = _clamped_stop_at(stop_at)
     command = [sys.executable, "-B", str(Path(__file__).with_name("gcs_drive_retained_runner.py")),
                "--snapshot-json", str(snapshot_path), "--snapshot-sha256", snapshot_sha256,
                "--snapshot-dir", str(snapshot_dir), "--authority-db", str(authority_db),
@@ -600,7 +711,7 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
                max_concurrent_pairs: int = DEFAULT_CONCURRENT_PAIRS,
                stop_at: float | None = None) -> dict:
     """Continue successful bounded snapshots; stop on ambiguous results."""
-    effective_stop_at = STOP_AT if stop_at is None else _finite(stop_at, "stop_at")
+    effective_stop_at = _clamped_stop_at(stop_at)
     if (not sys.platform.startswith("linux") or type(max_cycles) is not int or
         not 0 < max_cycles <= MAX_CYCLES or
         type(max_concurrent_pairs) is not int or
@@ -637,9 +748,11 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
         monotonic_stop = min(capture_monotonic_stop, standing_monotonic_stop)
 
         def _has_renewal_companion() -> bool:
+            c_path = renewal_commit_path(envelope_path)
             r_path = renewal_envelope_path(envelope_path)
             d_path = renewal_digest_path(envelope_path)
             return (
+                c_path.exists() or c_path.is_symlink() or
                 r_path.exists() or r_path.is_symlink() or
                 d_path.exists() or d_path.is_symlink()
             )
@@ -697,7 +810,9 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             envelope, digest = _adopt_standing(now, monotonic())
             account = TransferAuthority.inspect_retained_account(
                 canonical, writer_id=writer_id, account_id=account_id)
-            _account_gate(account, now)
+            recoverable_open = _recoverable_open_runs(
+                canonical, account, writer_id=writer_id, account_id=account_id, now=now
+            )
             cycle_dir = work_root / ("cycle-" + uuid.uuid4().hex)
             cycle_dir.mkdir(mode=0o700)
             snapshot_dir = cycle_dir / "snapshot"
@@ -711,10 +826,29 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
                     _adopt_standing(clock(), monotonic())
                 if remaining() < MIN_WINDOW_SECONDS:
                     raise WindowClosing(stop_reason())
-            snapshot, snapshot_raw = snapshot_fn(account_id=account_id, writer_id=writer_id,
-                                                 authority_db=canonical, work=snapshot_dir,
-                                                 monitor=monitor_snapshot,
-                                                 timeout=min(330, remaining() - MIN_WINDOW_SECONDS))
+            if recoverable_open:
+                recovery_candidates = []
+                for open_info in recoverable_open:
+                    m_path = snapshot_dir / ("manifest-" + open_info["pair_key"] + ".json")
+                    _write_new(m_path, open_info["manifest_raw"])
+                    recovery_candidates.append({
+                        "pair_key": open_info["pair_key"],
+                        "release_id": open_info["run_id"],
+                        "manifest_path": str(m_path),
+                        "manifest_sha256": open_info["manifest_sha256"],
+                        "reserved_bytes": open_info["manifest"]["max_charged_bytes"],
+                    })
+                snapshot = {"schema": SNAPSHOT_SCHEMA, "candidates": recovery_candidates}
+                snapshot_raw = json.dumps(
+                    snapshot, sort_keys=True, separators=(",", ":")
+                ).encode()
+            else:
+                snapshot, snapshot_raw = snapshot_fn(
+                    account_id=account_id, writer_id=writer_id,
+                    authority_db=canonical, work=snapshot_dir,
+                    monitor=monitor_snapshot,
+                    timeout=min(330, remaining() - MIN_WINDOW_SECONDS)
+                )
             monitor_snapshot()
             candidates = snapshot.get("candidates")
             if (snapshot.get("schema") != SNAPSHOT_SCHEMA or not isinstance(candidates, list)
@@ -743,7 +877,9 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             local_report = local_check()
             account = TransferAuthority.inspect_retained_account(
                 canonical, writer_id=writer_id, account_id=account_id)
-            _account_gate(account, observed)
+            _recoverable_open_runs(
+                canonical, account, writer_id=writer_id, account_id=account_id, now=observed
+            )
             exclusion_until = min(envelope["manual_colab_hold_until"],
                                   envelope["netcup_nonwriter_hold_until"],
                                   envelope["other_writer_hold_until"],
@@ -773,7 +909,7 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             )
             if runner_fn is _runner:
                 runner_kwargs["max_concurrent_pairs"] = max_concurrent_pairs
-                runner_kwargs["stop_at"] = stop_at
+                runner_kwargs["stop_at"] = effective_stop_at
             code, result = runner_fn(**runner_kwargs)
             finished = result.get("pairs_closed")
             if type(finished) is not int or not 0 <= finished <= len(candidates):

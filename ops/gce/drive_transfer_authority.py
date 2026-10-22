@@ -287,15 +287,24 @@ class TransferAuthority:
             db_path, writer_id=writer_id, account_id=account_id, clock=clock)
 
     @classmethod
+    def inspect_open_retained_run(
+        cls, db_path: Path, *, writer_id: str, account_id: str, run_id: str,
+    ) -> dict:
+        """Read nonterminal retained run state and prior owner process liveness."""
+        from retained_transfer_authority import RetainedObservationAuthority
+        return RetainedObservationAuthority.inspect_open_run(
+            db_path, writer_id=writer_id, account_id=account_id, run_id=run_id)
+
+    @classmethod
     def open_retained_run(
         cls, db_path: Path, *, run_id: str, writer_id: str, account_id: str,
         manifest_bytes: bytes, evidence: dict, deadline_at: float,
         clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
         boot_id: str | None = None, recovery_only: bool = False,
-        max_concurrent_runs: int = 1,
+        max_concurrent_runs: int = 1, resume_open: bool = False,
     ):
-        """Begin one reviewed pair, or recover only its pending index commit."""
+        """Begin one reviewed pair, or recover an interrupted/pending run."""
         from retained_transfer_authority import RetainedObservationAuthority
         return RetainedObservationAuthority.open_run(
             db_path, run_id=run_id, writer_id=writer_id, account_id=account_id,
@@ -303,6 +312,7 @@ class TransferAuthority:
             clock=clock, monotonic_clock=monotonic_clock, boot_id=boot_id,
             recovery_only=recovery_only,
             max_concurrent_runs=max_concurrent_runs,
+            resume_open=resume_open,
         )
 
     @classmethod

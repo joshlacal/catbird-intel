@@ -523,6 +523,70 @@ class RunnerTests(unittest.TestCase):
         latest = self._latest_status()
         self.assertEqual(latest["state"], "stopped")
         self.assertEqual(latest["stop_reason"], "drive_http_429")
+        self.assertEqual(latest["pairs_closed"], 2)
+
+    def test_stop_at_epoch_clamped_to_at_most_stop_at(self):
+        self.assertEqual(runner.DEFAULT_CONCURRENT_PAIRS, 1)
+        self.assertEqual(runner._effective_stop_at(None), runner.STOP_AT)
+        self.assertEqual(runner._effective_stop_at(runner.STOP_AT + 86400), runner.STOP_AT)
+        self.assertEqual(runner._effective_stop_at(runner.STOP_AT - 1200), runner.STOP_AT - 1200)
+
+    def test_wave_runs_as_real_separate_processes_and_preserves_healthy_siblings_when_one_fails(self):
+        status = runner.Status(self.status, "runner-real-procs", self.snapshot_digest)
+        marker_0 = self.root / "proc0.json"
+        marker_1 = self.root / "proc1.json"
+        marker_2 = self.root / "proc2.json"
+        script_ok = (
+            "import json, os, sys, time; "
+            "time.sleep(0.15); "
+            "open(sys.argv[1], 'w').write(json.dumps({'pid': os.getpid(), 'ppid': os.getppid(), 'done': True}))"
+        )
+        script_fail = (
+            "import json, os, sys; "
+            "open(sys.argv[1], 'w').write(json.dumps({'pid': os.getpid(), 'ppid': os.getppid(), 'done': False})); "
+            "raise SystemExit(75)"
+        )
+        wave_tasks = [
+            {
+                "command": [sys.executable, "-c", script_ok, str(marker_0)],
+                "log_path": self.root / "real-child-0.log",
+                "inflight_allowance": 1024,
+            },
+            {
+                "command": [sys.executable, "-c", script_fail, str(marker_1)],
+                "log_path": self.root / "real-child-1.log",
+                "inflight_allowance": 1024,
+            },
+            {
+                "command": [sys.executable, "-c", script_ok, str(marker_2)],
+                "log_path": self.root / "real-child-2.log",
+                "inflight_allowance": 1024,
+            },
+        ]
+        now = time.time()
+        with (mock.patch.object(runner.sys, "platform", "linux"),
+              mock.patch.object(runner, "_arm_parent_death", lambda _ppid: None),
+              mock.patch.object(runner, "HEARTBEAT_SECONDS", 0.02),
+              mock.patch.object(runner.shutil, "disk_usage",
+                                return_value=mock.Mock(free=runner.CAPTURE_RESTART_FLOOR_BYTES + 10 * (1 << 30)))):
+            codes = runner._run_children_concurrent(
+                wave_tasks,
+                deadline=now + 60,
+                status=status,
+                runner_stop_monotonic=time.monotonic() + 120,
+                capture_dir=self.capture_dir,
+                stop_at=now + 3600,
+            )
+        self.assertEqual(codes, [0, 75, 0])
+        m0 = json.loads(marker_0.read_text())
+        m1 = json.loads(marker_1.read_text())
+        m2 = json.loads(marker_2.read_text())
+        self.assertTrue(m0["done"])
+        self.assertFalse(m1["done"])
+        self.assertTrue(m2["done"])
+        pids = {m0["pid"], m1["pid"], m2["pid"]}
+        self.assertEqual(len(pids), 3)
+        self.assertNotIn(os.getpid(), pids)
 
 
 if __name__ == "__main__":

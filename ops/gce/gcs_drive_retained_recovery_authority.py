@@ -260,17 +260,34 @@ class RecoveryAuthority:
                 budget = receipt["bytes"] + MAX_CONTROL_BYTES
                 legacy_budget = budget
                 attempt_bytes_ok = attempt["bytes"] == receipt["bytes"]
-            old_host, old_pid = account["process_host"], account["process_pid"]
-            if old_host != authority.process_host or type(old_pid) is not int or old_pid <= 0:
+            claim = (
+                db.execute(
+                    "SELECT process_host,process_pid FROM retained_run_claim WHERE run_id=?",
+                    (original_run_id,),
+                ).fetchone()
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_run_claim'"
+                ).fetchone() is not None
+                else None
+            )
+            prior_procs = []
+            if account["process_host"] is not None or account["process_pid"] is not None:
+                prior_procs.append((account["process_host"], account["process_pid"]))
+            if claim is not None:
+                prior_procs.append((claim["process_host"], claim["process_pid"]))
+            if not prior_procs:
                 raise AuthorityBlocked("Prior writer process cannot be proven stopped")
-            try:
-                os.kill(old_pid, 0)
-            except ProcessLookupError:
-                pass
-            except (OSError, PermissionError) as error:
-                raise AuthorityBlocked("Prior writer process state is uncertain") from error
-            else:
-                raise AuthorityBlocked("Prior writer process may still run")
+            for old_host, old_pid in prior_procs:
+                if old_host != authority.process_host or type(old_pid) is not int or old_pid <= 0:
+                    raise AuthorityBlocked("Prior writer process cannot be proven stopped")
+                try:
+                    os.kill(old_pid, 0)
+                except ProcessLookupError:
+                    pass
+                except (OSError, PermissionError) as error:
+                    raise AuthorityBlocked("Prior writer process state is uncertain") from error
+                else:
+                    raise AuthorityBlocked("Prior writer process may still run")
             open_recoveries = db.execute(
                 "SELECT * FROM retained_receipt_recovery WHERE status!='closed'"
             ).fetchall()

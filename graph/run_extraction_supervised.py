@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -127,9 +128,19 @@ def build_manifest_and_upload(slot: str, cfg: dict) -> dict:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
     dest = f"{DERIVED_PREFIX}/{slot}"
-    subprocess.run(["gcloud", "storage", "cp", "-r", str(events_dir), f"{dest}/"], check=True)
-    subprocess.run(["gcloud", "storage", "cp", str(ledger_path), str(manifest_path), f"{dest}/"], check=True)
+    env = {**os.environ, "CLOUDSDK_CONFIG": str(work / ".gcloud")}
+    subprocess.run(["gcloud", "storage", "cp", "-r", str(events_dir), f"{dest}/"], check=True, env=env)
+    subprocess.run(["gcloud", "storage", "cp", str(ledger_path), str(manifest_path), f"{dest}/"], check=True, env=env)
     return manifest
+
+
+def prepare_slot_gcloud_config(work: pathlib.Path) -> str:
+    slot_gcloud = work / ".gcloud"
+    slot_gcloud.mkdir(parents=True, exist_ok=True)
+    default_gcloud = pathlib.Path.home() / ".config" / "gcloud"
+    if default_gcloud.exists() and not (slot_gcloud / "configurations").exists():
+        shutil.copytree(default_gcloud, slot_gcloud, dirs_exist_ok=True)
+    return str(slot_gcloud)
 
 
 class WorkerThread(threading.Thread):
@@ -165,130 +176,149 @@ class WorkerThread(threading.Thread):
     def run(self):
         work: pathlib.Path = self.cfg["work"]
         halt_file = work / "halted_on_failure.json"
-        if halt_file.exists():
-            prior = json.loads(halt_file.read_text())
-            err_text = prior.get("error_text") or json.dumps(prior)
-            print(
-                json.dumps({
-                    "ts": time.strftime("%FT%TZ", time.gmtime()),
-                    "msg": "refusing_restart_until_halt_inspected",
-                    "slot": self.slot,
-                    "error_text": err_text,
-                    "halt": prior,
-                }),
-                flush=True,
-            )
-            self.update(state="halted_on_failure", error_text=err_text, error=prior)
-            return
+        while True:
+            if halt_file.exists():
+                prior = json.loads(halt_file.read_text())
+                err_text = prior.get("error_text") or json.dumps(prior)
+                print(
+                    json.dumps({
+                        "ts": time.strftime("%FT%TZ", time.gmtime()),
+                        "msg": "refusing_restart_until_halt_inspected",
+                        "slot": self.slot,
+                        "error_text": err_text,
+                        "halt": prior,
+                    }),
+                    flush=True,
+                )
+                self.update(state="halted_on_failure", error_text=err_text, error=prior)
+                while halt_file.exists():
+                    time.sleep(5)
+                print(
+                    json.dumps({
+                        "ts": time.strftime("%FT%TZ", time.gmtime()),
+                        "msg": "halt_cleared_resuming_slot",
+                        "slot": self.slot,
+                        "prior_error_text": err_text,
+                    }),
+                    flush=True,
+                )
 
-        ok, check = verify_ledger_range(work, self.cfg["min_index"], self.cfg["max_index"])
-        if ok and (work / "manifest.json").exists():
-            self.update(state="completed", ledger_check=check)
-            return
+            ok, check = verify_ledger_range(work, self.cfg["min_index"], self.cfg["max_index"])
+            if ok and (work / "manifest.json").exists():
+                self.update(state="completed", ledger_check=check)
+                return
 
-        log_path = work / "extract.log"
-        cmd = [
-            "python3", EXTRACTOR,
-            "--gcs-prefix", GCS_PREFIX,
-            "--min-index", str(self.cfg["min_index"]),
-            "--max-index", str(self.cfg["max_index"]),
-            "--decoder", DECODER,
-            "--work", str(work),
-            "--batch", "12",
-            "--parallel", "4",
-        ]
-        self.update(state="running", cmd=cmd, started_at=time.strftime("%FT%TZ", time.gmtime()))
-        recent_lines: collections.deque[str] = collections.deque(maxlen=30)
-        with log_path.open("a", buffering=1) as log_fh:
-            self.proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid,
-            )
-            self.update(pid=self.proc.pid)
-            assert self.proc.stdout is not None
-            for raw_line in self.proc.stdout:
-                log_fh.write(raw_line)
-                line = raw_line.strip()
-                if not line:
-                    continue
-                recent_lines.append(line)
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                if ev.get("msg") == "deferring_segment_until_drivefs_flush":
-                    # Hard rule: If a segment fails verification, stop that process and report. Don't skip it.
+            gcloud_cfg = prepare_slot_gcloud_config(work)
+            env = {**os.environ, "CLOUDSDK_CONFIG": gcloud_cfg}
+            log_path = work / "extract.log"
+            cmd = [
+                "python3", EXTRACTOR,
+                "--gcs-prefix", GCS_PREFIX,
+                "--min-index", str(self.cfg["min_index"]),
+                "--max-index", str(self.cfg["max_index"]),
+                "--decoder", DECODER,
+                "--work", str(work),
+                "--batch", "12",
+                "--parallel", "4",
+            ]
+            self.update(state="running", cmd=cmd, started_at=time.strftime("%FT%TZ", time.gmtime()), error=None, error_text=None)
+            recent_lines: collections.deque[str] = collections.deque(maxlen=30)
+            halted_in_loop = False
+            with log_path.open("a", buffering=1) as log_fh:
+                self.proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    preexec_fn=os.setsid,
+                    env=env,
+                )
+                self.update(pid=self.proc.pid)
+                assert self.proc.stdout is not None
+                for raw_line in self.proc.stdout:
+                    log_fh.write(raw_line)
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    recent_lines.append(line)
                     try:
-                        os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    seg_name = ev.get("segment", "<unknown>")
-                    err_text = f"segment={seg_name}: {ev.get('error', '')}"
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if ev.get("msg") == "deferring_segment_until_drivefs_flush":
+                        # Hard rule: If a segment fails verification, stop that process and report. Don't skip it.
+                        try:
+                            os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        seg_name = ev.get("segment", "<unknown>")
+                        err_text = f"segment={seg_name}: {ev.get('error', '')}"
+                        self.record_halt(
+                            halt_file,
+                            reason="segment_verification_failed",
+                            error_text=err_text,
+                            extra={"segment": seg_name, "event": ev, "recent_log": list(recent_lines)},
+                        )
+                        halted_in_loop = True
+                        break
+
+                    if "done_total" in ev:
+                        self.update(
+                            done_total=ev["done_total"],
+                            last_segments=ev.get("segments"),
+                            last_graph_rows=ev.get("graph_rows"),
+                            download_mb_s=ev.get("download_mb_s"),
+                            decode_s=ev.get("decode_s"),
+                        )
+
+                    if ev.get("msg") == "waiting":
+                        try:
+                            os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        ok, check = verify_ledger_range(work, self.cfg["min_index"], self.cfg["max_index"])
+                        if not ok:
+                            err_text = f"Process entered waiting state before range [{self.cfg['min_index']}, {self.cfg['max_index']}] completed: {json.dumps(check)}"
+                            self.record_halt(
+                                halt_file,
+                                reason="waiting_before_range_complete",
+                                error_text=err_text,
+                                extra={"event": ev, "ledger_check": check, "recent_log": list(recent_lines)},
+                            )
+                            halted_in_loop = True
+                            break
+                        self.update(state="uploading_derived", ledger_check=check)
+                        try:
+                            manifest = build_manifest_and_upload(self.slot, self.cfg)
+                            self.update(
+                                state="completed",
+                                ledger_check=check,
+                                total_rows=manifest["total_rows"],
+                                parquet_file_count=manifest["parquet_file_count"],
+                                total_parquet_bytes=manifest["total_parquet_bytes"],
+                            )
+                            return
+                        except Exception as exc:
+                            self.record_halt(
+                                halt_file,
+                                reason="upload_or_manifest_failed",
+                                error_text=str(exc),
+                                extra={"recent_log": list(recent_lines)},
+                            )
+                            halted_in_loop = True
+                            break
+
+                rc = self.proc.wait()
+                if not halted_in_loop and rc != 0:
+                    tail_text = "\n".join(recent_lines)
                     self.record_halt(
                         halt_file,
-                        reason="segment_verification_failed",
-                        error_text=err_text,
-                        extra={"segment": seg_name, "event": ev, "recent_log": list(recent_lines)},
+                        reason=f"nonzero_exit_{rc}",
+                        error_text=f"exit_code={rc}: {tail_text}",
+                        extra={"exit_code": rc, "recent_log": list(recent_lines)},
                     )
-                    return
-
-                if "done_total" in ev:
-                    self.update(
-                        done_total=ev["done_total"],
-                        last_segments=ev.get("segments"),
-                        last_graph_rows=ev.get("graph_rows"),
-                        download_mb_s=ev.get("download_mb_s"),
-                        decode_s=ev.get("decode_s"),
-                    )
-
-                if ev.get("msg") == "waiting":
-                    try:
-                        os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    ok, check = verify_ledger_range(work, self.cfg["min_index"], self.cfg["max_index"])
-                    if not ok:
-                        err_text = f"Process entered waiting state before range [{self.cfg['min_index']}, {self.cfg['max_index']}] completed: {json.dumps(check)}"
-                        self.record_halt(
-                            halt_file,
-                            reason="waiting_before_range_complete",
-                            error_text=err_text,
-                            extra={"event": ev, "ledger_check": check, "recent_log": list(recent_lines)},
-                        )
-                        return
-                    self.update(state="uploading_derived", ledger_check=check)
-                    try:
-                        manifest = build_manifest_and_upload(self.slot, self.cfg)
-                        self.update(
-                            state="completed",
-                            ledger_check=check,
-                            total_rows=manifest["total_rows"],
-                            parquet_file_count=manifest["parquet_file_count"],
-                            total_parquet_bytes=manifest["total_parquet_bytes"],
-                        )
-                    except Exception as exc:
-                        self.record_halt(
-                            halt_file,
-                            reason="upload_or_manifest_failed",
-                            error_text=str(exc),
-                            extra={"recent_log": list(recent_lines)},
-                        )
-                    return
-
-            rc = self.proc.wait()
-            if rc != 0:
-                tail_text = "\n".join(recent_lines)
-                self.record_halt(
-                    halt_file,
-                    reason=f"nonzero_exit_{rc}",
-                    error_text=f"exit_code={rc}: {tail_text}",
-                    extra={"exit_code": rc, "recent_log": list(recent_lines)},
-                )
 
 
 def main() -> int:
@@ -300,24 +330,33 @@ def main() -> int:
         default=[],
         help="Report and clear halted_on_failure.json for a slot after confirming a transient network error",
     )
+    ap.add_argument(
+        "--clear-only",
+        action="store_true",
+        help="Only report and clear the requested --clear-halt slot(s) and exit (allowing the running supervisor thread to resume)",
+    )
     args = ap.parse_args()
 
     for slot in args.clear_halt:
         halt_file = RANGES[slot]["work"] / "halted_on_failure.json"
         if halt_file.exists():
             prior = json.loads(halt_file.read_text())
+            err_text = prior.get("error_text") or prior.get("error", {}).get("event", {}).get("error") or json.dumps(prior)
             print(
                 json.dumps({
                     "ts": time.strftime("%FT%TZ", time.gmtime()),
                     "msg": "clearing_inspected_halt_before_restart",
                     "slot": slot,
-                    "error_text": prior.get("error_text"),
+                    "error_text": err_text,
                     "prior_halt": prior,
                 }),
                 flush=True,
             )
             archived = RANGES[slot]["work"] / f"halted_on_failure.{int(time.time())}.cleared.json"
             os.replace(halt_file, archived)
+
+    if args.clear_only:
+        return 0
 
     lock = threading.Lock()
     shared = {

@@ -637,6 +637,28 @@ class RetainedObservationAuthority:
                 else:
                     owner_alive = True
                     break
+            reconciled_ids = authority._reconciled_attempt_ids()
+            recoverable_unresolved = 0
+            if row["status"] == "active":
+                for att in db.execute(
+                    "SELECT * FROM retained_attempt WHERE run_id=? AND status='unresolved'",
+                    (run_id,),
+                ).fetchall():
+                    if att["id"] in reconciled_ids:
+                        continue
+                    if (
+                        att["dispatched_at"] is None or
+                        (att["kind"] != "media_chunk" and att["http_status"] is None and att["bytes"] <= 4096) or
+                        (att["kind"] == "media_chunk" and att["target_category"] == "media_chunk" and
+                         att["method"] == "PUT" and 0 < att["bytes"] <= (8 << 20) and
+                         att["dispatched_at"] is not None and
+                         att["http_status"] in (None, 500, 502, 503, 504)) or
+                        (att["kind"] == "resumable_status" and att["target_category"] == "resumable_status" and
+                         att["method"] == "PUT" and att["bytes"] == 0 and
+                         att["dispatched_at"] is not None and
+                         att["http_status"] in (None, 500, 502, 503, 504))
+                    ):
+                        recoverable_unresolved += 1
             return {
                 "run_id": row["id"],
                 "pair_key": key,
@@ -648,6 +670,7 @@ class RetainedObservationAuthority:
                 "deadline_at": row["deadline_at"],
                 "owner_host_matches": host_ok,
                 "owner_alive": owner_alive,
+                "recoverable_unresolved_attempts": recoverable_unresolved,
             }
         finally:
             db.close()

@@ -162,11 +162,20 @@ def _recoverable_open_runs(
             _account_gate(account, now)
             return []
         recovered.append(info)
+    recoverable_unresolved = sum(
+        info.get("recoverable_unresolved_attempts", 0)
+        for info in recovered
+        if type(info.get("recoverable_unresolved_attempts")) is int
+        and info.get("recoverable_unresolved_attempts", 0) >= 0
+    )
     cleared_account = {
         **account,
         "nonterminal_run_id": None,
         "nonterminal_status": None,
         "nonterminal_run_ids": [],
+        "unresolved_attempts": max(
+            0, int(account.get("unresolved_attempts", 0)) - recoverable_unresolved
+        ),
     }
     _account_gate(cleared_account, now)
     return recovered

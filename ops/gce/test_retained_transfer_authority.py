@@ -1111,6 +1111,7 @@ class RetainedAuthorityTests(unittest.TestCase):
             self.assertEqual(open_info["status"], "active")
             self.assertTrue(open_info["owner_host_matches"])
             self.assertFalse(open_info["owner_alive"])
+            self.assertEqual(open_info["recoverable_unresolved_attempts"], 2)
 
             self.clock.advance(60.0)
             # Kernel monotonic clock resets to a lower value on the new boot

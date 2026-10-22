@@ -188,3 +188,50 @@ avoid a second copy.
 Any `active`, `verified`, or `index_pending` pair, `file_upload_inflight`, or
 uncertain index create requires manual reconciliation; the serial runner will
 not auto-recover it.
+
+## Collector `meta.pebble` Checkpoint Procedure (Mind the Supervisor Poweroff)
+
+`catbird-gcs-buffer.service` runs `gcs_buffer_supervisor.py` with
+`--poweroff-on-exit`. Therefore, running `docker stop js` causes the buffer
+supervisor to detect container exit and **immediately power off the GCE VM**
+(`shutdown -h now`). Never stop `js` while the Drive writer is mid-pair.
+
+When taking a cold `meta.pebble` checkpoint (such as Checkpoint #2 after
+failed-repo retries finish in `steady_state`), follow this exact sequence:
+
+1. **Quiesce the Drive writer on a closed-pair boundary:**
+   Wait until the current pair finishes and closes (`status='closed'` in
+   `authority.sqlite` and `nonterminal_run_id` is `None`), then stop the writer
+   service cleanly before touching `js`:
+   ```sh
+   sudo systemctl stop catbird-drive-retained-continuous-20261021.service
+   ```
+2. **Stop the collector container (`js`) — expect VM poweroff:**
+   ```sh
+   sudo docker stop -t 60 js
+   ```
+   Wait for `jetstream-selfhost-test` to transition to `TERMINATED` (`gcloud compute instances describe jetstream-selfhost-test --zone=us-west1-b --format='value(status)'`).
+3. **Start the VM and copy `meta.pebble` before the collector restarts:**
+   Temporarily disable `catbird-gcs-buffer.service` immediately upon SSH connect
+   (or stop `js` before it opens `meta.pebble`), copy `/data/jetstream/meta.pebble`
+   and `/data/jetstream/cursor.json` into `/data/checkpoints/<checkpoint-name>/`,
+   and verify `sha256sum` on `cursor.json`:
+   ```sh
+   gcloud compute instances start jetstream-selfhost-test --project=catbird-436600 --zone=us-west1-b
+   # On VM before collector resumes:
+   sudo mkdir -p /data/checkpoints/post-failed-retries-<UTC>
+   sudo cp -a /data/jetstream/meta.pebble /data/checkpoints/post-failed-retries-<UTC>/meta.pebble
+   sudo cp -a /data/jetstream/cursor.json /data/checkpoints/post-failed-retries-<UTC>/cursor.json
+   ```
+4. **Restart the collector, verify cursor/counts, export snapshot, and upload:**
+   - Start `js` (and `catbird-gcs-buffer.service`), then verify cursor, phase,
+     and repo counts (`Discovered`, `Downloaded`, `Pending`, `Errored`,
+     `Unavailable`) match pre-stop values.
+   - Restart `catbird-drive-retained-continuous-20261021.service` with
+     `--max-concurrent-pairs 1`.
+   - Run `repo_snapshot_export` **against the checkpoint copy only**
+     (`/data/checkpoints/post-failed-retries-<UTC>/meta.pebble`, never
+     `/data/jetstream/meta.pebble`), compress with `zstd -T0`, record row count
+     and SHA-256, and upload to
+     `gs://catbird-436600-jetstream-buffer-20261020/sources/gce-selfhost-001/buffer-admission-20261020/snapshots/`.
+

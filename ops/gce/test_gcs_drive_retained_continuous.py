@@ -559,6 +559,7 @@ class ContinuousTests(unittest.TestCase):
             nonterminal_run_id=RUN,
             nonterminal_status="active",
             nonterminal_run_ids=[RUN],
+            unresolved_attempts=1,
         )
         accounts = [crashed_account, crashed_account, self._account(), self._account()]
         open_manifest = {"max_charged_bytes": 1000, "max_duration_seconds": 600}
@@ -572,7 +573,17 @@ class ContinuousTests(unittest.TestCase):
             "manifest_sha256": MANIFEST,
             "owner_host_matches": True,
             "owner_alive": False,
+            "recoverable_unresolved_attempts": 1,
         }
+        # Unaccounted unresolved attempts beyond recoverable_unresolved_attempts still block
+        unrecoverable_account = dict(crashed_account, unresolved_attempts=2)
+        with mock.patch.object(continuous.TransferAuthority, "inspect_open_retained_run",
+                               return_value=open_info):
+            with self.assertRaisesRegex(Conflict, "unresolved"):
+                continuous._recoverable_open_runs(
+                    self.db, unrecoverable_account, writer_id=WRITER,
+                    account_id=ACCOUNT, now=self.now
+                )
         snapshot_called = []
 
         def snapshot_fn(**_kwargs):

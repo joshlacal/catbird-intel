@@ -1078,7 +1078,12 @@ class RetainedAuthorityTests(unittest.TestCase):
             )
             self.addCleanup(run1.close)
             self.reserve(run1, m1, d1)
-            session1 = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=crash1"
+            session1 = (
+                "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
+                "&fields=id%2Cname%2Csize%2Cmd5Checksum%2CmimeType%2Cparents%2Ctrashed"
+                "&upload_id=" + ("A" * 160) + "&session_crd=" + ("B" * 140)
+            )
+            self.assertGreater(len(session1), 360)
             session1_sha = hashlib.sha256(session1.encode("utf-8")).hexdigest()
             crash_att, _ = run1.start_request(
                 m1["payload"]["bytes"], 20, "media_chunk", method="PUT",

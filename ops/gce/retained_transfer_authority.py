@@ -1815,7 +1815,9 @@ class RetainedObservationAuthority:
 
     def unresolved_session_media_attempts(self, session_url: str) -> list[dict]:
         """Return unreconciled media_chunk attempts for a resumable session URL."""
-        _required_identity(session_url, "resumable session URL")
+        if (not isinstance(session_url, str) or not session_url or
+                len(session_url) > 4096 or any(c.isspace() for c in session_url)):
+            raise AuthorityBlocked("Invalid resumable session URL")
         self._run()
         target_sha256 = hashlib.sha256(session_url.encode("utf-8")).hexdigest()
         resolved = self._reconciled_attempt_ids()

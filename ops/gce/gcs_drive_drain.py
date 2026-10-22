@@ -347,9 +347,9 @@ class SafeDrive:
                                 acknowledged_bytes=expected["size"],
                                 committed_bytes=pm["bytes"],
                             )
-                        for fid in failed_status_ids:
+                        if not pending_media and failed_status_ids:
                             reconcile(
-                                failed_attempt_id=fid,
+                                failed_attempt_id=failed_status_ids[0],
                                 probe_attempt_id=probe_attempt_id,
                                 acknowledged_bytes=expected["size"],
                                 committed_bytes=0,
@@ -384,9 +384,9 @@ class SafeDrive:
                             acknowledged_bytes=offset,
                             committed_bytes=committed,
                         )
-                    for fid in failed_status_ids:
+                    if not pending_media and failed_status_ids:
                         reconcile(
-                            failed_attempt_id=fid,
+                            failed_attempt_id=failed_status_ids[0],
                             probe_attempt_id=probe_attempt_id,
                             acknowledged_bytes=offset,
                             committed_bytes=0,

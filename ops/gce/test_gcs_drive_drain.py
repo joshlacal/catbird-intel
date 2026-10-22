@@ -912,6 +912,88 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(status_calls, 3)  # 1 initial + 2 recovery probes
         self.assertEqual(state, before)
 
+    def test_two_5xx_initial_status_probes_followed_by_308_and_200_do_not_double_reconcile(self):
+        for terminal_probe_code in (308, 200):
+            with self.subTest(terminal_probe_code=terminal_probe_code):
+                path = self.work / f"two_5xx_{terminal_probe_code}.bin"
+                path.write_bytes(b"Q" * 1024)
+                expected = digest(path)
+                drive = object.__new__(SafeDrive)
+                drive.preflight = lambda *args: None
+                drive.reserve_id = lambda: "reserved"
+                final = {
+                    "id": "reserved",
+                    "name": path.name,
+                    "size": str(expected["size"]),
+                    "md5Checksum": expected["md5"],
+                    "parents": ["parent"],
+                }
+                drive.metadata = lambda file_id: final
+                reconciled_ids = set()
+                reconcile_calls = []
+
+                class StrictAuthority:
+                    def unresolved_session_media_attempts(self, session_url):
+                        return []
+
+                    def reconcile_attempt_by_status_probe(self, **kwargs):
+                        fid = kwargs["failed_attempt_id"]
+                        if fid in reconciled_ids:
+                            raise RuntimeError(f"Duplicate reconciliation for {fid}")
+                        # Mirror TransferAuthority.reconcile_attempt_by_status_probe:
+                        # reconciling the earliest 5xx status probe also reconciles
+                        # all intermediate 5xx status probes in the same transaction.
+                        reconciled_ids.update({"probe-1", "probe-2"})
+                        reconcile_calls.append(kwargs)
+                        return "proof"
+
+                drive.authority = StrictAuthority()
+                long_session = (
+                    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
+                    "&fields=id%2Cname%2Csize%2Cmd5Checksum%2CmimeType%2Cparents%2Ctrashed"
+                    "&upload_id=" + ("A" * 160) + "&session_crd=" + ("B" * 140)
+                )
+                state = {"id": "reserved", "session": long_session}
+                sleeps = []
+
+                class Response(io.BytesIO):
+                    def __init__(self, body=b"", headers=None):
+                        super().__init__(body)
+                        self.headers = headers or {}
+
+                status_calls = 0
+                media_calls = 0
+
+                def request(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+                    nonlocal status_calls, media_calls
+                    if headers["Content-Range"].startswith("bytes */"):
+                        status_calls += 1
+                        drive.last_attempt_id = f"probe-{status_calls}"
+                        if status_calls in (1, 2):
+                            error = urllib.error.HTTPError(url, 503 if status_calls == 1 else 502, "err", {}, None)
+                            error.attempt_id = drive.last_attempt_id
+                            self.addCleanup(error.close)
+                            raise error
+                        if terminal_probe_code == 308:
+                            error = urllib.error.HTTPError(url, 308, "resume", {}, None)
+                            error.attempt_id = drive.last_attempt_id
+                            self.addCleanup(error.close)
+                            raise error
+                        return Response(json.dumps({"id": "reserved"}).encode())
+                    media_calls += 1
+                    drive.last_attempt_id = "media-1"
+                    return Response(json.dumps(final).encode())
+
+                drive.request = request
+                with patch("gcs_drive_drain.time.sleep", side_effect=sleeps.append):
+                    result = drive.ensure_file(path, "parent", expected, state, lambda: None)
+                self.assertEqual(result, final)
+                self.assertEqual(status_calls, 3)
+                self.assertEqual(media_calls, 1 if terminal_probe_code == 308 else 0)
+                self.assertEqual(len(reconcile_calls), 1)
+                self.assertEqual(reconcile_calls[0]["failed_attempt_id"], "probe-1")
+                self.assertEqual(reconcile_calls[0]["probe_attempt_id"], "probe-3")
+
 
 if __name__ == "__main__":
     unittest.main()

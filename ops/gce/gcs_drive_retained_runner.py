@@ -29,14 +29,16 @@ import uuid
 from drive_transfer_authority import TransferAuthority
 from gcs_drive_drain import Conflict, PILOT_CHARGE_LIMIT
 from gcs_drive_retained_overflow import (
-    BUCKET, CAPTURE_RESTART_FLOOR_BYTES, CAPTURE_SEGMENTS_DIR,
-    load_overflow_manifest, pair_key,
+    BUCKET, CAPTURE_RESTART_FLOOR_BYTES, CAPTURE_SEGMENTS_DIR, DRIVE_ROOT,
+    FINAL_STATUS, _canonical, load_overflow_manifest, pair_key,
 )
 
 
 STOP_AT = dt.datetime(2026, 10, 24, 10, 10, tzinfo=dt.timezone.utc).timestamp()
 SCHEMA = "catbird.drive.retained-runner.v1"
 SNAPSHOT_SCHEMA = "catbird.drive.retained-snapshot.v1"
+RELEASE_SCHEMA = "catbird.drive.retained-cache-release.v1"
+STAGE_RELEASE_APPROVAL_REF = "josh-authorized-2026-10-22-verified-local-stage-release"
 MAX_PAIRS = 8
 MAX_RESERVED_BYTES = MAX_PAIRS * PILOT_CHARGE_LIMIT
 MAX_STAGED_BYTES = 32 * (1 << 30)
@@ -224,6 +226,187 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _append_release_evidence(data_root: Path, run_id: str, record: dict) -> None:
+    root = data_root / "catbird-retained-cache-evidence"
+    if root.is_symlink():
+        raise Conflict("Cache evidence directory is symlinked")
+    existed = root.exists()
+    root.mkdir(mode=0o700, exist_ok=True)
+    if not existed:
+        _fsync_dir(data_root)
+    log_path = root / f"release-{run_id}.jsonl"
+    if log_path.is_symlink():
+        raise Conflict("Cache release evidence log is symlinked")
+    raw = _canonical(record) + b"\n"
+    fd = os.open(log_path, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.write(fd, raw) != len(raw):
+            raise Conflict("Cache release evidence append was short")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _fsync_dir(root)
+
+
+def release_closed_pair_stage(
+    run_id: str,
+    pair_key_str: str,
+    mapping_sha256: str,
+    *,
+    data_root: Path,
+    approval_reference: str = STAGE_RELEASE_APPROVAL_REF,
+) -> dict:
+    """Release verified local stage duplicates for a durably closed pair.
+
+    Requires:
+    - Exact 32-hex run_id, 64-hex pair_key, and 64-hex mapping_sha256 from closed SQLite row.
+    - Nonblocking exclusive lock on work/overflow.lock.
+    - Terminal journal.json (`offloaded_retained_unqualified`) with matching mapping_sha256,
+      index_generation > 0, and 3 unique pinned Drive IDs.
+    - Stage files match journal payload_digest and receipt_digest (size, sha256, md5, single link).
+    - Appends durable intent and completion evidence outside /data/gcs-drive-retained-*.
+    """
+    if (not RUN_ID.fullmatch(str(run_id or ""))
+            or not SHA256.fullmatch(str(pair_key_str or ""))
+            or not SHA256.fullmatch(str(mapping_sha256 or ""))):
+        raise Conflict("Closed stage release identity is malformed")
+    work = data_root / ("gcs-drive-retained-" + run_id)
+    stage = work / "stage" / pair_key_str
+    journal_path = work / "journal.json"
+    lock_path = work / "overflow.lock"
+    if not stage.exists() or not journal_path.exists() or not lock_path.exists():
+        return {"run_id": run_id, "pair_key": pair_key_str, "released": [],
+                "bytes_released": 0, "state": "already_absent"}
+    if work.is_symlink() or (work / "stage").is_symlink() or stage.is_symlink():
+        raise Conflict("Closed stage release directory is symlinked")
+    existing_names = [entry.name for entry in stage.iterdir()]
+    if not existing_names:
+        return {"run_id": run_id, "pair_key": pair_key_str, "released": [],
+                "bytes_released": 0, "state": "already_empty"}
+    lock_fd = os.open(lock_path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise Conflict("Retained worker or recovery owns the stage") from error
+        journal, _ = _read_json(journal_path, 1 << 20)
+        if (journal.get("bucket") != BUCKET or journal.get("root") != DRIVE_ROOT
+                or not isinstance(journal.get("segments"), dict)):
+            raise Conflict("Closed stage journal namespace differs")
+        entry = journal["segments"].get(pair_key_str)
+        if (not isinstance(entry, dict) or entry.get("key") != pair_key_str
+                or entry.get("release_id") != run_id
+                or entry.get("status") != FINAL_STATUS
+                or entry.get("mapping_sha256") != mapping_sha256
+                or type(entry.get("index_generation")) is not int
+                or entry["index_generation"] <= 0):
+            raise Conflict("Closed stage journal is not terminal with verified mapping")
+        ids = {kind: entry.get("drive", {}).get(kind, {}).get("id")
+               for kind in ("folder", "payload", "receipt")}
+        if any(not isinstance(val, str) or not val for val in ids.values()) or len(set(ids.values())) != 3:
+            raise Conflict("Closed stage journal lacks three unique Drive IDs")
+        payload_name = entry.get("payload_name") or Path(entry["payload_ref"]["name"]).parent.name
+        receipt_name = entry.get("receipt_name") or (payload_name + ".receipt.json")
+        expected_map = {"payload": payload_name, "receipt": receipt_name}
+        if not set(existing_names).issubset(set(expected_map.values())):
+            raise Conflict("Closed stage contains unexpected file")
+        stage_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        released = []
+        bytes_released = 0
+        release_id = hashlib.sha256(f"{run_id}:{pair_key_str}:{mapping_sha256}".encode("ascii")).hexdigest()
+        try:
+            _append_release_evidence(data_root, run_id, {
+                "schema": RELEASE_SCHEMA, "event": "cache_release_start",
+                "release_id": release_id, "approval_reference": approval_reference,
+                "run_id": run_id, "pair_key": pair_key_str,
+                "mapping_sha256": mapping_sha256,
+                "index_generation": entry["index_generation"],
+                "drive_ids": ids, "at": time.time(),
+            })
+            for kind in ("payload", "receipt"):
+                fname = expected_map[kind]
+                if fname not in existing_names:
+                    continue
+                digest = entry.get(kind + "_digest")
+                if not isinstance(digest, dict):
+                    raise Conflict("Closed stage journal lacks media digest")
+                file_fd = os.open(fname, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
+                try:
+                    st = os.fstat(file_fd)
+                    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size != digest.get("size"):
+                        raise Conflict("Closed stage file is not a matching single-link regular file")
+                    sha = hashlib.sha256()
+                    md5 = hashlib.md5(usedforsecurity=False)
+                    count = 0
+                    while block := os.read(file_fd, 1 << 20):
+                        sha.update(block)
+                        md5.update(block)
+                        count += len(block)
+                    if (count != digest.get("size")
+                            or sha.hexdigest() != digest.get("sha256")
+                            or md5.hexdigest() != digest.get("md5")):
+                        raise Conflict("Closed stage file bytes differ from verified journal digest")
+                finally:
+                    os.close(file_fd)
+                _append_release_evidence(data_root, run_id, {
+                    "schema": RELEASE_SCHEMA, "event": "cache_release_file_intent",
+                    "release_id": release_id, "kind": kind,
+                    "path": str(stage / fname), "inode": st.st_ino,
+                    "bytes": count, "sha256": digest["sha256"], "md5": digest["md5"],
+                    "at": time.time(),
+                })
+                os.unlink(fname, dir_fd=stage_fd)
+                os.fsync(stage_fd)
+                _append_release_evidence(data_root, run_id, {
+                    "schema": RELEASE_SCHEMA, "event": "cache_release_file_removed",
+                    "release_id": release_id, "kind": kind,
+                    "path": str(stage / fname), "bytes": count,
+                    "at": time.time(),
+                })
+                released.append(kind)
+                bytes_released += count
+            _append_release_evidence(data_root, run_id, {
+                "schema": RELEASE_SCHEMA, "event": "cache_release_complete",
+                "release_id": release_id, "released": released,
+                "bytes_released": bytes_released,
+                "creation_retained_local": True,
+                "current_cache_state": "released", "at": time.time(),
+            })
+        finally:
+            os.close(stage_fd)
+        return {"run_id": run_id, "pair_key": pair_key_str, "released": released,
+                "bytes_released": bytes_released, "state": "released"}
+    finally:
+        os.close(lock_fd)
+
+
+def reclaim_closed_stages(
+    rows: tuple[dict, ...],
+    *,
+    data_root: Path,
+    approval_reference: str = STAGE_RELEASE_APPROVAL_REF,
+) -> dict:
+    """Release local stage files for all closed pairs in the ledger before disk check."""
+    pairs_released = 0
+    bytes_released = 0
+    for row in rows:
+        if row.get("status") != "closed":
+            continue
+        r_id = row.get("run_id")
+        p_key = row.get("pair_key")
+        m_sha = row.get("mapping_sha256")
+        if (isinstance(r_id, str) and RUN_ID.fullmatch(r_id)
+                and isinstance(p_key, str) and SHA256.fullmatch(p_key)
+                and isinstance(m_sha, str) and SHA256.fullmatch(m_sha)):
+            res = release_closed_pair_stage(
+                r_id, p_key, m_sha, data_root=data_root,
+                approval_reference=approval_reference)
+            if res["released"]:
+                pairs_released += 1
+                bytes_released += res["bytes_released"]
+    return {"pairs_released": pairs_released, "bytes_released": bytes_released}
+
+
 class Status:
     def __init__(self, path: Path, run_id: str, snapshot_sha256: str):
         if path.is_symlink() or path.parent.is_symlink() or not path.parent.is_dir():
@@ -387,6 +570,7 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                 rows = TransferAuthority.list_retained_pairs(
                     authority_db, writer_id=writer_id, account_id=account_id)
                 _candidate_gate(candidate, rows)
+                reclaim_closed_stages(rows, data_root=data_root)
                 disk = check_disk(candidate, data_root=data_root, capture_dir=capture_dir,
                                   max_staged_bytes=max_staged_bytes)
                 deadline = min(now + duration, STOP_AT - STOP_MARGIN_SECONDS,
@@ -446,6 +630,9 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                 if (row.get("status") != "closed"
                         or not SHA256.fullmatch(str(row.get("mapping_sha256") or ""))):
                     raise Conflict("Child exited without durable shared mapping commit")
+                release_closed_pair_stage(
+                    candidate["run_id"], candidate["pair_key"], row["mapping_sha256"],
+                    data_root=data_root)
                 status.update(state="pair_closed", pairs_closed=status.base["pairs_closed"] + 1,
                               last_mapping_sha256=row["mapping_sha256"],
                               charged_bytes_observed=account_after["known_local_rolling_bytes"],

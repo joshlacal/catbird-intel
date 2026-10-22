@@ -15,7 +15,9 @@ from unittest import mock
 
 from gcs_drive_drain import Conflict
 import gcs_drive_retained_runner as runner
-from test_gcs_drive_retained_overflow import ACCOUNT, RELEASE, fixture_manifest
+from test_gcs_drive_retained_overflow import (
+    ACCOUNT, NAME, PAYLOAD_BYTES, RELEASE, fixture_manifest,
+)
 
 
 class FakeLedger:
@@ -312,6 +314,71 @@ class RunnerTests(unittest.TestCase):
                     os.kill(child_pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+    def test_closed_stage_files_released_with_audit_log_and_tamper_refused(self):
+        _, receipt_bytes = fixture_manifest()
+        key = runner.pair_key(self.manifest)
+        mapping_sha = "a" * 64
+        work = self.root / ("gcs-drive-retained-" + RELEASE)
+        stage = work / "stage" / key
+        stage.mkdir(parents=True)
+        (stage / NAME).write_bytes(PAYLOAD_BYTES)
+        (stage / (NAME + ".receipt.json")).write_bytes(receipt_bytes)
+        (work / "overflow.lock").write_bytes(b"")
+        entry = {
+            "key": key,
+            "release_id": RELEASE,
+            "manifest_sha256": self.manifest_digest,
+            "status": runner.FINAL_STATUS,
+            "archive_qualified": False,
+            "mapping_sha256": mapping_sha,
+            "index_generation": 4001,
+            "payload_name": NAME,
+            "receipt_name": NAME + ".receipt.json",
+            "payload_digest": {
+                "size": len(PAYLOAD_BYTES),
+                "sha256": hashlib.sha256(PAYLOAD_BYTES).hexdigest(),
+                "md5": hashlib.md5(PAYLOAD_BYTES, usedforsecurity=False).hexdigest(),
+            },
+            "receipt_digest": {
+                "size": len(receipt_bytes),
+                "sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+                "md5": hashlib.md5(receipt_bytes, usedforsecurity=False).hexdigest(),
+            },
+            "drive": {
+                "folder": {"id": "folder-1"},
+                "payload": {"id": "payload-1"},
+                "receipt": {"id": "receipt-1"},
+            },
+        }
+        journal = {"bucket": runner.BUCKET, "root": runner.DRIVE_ROOT, "segments": {key: entry}}
+        (work / "journal.json").write_bytes(runner._canonical(journal))
+
+        # Tampered mapping_sha256 must fail closed without unlinking
+        with self.assertRaisesRegex(Conflict, "verified mapping"):
+            runner.release_closed_pair_stage(RELEASE, key, "b" * 64, data_root=self.root)
+        self.assertTrue((stage / NAME).exists())
+
+        # Valid closed release removes both stage files and records audit evidence outside work_root
+        res = runner.release_closed_pair_stage(RELEASE, key, mapping_sha, data_root=self.root)
+        self.assertEqual(res["released"], ["payload", "receipt"])
+        self.assertEqual(res["bytes_released"], len(PAYLOAD_BYTES) + len(receipt_bytes))
+        self.assertFalse((stage / NAME).exists())
+        self.assertFalse((stage / (NAME + ".receipt.json")).exists())
+        evidence_log = self.root / "catbird-retained-cache-evidence" / f"release-{RELEASE}.jsonl"
+        self.assertTrue(evidence_log.exists())
+        events = [json.loads(line)["event"] for line in evidence_log.read_text().splitlines()]
+        self.assertEqual(events, [
+            "cache_release_start",
+            "cache_release_file_intent",
+            "cache_release_file_removed",
+            "cache_release_file_intent",
+            "cache_release_file_removed",
+            "cache_release_complete",
+        ])
+        # Second call is idempotent no-op
+        again = runner.release_closed_pair_stage(RELEASE, key, mapping_sha, data_root=self.root)
+        self.assertEqual(again["state"], "already_empty")
 
 
 if __name__ == "__main__":

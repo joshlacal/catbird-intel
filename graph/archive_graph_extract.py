@@ -42,8 +42,38 @@ COLLECTIONS = [
     "app.bsky.actor.contentVisibilityDeclaration",
 ]
 
+SOURCE_IDS = (
+    "public_archive",
+    "gce_main",
+    "gce_bootstrap_live",
+    "netcup_live",
+)
+
+_SOURCE_ALIASES = {
+    "public_archive": "public_archive",
+    "public-archive": "public_archive",
+    "archive_graph": "public_archive",
+    "archive-graph": "public_archive",
+    "gce_main": "gce_main",
+    "gce-main": "gce_main",
+    "gce_archive_graph": "gce_main",
+    "gce-archive-graph": "gce_main",
+    "october": "gce_main",
+    "gce_bootstrap_live": "gce_bootstrap_live",
+    "gce-bootstrap-live": "gce_bootstrap_live",
+    "bootstrap_live": "gce_bootstrap_live",
+    "bootstrap-live": "gce_bootstrap_live",
+    "netcup_live": "netcup_live",
+    "netcup-live": "netcup_live",
+    "netcup": "netcup_live",
+}
+
+_TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
+_TID_LOOKUP = {ch: idx for idx, ch in enumerate(_TID_ALPHABET)}
+
 SCHEMA = pa.schema(
     [
+        ("source_id", pa.string()),
         ("seq", pa.uint64()),
         ("time", pa.string()),
         ("kind", pa.string()),
@@ -62,6 +92,50 @@ SCHEMA = pa.schema(
         ("account_status", pa.string()),
     ]
 )
+
+
+def normalize_source_id(value: str | None, default: str = "public_archive") -> str:
+    if value is None or not str(value).strip():
+        return default
+    key = str(value).strip().lower()
+    if key in _SOURCE_ALIASES:
+        return _SOURCE_ALIASES[key]
+    raise ValueError(f"Unsupported source_id {value!r}; expected one of {SOURCE_IDS}")
+
+
+def infer_source_id(
+    work: pathlib.Path | str = "",
+    segments_folder: str = ARCHIVE_SEGMENTS_FOLDER,
+    explicit: str | None = None,
+) -> str:
+    if explicit:
+        return normalize_source_id(explicit)
+    w = str(work).lower()
+    if "bootstrap_live" in w or "bootstrap-live" in w:
+        return "gce_bootstrap_live"
+    if "netcup" in w:
+        return "netcup_live"
+    if "gce" in w or (segments_folder and segments_folder != ARCHIVE_SEGMENTS_FOLDER):
+        return "gce_main"
+    return "public_archive"
+
+
+def tid_from_uint64(value: int) -> str:
+    if value < 0 or value >= (1 << 64):
+        raise ValueError(f"TID uint64 out of range: {value}")
+    chars = [_TID_ALPHABET[(value >> ((12 - i) * 5)) & 0x1F] for i in range(13)]
+    return "".join(chars)
+
+
+def uint64_from_tid(tid: str) -> int:
+    if len(tid) != 13 or any(ch not in _TID_LOOKUP for ch in tid):
+        raise ValueError(f"Invalid 13-char base32-sortable TID: {tid!r}")
+    val = 0
+    for ch in tid:
+        val = (val << 5) | _TID_LOOKUP[ch]
+    return val
+
+
 
 
 def gws_json(*args: str, cwd: str | None = None) -> dict:
@@ -199,10 +273,80 @@ def download_segment(seg: dict, dest_dir: pathlib.Path) -> pathlib.Path:
     raise RuntimeError(f"download failed for {name} after 6 attempts: {last_err}")
 
 
-def row_from_event(ev: dict) -> dict:
-    rec = ev.get("record") if isinstance(ev.get("record"), dict) else {}
+def should_keep_event(ev: dict) -> bool:
     kind = (ev.get("$type") or "").rsplit("#", 1)[-1] or ev.get("kind", "")
-    collection = ev.get("collection", "")
+    if not kind:
+        if isinstance(ev.get("sync"), dict):
+            kind = "sync"
+        elif isinstance(ev.get("account"), dict):
+            kind = "account"
+        elif isinstance(ev.get("identity"), dict):
+            kind = "identity"
+        elif isinstance(ev.get("commit"), dict):
+            kind = "commit"
+    if kind in ("sync", "account", "identity"):
+        return True
+    commit_obj = ev.get("commit") if isinstance(ev.get("commit"), dict) else {}
+    collection = ev.get("collection") or commit_obj.get("collection") or ""
+    return kind == "commit" and collection in set(COLLECTIONS)
+
+
+def row_from_event(ev: dict, source_id: str | None = None) -> dict:
+    resolved_source = normalize_source_id(
+        ev.get("source_id") if isinstance(ev.get("source_id"), str) and ev.get("source_id") else source_id,
+        default="public_archive",
+    )
+    commit_obj = ev.get("commit") if isinstance(ev.get("commit"), dict) else {}
+    sync_obj = ev.get("sync") if isinstance(ev.get("sync"), dict) else {}
+    account = ev.get("account") if isinstance(ev.get("account"), dict) else {}
+    identity = ev.get("identity") if isinstance(ev.get("identity"), dict) else {}
+
+    rec = ev.get("record") if isinstance(ev.get("record"), dict) else (
+        commit_obj.get("record") if isinstance(commit_obj.get("record"), dict) else {}
+    )
+    kind = (ev.get("$type") or "").rsplit("#", 1)[-1] or ev.get("kind", "")
+    if not kind:
+        if sync_obj:
+            kind = "sync"
+        elif account:
+            kind = "account"
+        elif identity:
+            kind = "identity"
+        elif commit_obj:
+            kind = "commit"
+
+    collection = ev.get("collection") or commit_obj.get("collection") or ""
+    rkey = ev.get("rkey") or commit_obj.get("rkey") or ""
+    operation = ev.get("operation") or commit_obj.get("operation") or ""
+    raw_rev = (
+        ev.get("rev")
+        or commit_obj.get("rev")
+        or sync_obj.get("rev")
+        or account.get("rev")
+        or ""
+    )
+    if isinstance(raw_rev, int):
+        rev = tid_from_uint64(raw_rev) if raw_rev > 0 else ""
+    elif isinstance(raw_rev, str):
+        rev = raw_rev
+    else:
+        rev = ""
+
+    did = (
+        ev.get("did")
+        or sync_obj.get("did")
+        or account.get("did")
+        or identity.get("did")
+        or ""
+    )
+    time_val = (
+        ev.get("time")
+        or sync_obj.get("time")
+        or account.get("time")
+        or identity.get("time")
+        or ""
+    )
+
     subject = rec.get("subject") if isinstance(rec.get("subject"), str) else ""
     extra = ""
     if collection == "app.bsky.graph.starterpack":
@@ -215,28 +359,109 @@ def row_from_event(ev: dict) -> dict:
         extra = "1" if rec.get("hideFromAlgorithmicRecommendations") is True else "0"
     elif collection == "app.bsky.graph.list":
         extra = rec.get("purpose", "") if isinstance(rec.get("purpose"), str) else ""
-    account = ev.get("account") if isinstance(ev.get("account"), dict) else {}
+
+    account_active = None
+    if account and "active" in account and account.get("active") is not None:
+        account_active = bool(account.get("active"))
+    account_status = account.get("status", "") if account and isinstance(account.get("status"), str) else ""
+
     return {
+        "source_id": resolved_source,
         "seq": int(ev.get("seq") or 0),
-        "time": ev.get("time", ""),
+        "time": time_val,
         "kind": kind,
-        "did": ev.get("did", ""),
+        "did": did,
         "collection": collection,
-        "rkey": ev.get("rkey", ""),
-        "rev": ev.get("rev", ""),
-        "operation": ev.get("operation", ""),
+        "rkey": rkey,
+        "rev": rev,
+        "operation": operation,
         "created_at": rec.get("createdAt", "") if isinstance(rec.get("createdAt"), str) else "",
         "subject": subject,
         "list_uri": rec.get("list", "") if isinstance(rec.get("list"), str) else "",
         "name": (rec.get("name") or rec.get("displayName") or "")[:512] if isinstance(rec.get("name") or rec.get("displayName") or "", str) else "",
         "description": (rec.get("description") or "")[:2000] if isinstance(rec.get("description") or "", str) else "",
         "extra": extra,
-        "account_active": bool(account.get("active")) if account else None,
-        "account_status": account.get("status", "") if account else "",
+        "account_active": account_active,
+        "account_status": account_status,
     }
 
 
-def convert_shards(decoded_dir: pathlib.Path, out_dir: pathlib.Path, done: set[str], batch_tag: str) -> int:
+def _iso_utc(val: object) -> str:
+    if val is None:
+        return ""
+    if hasattr(val, "isoformat"):
+        s = val.isoformat()
+        if s.endswith("+00:00"):
+            return s[:-6] + "Z"
+        return s if s.endswith("Z") else s + "Z"
+    return str(val)
+
+
+def rows_from_netcup_export(
+    export_dir: pathlib.Path,
+    source_id: str = "netcup_live",
+    collections: set[str] | None = None,
+) -> list[dict]:
+    resolved_source = normalize_source_id(source_id, default="netcup_live")
+    allowed = collections if collections is not None else set(COLLECTIONS)
+    rows: list[dict] = []
+
+    deletions_path = export_dir / "deletions.parquet"
+    if deletions_path.exists():
+        del_table = pq.read_table(deletions_path)
+        for item in del_table.to_pylist():
+            coll = item.get("collection") or ""
+            if allowed and coll not in allowed:
+                continue
+            raw_rev = int(item.get("rev") or 0)
+            rows.append(
+                row_from_event(
+                    {
+                        "source_id": resolved_source,
+                        "seq": int(item.get("seq") or 0),
+                        "time": _iso_utc(item.get("indexed_at")),
+                        "kind": "commit",
+                        "did": item.get("did") or "",
+                        "collection": coll,
+                        "rkey": item.get("rkey") or "",
+                        "rev": tid_from_uint64(raw_rev) if raw_rev > 0 else "",
+                        "operation": "delete",
+                    },
+                    source_id=resolved_source,
+                )
+            )
+
+    status_path = export_dir / "account_status.parquet"
+    if status_path.exists():
+        st_table = pq.read_table(status_path)
+        for item in st_table.to_pylist():
+            rows.append(
+                row_from_event(
+                    {
+                        "source_id": resolved_source,
+                        "seq": int(item.get("seq") or 0),
+                        "time": _iso_utc(item.get("indexed_at")),
+                        "kind": "account",
+                        "did": item.get("did") or "",
+                        "account": {
+                            "active": bool(int(item.get("active") or 0)),
+                            "status": item.get("status") or "",
+                        },
+                    },
+                    source_id=resolved_source,
+                )
+            )
+    return rows
+
+
+def convert_shards(
+    decoded_dir: pathlib.Path,
+    out_dir: pathlib.Path,
+    done: set[str],
+    batch_tag: str,
+    source_id: str = "public_archive",
+) -> int:
+    resolved_source = normalize_source_id(source_id, default="public_archive")
     meta = json.loads((decoded_dir / "checkpoint.json").read_text())
     rows_total = 0
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -253,7 +478,9 @@ def convert_shards(decoded_dir: pathlib.Path, out_dir: pathlib.Path, done: set[s
         with src.open() as fh:
             for line in fh:
                 if line.strip():
-                    rows.append(row_from_event(json.loads(line)))
+                    ev = json.loads(line)
+                    if should_keep_event(ev):
+                        rows.append(row_from_event(ev, source_id=resolved_source))
         table = pa.Table.from_pylist(rows, schema=SCHEMA)
         dst = out_dir / f"events-{batch_tag}-{idx:02d}-{sha}.parquet"
         pq.write_table(table, dst, compression="zstd", compression_level=6)
@@ -267,6 +494,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", default="/Users/joshlacalamito/catbird-lake-local/archive-graph")
     ap.add_argument("--segments-folder", default=ARCHIVE_SEGMENTS_FOLDER, help="Google Drive segments folder ID")
+    ap.add_argument(
+        "--source-id",
+        default=None,
+        help="Canonical source_id (public_archive, gce_main, gce_bootstrap_live, netcup_live)",
+    )
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
     ap.add_argument("--once", action="store_true")
@@ -274,6 +506,7 @@ def main() -> int:
     args = ap.parse_args()
 
     work = pathlib.Path(args.work)
+    source_id = infer_source_id(work, args.segments_folder, args.source_id)
     staging = work / "staging" / "segments"
     decoded = work / "decoded_batch"
     events = work / "events"
@@ -287,7 +520,7 @@ def main() -> int:
         pending_indices = [idx for idx in sorted(available) if available[idx]["jss"]["name"] not in ledger["segments"]]
         batch = [(idx, available[idx]) for idx in pending_indices[: args.batch]]
         if not batch:
-            print(json.dumps({"ts": time.strftime("%FT%TZ", time.gmtime()), "msg": "waiting", "done_segments": len(ledger["segments"]), "available": len(available)}), flush=True)
+            print(json.dumps({"ts": time.strftime("%FT%TZ", time.gmtime()), "msg": "waiting", "source_id": source_id, "done_segments": len(ledger["segments"]), "available": len(available)}), flush=True)
             if args.once:
                 return 0
             time.sleep(args.poll)
@@ -345,7 +578,7 @@ def main() -> int:
             return 2
         summary = json.loads(r.stdout)
         batch_tag = f"{batch[0][0]:06d}-{batch[-1][0]:06d}"
-        rows = convert_shards(decoded, events, shards_done, batch_tag)
+        rows = convert_shards(decoded, events, shards_done, batch_tag, source_id=source_id)
         dec_s = time.time() - t1
 
         for i, seg in batch:
@@ -361,6 +594,7 @@ def main() -> int:
 
         print(json.dumps({
             "ts": time.strftime("%FT%TZ", time.gmtime()),
+            "source_id": source_id,
             "segments": [b[0] for b in batch],
             "done_total": len(ledger["segments"]),
             "download_mb_s": round(dl_bytes / 1e6 / max(dl_s, 0.001), 1),
@@ -374,3 +608,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

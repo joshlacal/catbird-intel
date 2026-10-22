@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Stream completed Jetstream archive segments from Google Drive, decode only
-graph collections, and write compact Parquet for Phase 1 community discovery.
+"""Stream completed Jetstream archive segments from Google Drive (or, with
+--gcs-prefix, the GCE capture's Cloud Storage buffer), decode only the selected
+collections, and write compact Parquet for Phase 1 community discovery.
 
 Read-only on Drive (never touches .archive.lock or the downloader's files).
 Segments are processed in strict index order because the decoder enforces a
@@ -9,6 +10,8 @@ only the extracted graph events are kept.
 
 Usage:
   archive_graph_extract.py [--work DIR] [--batch N] [--parallel N] [--once]
+  archive_graph_extract.py --gcs-prefix gs://BUCKET/sources/SRC/EPOCH --min-index N \
+      --work DIR --decoder PATH/decode_segments.mjs
 """
 from __future__ import annotations
 
@@ -26,6 +29,8 @@ import time
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import gcs_segments
+
 GWS = "/usr/local/bin/gws"
 ARCHIVE_SEGMENTS_FOLDER = "1Co7E4BnsWVVF_9Z4qkB0pn1Jzq05F8ae"  # public-archive-001/segments
 DECODER = pathlib.Path(
@@ -41,6 +46,8 @@ COLLECTIONS = [
     "app.bsky.actor.profile",
     "app.bsky.actor.contentVisibilityDeclaration",
 ]
+
+_ACTIVE_COLLECTIONS = set(COLLECTIONS)
 
 SOURCE_IDS = (
     "public_archive",
@@ -288,7 +295,7 @@ def should_keep_event(ev: dict) -> bool:
         return True
     commit_obj = ev.get("commit") if isinstance(ev.get("commit"), dict) else {}
     collection = ev.get("collection") or commit_obj.get("collection") or ""
-    return kind == "commit" and collection in set(COLLECTIONS)
+    return kind == "commit" and collection in _ACTIVE_COLLECTIONS
 
 
 def row_from_event(ev: dict, source_id: str | None = None) -> dict:
@@ -347,7 +354,10 @@ def row_from_event(ev: dict, source_id: str | None = None) -> dict:
         or ""
     )
 
-    subject = rec.get("subject") if isinstance(rec.get("subject"), str) else ""
+    raw_subject = rec.get("subject")
+    if isinstance(raw_subject, dict):  # likes and reposts reference a post by strongRef
+        raw_subject = raw_subject.get("uri")
+    subject = raw_subject if isinstance(raw_subject, str) else ""
     extra = ""
     if collection == "app.bsky.graph.starterpack":
         feeds = rec.get("feeds")
@@ -499,14 +509,33 @@ def main() -> int:
         default=None,
         help="Canonical source_id (public_archive, gce_main, gce_bootstrap_live, netcup_live)",
     )
+    ap.add_argument("--gcs-prefix", default=None,
+                    help="read segments from this Cloud Storage buffer prefix instead of Drive "
+                         "(gs://bucket/sources/<source>/<epoch>); run it inside us-west1")
+    ap.add_argument("--min-index", type=int, default=0, help="skip segments below this index")
+    ap.add_argument("--max-index", type=int, default=None, help="skip segments above this index")
+    ap.add_argument("--collections", default=",".join(COLLECTIONS),
+                    help="comma-separated NSIDs to keep (add app.bsky.feed.like,app.bsky.feed.repost for engagement)")
+    ap.add_argument("--decoder", default=str(DECODER), help="path to decode_segments.mjs")
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--poll", type=int, default=600, help="seconds to wait when no new segments")
     args = ap.parse_args()
 
+    global _ACTIVE_COLLECTIONS
+    collections = [c for c in args.collections.split(",") if c]
+    _ACTIVE_COLLECTIONS = set(collections)
+    decoder = pathlib.Path(args.decoder)
     work = pathlib.Path(args.work)
-    source_id = infer_source_id(work, args.segments_folder, args.source_id)
+    if args.gcs_prefix:
+        source_id = normalize_source_id(args.source_id or "gce_main")
+        list_segments = lambda: gcs_segments.completed_segments(args.gcs_prefix)
+        fetch_segment = gcs_segments.download_segment
+    else:
+        source_id = infer_source_id(work, args.segments_folder, args.source_id)
+        list_segments = lambda: completed_segments(args.segments_folder)
+        fetch_segment = download_segment
     staging = work / "staging" / "segments"
     decoded = work / "decoded_batch"
     events = work / "events"
@@ -516,7 +545,8 @@ def main() -> int:
     shards_done = set(ledger["shards_done"])
 
     while True:
-        available = completed_segments(args.segments_folder)
+        available = {idx: seg for idx, seg in list_segments().items()
+                     if idx >= args.min_index and (args.max_index is None or idx <= args.max_index)}
         pending_indices = [idx for idx in sorted(available) if available[idx]["jss"]["name"] not in ledger["segments"]]
         batch = [(idx, available[idx]) for idx in pending_indices[: args.batch]]
         if not batch:
@@ -538,7 +568,7 @@ def main() -> int:
         t0 = time.time()
         ready_batch = []
         with cf.ThreadPoolExecutor(max_workers=args.parallel) as pool:
-            futures = {pool.submit(download_segment, seg, staging / seg["group"]): (i, seg) for i, seg in batch}
+            futures = {pool.submit(fetch_segment, seg, staging / seg["group"]): (i, seg) for i, seg in batch}
             for fut in cf.as_completed(futures):
                 i, seg = futures[fut]
                 try:
@@ -563,16 +593,16 @@ def main() -> int:
 
         t1 = time.time()
         cmd = [
-            "node", str(DECODER),
+            "node", str(decoder),
             "--archive", str(work / "staging"),
             "--out", str(decoded),
-            "--collections", ",".join(COLLECTIONS),
+            "--collections", ",".join(collections),
             "--max-events", "1000000000",
             "--max-bytes", "1000GiB",
             "--max-segments", str(len(batch)),
             "--shard-mb", "256",
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(DECODER.parent))
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(decoder.parent))
         if r.returncode != 0:
             print(r.stderr[-2000:], file=sys.stderr)
             return 2

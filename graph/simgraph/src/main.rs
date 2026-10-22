@@ -32,6 +32,7 @@ struct Args {
     top_k: usize,
     min_support: u32,
     seed: u64,
+    follower_weights: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -43,10 +44,17 @@ fn parse_args() -> Args {
         top_k: 400,
         min_support: 2,
         seed: 42,
+        follower_weights: None,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
+    let mut use_default_weights = false;
     while i < argv.len() {
+        if argv[i].as_str() == "--use-follower-weights" {
+            use_default_weights = true;
+            i += 1;
+            continue;
+        }
         let v = argv.get(i + 1).cloned().unwrap_or_default();
         match argv[i].as_str() {
             "--dir" => a.dir = v,
@@ -56,9 +64,13 @@ fn parse_args() -> Args {
             "--top-k" => a.top_k = v.parse().expect("--top-k"),
             "--min-support" => a.min_support = v.parse().expect("--min-support"),
             "--seed" => a.seed = v.parse().expect("--seed"),
+            "--follower-weights" => a.follower_weights = Some(v),
             other => panic!("unknown argument {other}"),
         }
         i += 2;
+    }
+    if use_default_weights && a.follower_weights.is_none() {
+        a.follower_weights = Some(format!("{}/follower_weights.tsv", a.dir));
     }
     a
 }
@@ -76,6 +88,27 @@ fn read_producers(path: &str) -> Vec<u32> {
         deg.push(followers);
     }
     deg
+}
+
+/// Read optional per-follower coverage weights (`uid \t did \t is_stale \t weight` or `uid \t weight`).
+fn read_follower_weights(path: &str, n_users: usize) -> Vec<f32> {
+    let f = BufReader::new(File::open(path).expect("follower_weights.tsv"));
+    let mut weights = vec![1.0f32; n_users];
+    for line in f.lines() {
+        let line = line.unwrap();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("uid\t") {
+            continue;
+        }
+        let cols: Vec<&str> = trimmed.split('\t').collect();
+        assert!(cols.len() >= 2, "follower_weights.tsv row needs uid and weight");
+        let uid: usize = cols[0].parse().expect("follower_weights uid");
+        let w: f32 = cols.last().unwrap().parse().expect("follower_weights weight");
+        if uid < n_users {
+            weights[uid] = w.max(0.0);
+        }
+    }
+    weights
 }
 
 /// Read (uid, pid) pairs sorted by uid into a CSR of each user's producers.
@@ -106,22 +139,18 @@ fn read_edges(path: &str) -> (Vec<u64>, Vec<u32>) {
     (offsets, targets)
 }
 
-fn main() {
-    let a = parse_args();
-    let t0 = Instant::now();
-    let deg = read_producers(&format!("{}/producers.tsv", a.dir));
-    let (u_off, u_tgt) = read_edges(&format!("{}/edges.bin", a.dir));
+fn compute_similarities(
+    a: &Args,
+    deg: &[u32],
+    u_off: &[u64],
+    u_tgt: &[u32],
+    cov_weights: Option<&[f32]>,
+    t0: Instant,
+) -> Vec<Vec<(u32, f32)>> {
     let n_users = u_off.len() - 1;
     let n_prod = deg.len();
-    eprintln!(
-        "loaded {} users, {} producers, {} edges in {:.1}s",
-        n_users,
-        n_prod,
-        u_tgt.len(),
-        t0.elapsed().as_secs_f32()
-    );
 
-    // Per-user capped follow lists and reweighting factor len / cap.
+    // Per-user capped follow lists and reweighting factor (len / cap) * coverage_weight.
     let mut rng = SmallRng::seed_from_u64(a.seed);
     let mut c_off: Vec<u64> = Vec::with_capacity(n_users + 1);
     let mut c_tgt: Vec<u32> = Vec::new();
@@ -129,22 +158,23 @@ fn main() {
     c_off.push(0);
     for u in 0..n_users {
         let s = &u_tgt[u_off[u] as usize..u_off[u + 1] as usize];
+        let cov_w = cov_weights.map_or(1.0, |cw| cw[u]);
         if s.len() > a.cap {
             let mut v = s.to_vec();
             v.shuffle(&mut rng);
             v.truncate(a.cap);
             c_tgt.extend_from_slice(&v);
-            weight.push(s.len() as f32 / a.cap as f32);
+            weight.push((s.len() as f32 / a.cap as f32) * cov_w);
         } else {
             c_tgt.extend_from_slice(s);
-            weight.push(1.0);
+            weight.push(cov_w);
         }
         c_off.push(c_tgt.len() as u64);
     }
 
-    // Producer -> followers CSR (full lists, from uncapped edges).
+    // Producer -> followers CSR (full lists, from uncapped edges) and effective producer degrees.
     let mut p_count = vec![0u64; n_prod + 1];
-    for &p in &u_tgt {
+    for &p in u_tgt {
         p_count[p as usize + 1] += 1;
     }
     for i in 0..n_prod {
@@ -153,6 +183,16 @@ fn main() {
     let p_off = p_count.clone();
     let mut fill = p_count;
     let mut p_fol = vec![0u32; u_tgt.len()];
+    let mut eff_deg: Vec<f32> = deg.iter().map(|&d| d as f32).collect();
+    if let Some(cw) = cov_weights {
+        eff_deg.fill(0.0);
+        for u in 0..n_users {
+            let uw = cw[u];
+            for &p in &u_tgt[u_off[u] as usize..u_off[u + 1] as usize] {
+                eff_deg[p as usize] += uw;
+            }
+        }
+    }
     for u in 0..n_users {
         for &p in &u_tgt[u_off[u] as usize..u_off[u + 1] as usize] {
             let slot = &mut fill[p as usize];
@@ -160,12 +200,10 @@ fn main() {
             *slot += 1;
         }
     }
-    drop(u_tgt);
-    drop(u_off);
     eprintln!("indexes built in {:.1}s", t0.elapsed().as_secs_f32());
 
     let completed = AtomicUsize::new(0);
-    let results: Vec<Vec<(u32, f32)>> = (0..n_prod)
+    (0..n_prod)
         .into_par_iter()
         .map_init(
             || (vec![0f32; n_prod], vec![0u32; n_prod], Vec::<u32>::new()),
@@ -209,13 +247,14 @@ fn main() {
                         acc[qi] += w;
                     }
                 }
-                let dp = deg[p] as f32;
+                let dp = eff_deg[p];
                 let mut out: Vec<(u32, f32)> = Vec::new();
                 for &q in touched.iter() {
                     let qi = q as usize;
-                    if support[qi] >= a.min_support {
-                        let inter = (acc[qi] * scale).min(dp.min(deg[qi] as f32));
-                        let cos = inter / (dp * deg[qi] as f32).sqrt();
+                    let dq = eff_deg[qi];
+                    if support[qi] >= a.min_support && dp > 0.0 && dq > 0.0 {
+                        let inter = (acc[qi] * scale).min(dp.min(dq));
+                        let cos = inter / (dp * dq).sqrt();
                         if cos >= a.min_cos {
                             out.push((q, cos));
                         }
@@ -243,7 +282,30 @@ fn main() {
                 out
             },
         )
-        .collect();
+        .collect()
+}
+
+fn main() {
+    let a = parse_args();
+    let t0 = Instant::now();
+    let deg = read_producers(&format!("{}/producers.tsv", a.dir));
+    let (u_off, u_tgt) = read_edges(&format!("{}/edges.bin", a.dir));
+    let n_users = u_off.len() - 1;
+    let n_prod = deg.len();
+    let cov_weights = a
+        .follower_weights
+        .as_deref()
+        .map(|p| read_follower_weights(p, n_users));
+    eprintln!(
+        "loaded {} users, {} producers, {} edges (weighted={}) in {:.1}s",
+        n_users,
+        n_prod,
+        u_tgt.len(),
+        cov_weights.is_some(),
+        t0.elapsed().as_secs_f32()
+    );
+
+    let results = compute_similarities(&a, &deg, &u_off, &u_tgt, cov_weights.as_deref(), t0);
 
     let mut w =
         BufWriter::with_capacity(1 << 24, File::create(format!("{}/sim.bin", a.dir)).unwrap());
@@ -262,7 +324,53 @@ fn main() {
     }
     w.flush().unwrap();
     println!(
-        "{{\"producers\":{},\"producers_with_neighbors\":{},\"sim_edges\":{},\"users\":{},\"seconds\":{:.1}}}",
-        n_prod, with_nbrs, n_edges, n_users, t0.elapsed().as_secs_f32()
+        "{{\"producers\":{},\"producers_with_neighbors\":{},\"sim_edges\":{},\"users\":{},\"weighted\":{},\"seconds\":{:.1}}}",
+        n_prod,
+        with_nbrs,
+        n_edges,
+        n_users,
+        cov_weights.is_some(),
+        t0.elapsed().as_secs_f32()
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unweighted_and_weighted_cosine_similarity() {
+        // 3 users:
+        // u0 follows p0, p1
+        // u1 follows p0, p1
+        // u2 follows p0, p2
+        let deg = vec![3u32, 2u32, 1u32];
+        let u_off = vec![0u64, 2, 4, 6];
+        let u_tgt = vec![0u32, 1, 0, 1, 0, 2];
+        let args = Args {
+            dir: ".".into(),
+            sample: 1000,
+            cap: 500,
+            min_cos: 0.01,
+            top_k: 10,
+            min_support: 2,
+            seed: 42,
+            follower_weights: None,
+        };
+        let unweighted = compute_similarities(&args, &deg, &u_off, &u_tgt, None, Instant::now());
+        // p0 and p1 share u0 and u1 (2 co-followers); cos = 2 / sqrt(3 * 2) = 0.8164966
+        assert_eq!(unweighted[0].len(), 1);
+        assert_eq!(unweighted[0][0].0, 1);
+        assert!((unweighted[0][0].1 - (2.0f32 / 6.0f32.sqrt())).abs() < 1e-5);
+
+        // Downweight u2 (stale fallback weight 0.25) while keeping u0, u1 at 1.0:
+        // Effective degree of p0 becomes 2.25, p1 stays 2.0, intersection stays 2.0 -> cos increases!
+        let cw = vec![1.0f32, 1.0, 0.25];
+        let weighted = compute_similarities(&args, &deg, &u_off, &u_tgt, Some(&cw), Instant::now());
+        assert_eq!(weighted[0][0].0, 1);
+        let expected_weighted = 2.0f32 / (2.25f32 * 2.0f32).sqrt();
+        assert!((weighted[0][0].1 - expected_weighted).abs() < 1e-5);
+        assert!(weighted[0][0].1 > unweighted[0][0].1);
+    }
+}
+

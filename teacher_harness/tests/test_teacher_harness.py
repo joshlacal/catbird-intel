@@ -1076,6 +1076,72 @@ class TeacherHarnessAcceptanceTests(unittest.TestCase):
         # Tainted hydrated parent must not be injected into p7's context
         self.assertIsNone(p7_leaked["reply_parent_text"])
 
+    def test_18_systemone_link_only_mention_only_and_media_only_substance_signals(self) -> None:
+        """Scenario 18: SystemOne state structural_signals identify link-only, @mention-only, and media-only posts without substantive prose."""
+        link_post = {
+            "uri": "at://did:plc:u/app.bsky.feed.post/link1",
+            "text": "x.com/allchronolog...",
+            "langs": ["en"],
+            "post_type": "original",
+            "embed_type": "external",
+            "external_uri": "https://x.com/allchronological/status/123",
+            "image_count": 0,
+            "has_video": 0,
+        }
+        req_link = build_systemone_clef_request(link_post, config=self.config)
+        sig_link = req_link["state"]["structural_signals"]
+        self.assertEqual(sig_link["substantive_prose_word_count"], 0)
+        self.assertTrue(sig_link["is_link_or_mention_only"])
+        self.assertFalse(sig_link["is_media_without_substantive_prose"])
+        self.assertFalse(sig_link["external_link_body_included"])
+
+        mention_post = {
+            "uri": "at://did:plc:u/app.bsky.feed.post/mention1",
+            "text": "@troyjackson207.bsky.social",
+            "langs": ["en"],
+            "post_type": "original",
+            "embed_type": "external",
+            "external_uri": "https://example.com",
+            "image_count": 0,
+            "has_video": 0,
+        }
+        req_mention = build_systemone_clef_request(mention_post, config=self.config)
+        sig_mention = req_mention["state"]["structural_signals"]
+        self.assertEqual(sig_mention["substantive_prose_word_count"], 0)
+        self.assertTrue(sig_mention["is_link_or_mention_only"])
+
+        media_only_post = {
+            "uri": "at://did:plc:u/app.bsky.feed.post/img1",
+            "text": "10/19/26\n🎥JaysWorld411",
+            "langs": ["en"],
+            "post_type": "original",
+            "embed_type": "images",
+            "external_uri": "",
+            "image_count": 1,
+            "has_video": 0,
+        }
+        req_media = build_systemone_clef_request(media_only_post, config=self.config)
+        sig_media = req_media["state"]["structural_signals"]
+        self.assertEqual(sig_media["substantive_prose_word_count"], 0)
+        self.assertTrue(sig_media["is_media_without_substantive_prose"])
+        self.assertFalse(sig_media["media_visual_included"])
+
+        prose_media_post = {
+            "uri": "at://did:plc:u/app.bsky.feed.post/img_prose",
+            "text": "The senate committee vote on election reform legislation is scheduled for tomorrow.",
+            "langs": ["en"],
+            "post_type": "original",
+            "embed_type": "images",
+            "external_uri": "",
+            "image_count": 1,
+            "has_video": 0,
+        }
+        req_prose = build_systemone_clef_request(prose_media_post, config=self.config)
+        sig_prose = req_prose["state"]["structural_signals"]
+        self.assertGreaterEqual(sig_prose["substantive_prose_word_count"], 10)
+        self.assertFalse(sig_prose["is_link_or_mention_only"])
+        self.assertFalse(sig_prose["is_media_without_substantive_prose"])
+
 
 if __name__ == "__main__":
     unittest.main()

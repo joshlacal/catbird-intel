@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any, Iterator, Protocol
 
@@ -639,9 +640,54 @@ class FakeAnthropicTransport:
 
 
 SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA: dict[str, str] = {
-    "true": "Unscorable without unseen external material.",
-    "false": "Scorable from the text shown above (including 0 when absent).",
+    "true": (
+        "Unscorable without unseen external material (such as a bare URL/link, "
+        "bare @mention, unattached image/video with no substantive prose, or "
+        "unhydrated reply/quote)."
+    ),
+    "false": (
+        "Scorable from the substantive prose shown above (including 0 when the "
+        "post has self-contained readable prose where this attribute is absent)."
+    ),
 }
+
+_SYSTEMONE_URL_RE = re.compile(
+    r"(?:https?:/+\S+|(?:www\.|[a-zA-Z0-9-]+\.(?:com|org|net|io|gov|edu|me|co|be|ly|social|app|tv|news|blog|la|gg|xyz|info|uk|de|fr|jp|br))(?:/\S*)?)",
+    re.IGNORECASE,
+)
+_SYSTEMONE_HANDLE_RE = re.compile(r"@[a-zA-Z0-9._-]+")
+_SYSTEMONE_CREDIT_RE = re.compile(r"[🎥📸📹📷🎬]\s*\S+")
+_SYSTEMONE_DATE_RE = re.compile(r"\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b")
+_SYSTEMONE_WORD_RE = re.compile(r"[a-zA-Z\u00C0-\u024F]{2,}")
+
+
+def _analyze_systemone_text_substance(
+    text: str,
+    context_texts: list[str],
+    structural_signals: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute non-leaking structural diagnostics for bare links, @mentions, and unattached media."""
+    combined = " ".join([text, *context_texts])
+    has_url_in_text = bool(_SYSTEMONE_URL_RE.search(combined))
+    has_handle_in_text = bool(_SYSTEMONE_HANDLE_RE.search(combined))
+    cleaned = _SYSTEMONE_URL_RE.sub(" ", combined)
+    cleaned = _SYSTEMONE_HANDLE_RE.sub(" ", cleaned)
+    cleaned = _SYSTEMONE_CREDIT_RE.sub(" ", cleaned)
+    cleaned = _SYSTEMONE_DATE_RE.sub(" ", cleaned)
+    words = _SYSTEMONE_WORD_RE.findall(cleaned)
+    has_media = bool(
+        int(structural_signals.get("image_count") or 0) > 0
+        or structural_signals.get("has_video")
+        or structural_signals.get("embed_modality") in ("images", "video", "recordWithMedia")
+    )
+    has_ext = bool(structural_signals.get("has_external_link") or has_url_in_text)
+    return {
+        "media_visual_included": False,
+        "external_link_body_included": False,
+        "substantive_prose_word_count": len(words),
+        "is_link_or_mention_only": len(words) == 0 and (has_ext or has_handle_in_text),
+        "is_media_without_substantive_prose": len(words) == 0 and has_media,
+    }
 
 
 def build_systemone_clef_request(
@@ -659,12 +705,23 @@ def build_systemone_clef_request(
     questions for topic, missing_context_kind, and stance_ambiguity.
     """
     obs = resolve_post_observation(row, corpus_by_uri=corpus_by_uri, observation_mode=observation_mode)
+    state_envelope = copy.deepcopy(obs["envelope"])
+    state_envelope["structural_signals"].update(
+        _analyze_systemone_text_substance(
+            obs["text"],
+            obs["context_texts"],
+            state_envelope["structural_signals"],
+        )
+    )
+
     questions: dict[str, dict[str, Any]] = {}
     for comp in COMPONENT_ORDER:
         spec = config.rubric["components"][comp]
+        boundary_rules = " ".join(spec.get("boundary_rules") or [])
+        score_instr = f"{spec['definition']} {boundary_rules} Rate only from observable text.".strip()
         questions[f"{comp}_score"] = {
             "type": "score",
-            "instructions": f"{spec['definition']} Rate only from observable text.",
+            "instructions": score_instr,
             "criteria": [
                 spec["anchors"]["0"],
                 spec["anchors"]["1"],
@@ -675,8 +732,9 @@ def build_systemone_clef_request(
         questions[f"{comp}_insufficient"] = {
             "type": "noul",
             "instructions": (
-                f"Is there insufficient evidence in the provided text to determine '{comp}' "
-                "(for example because required parent post, quoted post, media, or cross-post repetition history is missing)?"
+                f"Is there insufficient evidence in the visible text to determine '{comp}' "
+                "(because the post is a bare URL/link, bare @mention, image/video with no substantive prose, "
+                "or unhydrated reply/quote requiring unseen parent, quote, media, link, or repetition history)?"
             ),
             "criteria": dict(SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA),
         }
@@ -704,7 +762,7 @@ def build_systemone_clef_request(
 
     payload = {
         "model": model_name,
-        "state": obs["envelope"],
+        "state": state_envelope,
         "questions": questions,
     }
     assert_no_credentials(payload, "systemone_request")

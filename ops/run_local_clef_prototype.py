@@ -320,7 +320,7 @@ def run_clef_flash_teacher(
     head = head.to(device=device, dtype=dtype)
     try:
         processor = AutoProcessor.from_pretrained(snapshot_dir, local_files_only=True)
-    except (ValueError, ImportError):
+    except (ValueError, ImportError, TypeError):
         tok = AutoTokenizer.from_pretrained(snapshot_dir, local_files_only=True)
 
         class _TextOnlyProcessor:

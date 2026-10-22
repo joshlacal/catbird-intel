@@ -20,8 +20,12 @@ import json
 import pathlib
 import statistics
 
-import igraph as ig
-import leidenalg
+try:
+    import igraph as ig
+    import leidenalg
+except ImportError:
+    ig = None  # type: ignore[assignment]
+    leidenalg = None  # type: ignore[assignment]
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq

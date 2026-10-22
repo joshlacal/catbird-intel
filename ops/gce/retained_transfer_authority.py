@@ -917,12 +917,22 @@ class RetainedObservationAuthority:
                         )
                     elif authority._has_run_claim_table():
                         db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (run_id,))
+                boot_changed = (
+                    (recovery_only or resume_open) and
+                    account["boot_id"] is not None and
+                    account["boot_id"] != boot
+                )
                 db.execute(
                     "UPDATE retained_account SET boot_id=CASE WHEN ? THEN ? ELSE COALESCE(boot_id,?) END,"
-                    "process_host=?,process_pid=?,process_nonce=?,last_clock=? WHERE id=1",
+                    "process_host=?,process_pid=?,process_nonce=?,last_clock=?,"
+                    "last_dispatch_wall=CASE WHEN ? THEN NULL ELSE last_dispatch_wall END,"
+                    "last_dispatch_monotonic=CASE WHEN ? THEN NULL ELSE last_dispatch_monotonic END "
+                    "WHERE id=1",
                     (1 if (recovery_only or resume_open) else 0, boot, boot,
                      authority.process_host, authority.process_pid,
-                     authority.process_nonce, now),
+                     authority.process_nonce, now,
+                     1 if boot_changed else 0,
+                     1 if boot_changed else 0),
                 )
             authority._run(allow_recovery=True)
             return authority

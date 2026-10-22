@@ -1069,6 +1069,7 @@ class RetainedAuthorityTests(unittest.TestCase):
         m1 = self.manifest(1)
         raw1, d1 = self.raw_and_digest(m1)
         ev1 = self.evidence(m1, d1)
+        self.monotonic.value = 82247.5
         with patch.object(retained_module.os, "getpid", return_value=dead_pid):
             run1 = TransferAuthority.open_retained_run(
                 self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
@@ -1091,7 +1092,15 @@ class RetainedAuthorityTests(unittest.TestCase):
                 operation_key="d" * 64,
             )
             run1.mark_dispatch(crash_att)
-            # Simulate crash: close sqlite connection without finish_request
+            # Also pre-charge an undispatched chunk right before reboot/crash
+            self.clock.advance(0.55)
+            self.monotonic.advance(0.55)
+            undispatched_att, _ = run1.start_request(
+                10, 20, "media_chunk", method="PUT",
+                target_category="media_chunk", target_sha256=session1_sha,
+                operation_key="a" * 64,
+            )
+            # Simulate crash/reboot: close sqlite connection without finish_request
             run1.close()
 
         with patch.object(retained_module.os, "kill", side_effect=ProcessLookupError):
@@ -1103,14 +1112,15 @@ class RetainedAuthorityTests(unittest.TestCase):
             self.assertTrue(open_info["owner_host_matches"])
             self.assertFalse(open_info["owner_alive"])
 
-            self.clock.advance(1.0)
-            self.monotonic.advance(1.0)
+            self.clock.advance(60.0)
+            # Kernel monotonic clock resets to a lower value on the new boot
+            self.monotonic.value = 12.0
             ev_resumed = self.evidence(m1, d1, observed_at=self.clock())
             resumed = TransferAuthority.open_retained_run(
                 self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
                 account_id=self.account_id, manifest_bytes=raw1, evidence=ev_resumed,
                 deadline_at=self.clock() + 20 * 60, clock=self.clock,
-                monotonic_clock=self.monotonic, boot_id="synthetic-boot",
+                monotonic_clock=self.monotonic, boot_id="synthetic-boot-after-reboot",
                 resume_open=True,
             )
             self.addCleanup(resumed.close)
@@ -1123,6 +1133,7 @@ class RetainedAuthorityTests(unittest.TestCase):
             target_category="resumable_status", target_sha256=session1_sha,
             operation_key="e" * 64,
         )
+        self.assertEqual(resumed.seconds_until_dispatch(probe_att), 0.0)
         resumed.mark_dispatch(probe_att)
         resumed.finish_request(probe_att, 308)
         resumed.reconcile_attempt_by_status_probe(

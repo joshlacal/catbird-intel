@@ -707,6 +707,7 @@ def main(argv=None) -> int:
     parser.add_argument("--retain-gcs", action="store_true")
     parser.add_argument("--quota-observation", action="store_true")
     parser.add_argument("--recovery-only", action="store_true")
+    parser.add_argument("--max-concurrent-runs", type=int, default=1, choices=(1, 2, 3, 4))
     args = parser.parse_args(argv)
     try:
         manifest, manifest_sha256 = load_overflow_manifest(
@@ -782,7 +783,8 @@ def _run_worker_guarded(args, manifest: dict, digest: str, evidence: dict) -> in
         authority = TransferAuthority.open_retained_run(
             args.authority_db, run_id=args.run_id, writer_id=args.writer_id,
             account_id=args.account_id, manifest_bytes=raw, evidence=evidence,
-            deadline_at=args.deadline_epoch, recovery_only=args.recovery_only)
+            deadline_at=args.deadline_epoch, recovery_only=args.recovery_only,
+            max_concurrent_runs=getattr(args, "max_concurrent_runs", 1))
         for required in ("reserve_index_create", "mark_pair_verified", "close_pair",
                          "mark_index_committed", "pair_status"):
             if not callable(getattr(authority, required, None)):

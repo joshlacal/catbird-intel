@@ -165,9 +165,30 @@ class SafeDrive:
         from gce_segment_offloader import DriveClient
         self.auth = DriveClient(oauth)
 
+    @contextlib.contextmanager
+    def _cross_process_dispatch_lock(self):
+        db_raw = getattr(self.authority, "db_path", None)
+        if not isinstance(db_raw, (str, Path)):
+            yield
+            return
+        db_path = Path(db_raw)
+        if not db_path.is_file():
+            yield
+            return
+        lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
     def request(self, url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
-        # The SQLite slot alone is insufficient if one thread is delayed after
-        # booking it. Serialize actual dispatch in this single writer too.
+        # The SQLite slot alone is insufficient if one thread or worker process is
+        # delayed after booking it. Serialize slot booking + dispatch across workers,
+        # then release the cross-process lock so HTTP body streaming overlaps.
         with _DRIVE_REQUEST_LOCK:
             target = urllib.parse.urlsplit(url)
             if target.scheme != "https" or target.netloc != "www.googleapis.com":
@@ -178,38 +199,39 @@ class SafeDrive:
                                   if key.lower() == "content-range"), "")
             operation_key = hashlib.sha256("\0".join(
                 (method.upper(), kind, target_sha256, content_range, body_sha256)).encode()).hexdigest()
-            # No credential refresh or Drive request is allowed before validation.
-            self.authority.assert_active(timeout)
-            token = self.auth.token()
-            attempt_id, slot_epoch = self.authority.start_request(
-                len(data or b""), timeout, kind, method=method.upper(),
-                target_category=kind, target_sha256=target_sha256,
-                operation_key=operation_key)
-            self.last_attempt_id = attempt_id
-            delay = slot_epoch - self.authority.clock()
-            if delay > 0:
-                time.sleep(delay)
-            # The retained authority also enforces elapsed monotonic time.
-            # A wall clock jump or a wake one float ULP before the boundary
-            # must wait on this same precharged attempt, never make a second
-            # reservation or dispatch early.
-            until_dispatch = getattr(self.authority, "seconds_until_dispatch", None)
-            if until_dispatch is not None:
-                for _ in range(8):
-                    extra = until_dispatch(attempt_id)
-                    if type(extra) not in (int, float) or not math.isfinite(extra) or extra < 0:
-                        raise Conflict("Drive dispatch wait is invalid")
-                    if extra == 0:
-                        break
-                    time.sleep(extra + 0.001)
-                else:
-                    raise Conflict("Drive dispatch floor could not be reached")
-            self.authority.assert_active(timeout, slot_at=slot_epoch)
-            req = urllib.request.Request(url, data=data, method=method, headers={
-                "Authorization": "Bearer " + token, **(headers or {})})
-            # Persist the real start time while holding the process dispatch lock.
-            # A delayed first request must not let the next one start in a burst.
-            self.authority.mark_dispatch(attempt_id)
+            with self._cross_process_dispatch_lock():
+                # No credential refresh or Drive request is allowed before validation.
+                self.authority.assert_active(timeout)
+                token = self.auth.token()
+                attempt_id, slot_epoch = self.authority.start_request(
+                    len(data or b""), timeout, kind, method=method.upper(),
+                    target_category=kind, target_sha256=target_sha256,
+                    operation_key=operation_key)
+                self.last_attempt_id = attempt_id
+                delay = slot_epoch - self.authority.clock()
+                if delay > 0:
+                    time.sleep(delay)
+                # The retained authority also enforces elapsed monotonic time.
+                # A wall clock jump or a wake one float ULP before the boundary
+                # must wait on this same precharged attempt, never make a second
+                # reservation or dispatch early.
+                until_dispatch = getattr(self.authority, "seconds_until_dispatch", None)
+                if until_dispatch is not None:
+                    for _ in range(8):
+                        extra = until_dispatch(attempt_id)
+                        if type(extra) not in (int, float) or not math.isfinite(extra) or extra < 0:
+                            raise Conflict("Drive dispatch wait is invalid")
+                        if extra == 0:
+                            break
+                        time.sleep(extra + 0.001)
+                    else:
+                        raise Conflict("Drive dispatch floor could not be reached")
+                self.authority.assert_active(timeout, slot_at=slot_epoch)
+                req = urllib.request.Request(url, data=data, method=method, headers={
+                    "Authorization": "Bearer " + token, **(headers or {})})
+                # Persist the real start time while holding the dispatch lock.
+                # A delayed first request must not let the next one start in a burst.
+                self.authority.mark_dispatch(attempt_id)
             try:
                 response = _NO_REDIRECT_OPENER.open(req, timeout=timeout)
             except urllib.error.HTTPError as error:

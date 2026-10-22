@@ -183,7 +183,7 @@ class RetainedAuthorityTests(unittest.TestCase):
 
     def open_run(self, index: int, *, manifest: dict | None = None,
                  evidence: dict | None = None, boot_id: str = "synthetic-boot",
-                 recovery_only: bool = False):
+                 recovery_only: bool = False, max_concurrent_runs: int = 1):
         manifest = self.manifest(index) if manifest is None else manifest
         raw, digest = self.raw_and_digest(manifest)
         evidence = self.evidence(manifest, digest) if evidence is None else evidence
@@ -193,6 +193,7 @@ class RetainedAuthorityTests(unittest.TestCase):
             deadline_at=self.clock() + 20 * 60, clock=self.clock,
             monotonic_clock=self.monotonic, boot_id=boot_id,
             recovery_only=recovery_only,
+            max_concurrent_runs=max_concurrent_runs,
         )
         self.addCleanup(authority.close)
         return authority, manifest, digest
@@ -951,9 +952,75 @@ class RetainedAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(AuthorityBlocked, "violate monotonic pacing"):
             self.open_run(4, boot_id="boot-3")
 
+    def test_rolling_cap_is_strictly_below_750_gb_decimal(self):
+        self.assertEqual(retained_module.GLOBAL_ROLLING_CAP_BYTES, 700_000_000_000)
+        self.assertLess(retained_module.GLOBAL_ROLLING_CAP_BYTES, 750_000_000_000)
+
+    def test_concurrent_runs_share_single_writer_ledger_pacing_and_charges(self):
+        run1, m1, d1 = self.open_run(1, max_concurrent_runs=3)
+        run2, m2, d2 = self.open_run(2, max_concurrent_runs=3)
+        run3, m3, d3 = self.open_run(3, max_concurrent_runs=3)
+        with self.assertRaisesRegex(AuthorityBlocked, "not index committed"):
+            self.open_run(4, max_concurrent_runs=3)
+
+        self.reserve(run1, m1, d1)
+        self.reserve(run2, m2, d2)
+        self.reserve(run3, m3, d3)
+        expected_rolling = (
+            self.LEGACY_BYTES +
+            m1["max_charged_bytes"] +
+            m2["max_charged_bytes"] +
+            m3["max_charged_bytes"]
+        )
+        self.assertEqual(run3.snapshot()["known_local_rolling_bytes"], expected_rolling)
+
+        a1, slot1 = self.request(run1, m1["payload"]["bytes"], "media_chunk")
+        a2, slot2 = self.request(run2, m2["payload"]["bytes"], "media_chunk")
+        a3, slot3 = self.request(run3, m3["payload"]["bytes"], "media_chunk")
+        self.assertGreaterEqual(slot2 - slot1, 0.55 - 1e-6)
+        self.assertGreaterEqual(slot3 - slot2, 0.55 - 1e-6)
+
+        run1.mark_dispatch(a1)
+        run1.finish_request(a1, 200)
+        with self.assertRaises(AuthorityBlocked):
+            run2.mark_dispatch(a2)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        run2.mark_dispatch(a2)
+        run2.finish_request(a2, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        run3.mark_dispatch(a3)
+        run3.finish_request(a3, 200)
+
+        for authority, manifest, digest in ((run1, m1, d1), (run2, m2, d2), (run3, m3, d3)):
+            self.clock.advance(0.55)
+            self.monotonic.advance(0.55)
+            r_att, _ = self.request(authority, manifest["receipt"]["bytes"], "media_chunk")
+            authority.mark_dispatch(r_att)
+            authority.finish_request(r_att, 200)
+            self.finish_index(authority, manifest, digest)
+
+        inspected = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+            clock=self.clock)
+        self.assertIsNone(inspected["nonterminal_run_id"])
+        self.assertEqual(inspected["active_run_count"], 0)
+        self.assertEqual(inspected["unresolved_attempts"], 0)
+
+    def test_concurrent_run_blocks_new_peer_admission_when_attempt_unresolved(self):
+        run1, m1, d1 = self.open_run(1, max_concurrent_runs=3)
+        self.reserve(run1, m1, d1)
+        fail_att, _ = self.request(run1, m1["payload"]["bytes"], "media_chunk")
+        run1.mark_dispatch(fail_att)
+        run1.finish_request(fail_att, 503)
+        with self.assertRaises(AuthorityBlocked):
+            self.open_run(2, max_concurrent_runs=3)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

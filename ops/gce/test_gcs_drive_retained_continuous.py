@@ -409,6 +409,121 @@ class ContinuousTests(unittest.TestCase):
         self.assertFalse([item for item in caught
                           if issubclass(item.category, ResourceWarning)])
 
+    def test_standing_envelope_is_24_hours(self):
+        self.assertEqual(continuous.MAX_STANDING_SECONDS, 86400)
+
+    def test_renew_standing_envelope_checks_single_writer_conditions_and_chains_past_initial_24h(self):
+        healthy_unit = lambda _: {"ActiveState": "inactive", "UnitFileState": "disabled"}
+        canonical_cmd = (
+            f"python3 gcs_drive_retained_continuous.py "
+            f"--account-id {ACCOUNT} --writer-id {WRITER} "
+            f"--authority-db {self.db.resolve()}"
+        ).encode()
+        with mock.patch.object(continuous.TransferAuthority, "inspect_retained_account",
+                               return_value=self._account()):
+            renewed_1, digest_1 = continuous.renew_standing_envelope(
+                self.envelope, self.digest, authority_db=self.db,
+                oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                now=self.now + 12 * 3600, unit_state=healthy_unit,
+                proc_cmdlines=lambda: [canonical_cmd], require_root=False)
+            self.assertEqual(renewed_1["root_envelope_sha256"], self.digest)
+            self.assertEqual(renewed_1["renewed_from_sha256"], self.digest)
+            self.assertEqual(renewed_1["issued_at"], self.now + 12 * 3600)
+
+            # Second renewal at +30h (past initial 24h window, within first renewal's 24h window)
+            renewed_2, digest_2 = continuous.renew_standing_envelope(
+                self.envelope, self.digest, authority_db=self.db,
+                oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                now=self.now + 30 * 3600, unit_state=healthy_unit,
+                proc_cmdlines=lambda: [canonical_cmd], require_root=False)
+            self.assertEqual(renewed_2["root_envelope_sha256"], self.digest)
+            self.assertEqual(renewed_2["renewed_from_sha256"], digest_1)
+            self.assertNotEqual(digest_1, digest_2)
+
+            # Reject foreign writer process
+            with self.assertRaisesRegex(Conflict, "writer process"):
+                continuous.renew_standing_envelope(
+                    self.envelope, self.digest, authority_db=self.db,
+                    oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                    now=self.now + 31 * 3600, unit_state=healthy_unit,
+                    proc_cmdlines=lambda: [b"rclone copy"], require_root=False)
+
+            # Reject canonical script bound to a different writer_id
+            foreign_retained = (
+                f"python3 gcs_drive_retained_runner.py "
+                f"--account-id {ACCOUNT} --writer-id other-writer "
+                f"--authority-db {self.db.resolve()}"
+            ).encode()
+            with self.assertRaisesRegex(Conflict, "writer process"):
+                continuous.renew_standing_envelope(
+                    self.envelope, self.digest, authority_db=self.db,
+                    oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                    now=self.now + 31 * 3600, unit_state=healthy_unit,
+                    proc_cmdlines=lambda: [foreign_retained], require_root=False)
+
+        # Reject unresolved ledger attempts
+        bad_account = dict(self._account(), unresolved_attempts=1)
+        with mock.patch.object(continuous.TransferAuthority, "inspect_retained_account",
+                               return_value=bad_account):
+            with self.assertRaisesRegex(Conflict, "unresolved"):
+                continuous.renew_standing_envelope(
+                    self.envelope, self.digest, authority_db=self.db,
+                    oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                    now=self.now + 31 * 3600, unit_state=healthy_unit,
+                    proc_cmdlines=lambda: [], require_root=False)
+
+    def test_run_cycles_adopts_renewed_standing_envelope_without_restart(self):
+        mutable = {"wall": self.now, "mono": 0.0}
+        first = {"release_id": RUN, "manifest_sha256": MANIFEST}
+        second = {"release_id": "c" * 32, "manifest_sha256": "d" * 64}
+        snapshots = iter([[first], [second]])
+        healthy_unit = lambda _: {"ActiveState": "inactive", "UnitFileState": "disabled"}
+
+        def snapshot_fn(**_kwargs):
+            rows = next(snapshots)
+            value = {"schema": continuous.SNAPSHOT_SCHEMA, "candidates": rows}
+            return value, json.dumps(value, sort_keys=True).encode()
+
+        calls = []
+        def runner_fn(**_kwargs):
+            calls.append("runner")
+            if len(calls) == 1:
+                # Advance 23.5 hours (within initial 24h, leaving <1290s without renewal)
+                mutable["wall"] += 23 * 3600 + 1800
+                mutable["mono"] += 23 * 3600 + 1800
+                continuous.renew_standing_envelope(
+                    self.envelope, self.digest, authority_db=self.db,
+                    oauth_file=self.oauth, account_id=ACCOUNT, writer_id=WRITER,
+                    now=mutable["wall"], stop_at=self.now + 72 * 3600,
+                    unit_state=healthy_unit, proc_cmdlines=lambda: [],
+                    require_root=False)
+            return 0, {"state": "completed", "pairs_closed": 1}
+
+        with mock.patch.object(continuous.TransferAuthority, "inspect_retained_account",
+                               return_value=self._account()), \
+             mock.patch.object(continuous, "STOP_AT", self.now + 72 * 3600), \
+             mock.patch.object(continuous, "CONTINUOUS_ROOT", self.work.resolve()), \
+             mock.patch("gcs_drive_retained_continuous.sys.platform", "linux"):
+            result = continuous.run_cycles(
+                envelope_path=self.envelope, envelope_sha256=self.digest,
+                authority_db=self.db, oauth_file=self.oauth,
+                account_id=ACCOUNT, writer_id=WRITER, work_root=self.work,
+                snapshot_fn=snapshot_fn, runner_fn=runner_fn,
+                local_check=lambda: {"legacy_units": {}, "processes_inspected": 2},
+                clock=lambda: mutable["wall"], monotonic=lambda: mutable["mono"],
+                sleep=lambda _: None, capture_dir=self.work,
+                cache_check=lambda *_: {}, require_root=False, max_cycles=2,
+                stop_at=self.now + 72 * 3600)
+        self.assertEqual(result["pairs_closed"], 2)
+        self.assertEqual(result["reason"], "cycle_bound_reached")
+        status_lines = [
+            json.loads(line)
+            for line in (self.work / "continuous_status.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        self.assertTrue(any(row["state"] == "standing_renewed" for row in status_lines))
+
 
 if __name__ == "__main__":
     unittest.main()
+

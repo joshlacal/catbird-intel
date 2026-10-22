@@ -29,7 +29,10 @@ from gcs_drive_drain import Conflict
 from gcs_drive_retained_overflow import (
     BUCKET, DRIVE_ROOT, CAPTURE_SEGMENTS_DIR, CAPTURE_RESTART_FLOOR_BYTES,
 )
-from gcs_drive_retained_runner import STOP_AT, _account_gate, _arm_parent_death
+from gcs_drive_retained_runner import (
+    DEFAULT_CONCURRENT_PAIRS, MAX_CONCURRENT_PAIRS, STOP_AT,
+    _account_gate, _arm_parent_death,
+)
 
 
 SCHEMA = "catbird.drive.retained-continuous.v1"
@@ -38,6 +41,16 @@ SNAPSHOT_SCHEMA = "catbird.drive.retained-snapshot.v1"
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 UNIT_NAMES = ("catbird-gce-offloader.service", "catbird-gcs-drive-drain.service",
               "catbird-gcs-drive-drain.timer")
+FOREIGN_WRITER_MARKERS = (
+    b"gce_segment_offloader.py", b"gcs_drive_drain.py",
+    b"gcs_drive_diagnostic.py", b"upload_repair_v1.py",
+    b"gdrive_lake_sync.py", b"rclone",
+)
+CANONICAL_RETAINED_MARKERS = (
+    b"gcs_drive_retained_continuous.py",
+    b"gcs_drive_retained_runner.py",
+    b"gcs_drive_retained_overflow.py",
+)
 WRITER_MARKERS = (b"gce_segment_offloader.py", b"gcs_drive_drain.py",
                   b"gcs_drive_diagnostic.py", b"gcs_drive_retained_overflow.py",
                   b"gcs_drive_retained_runner.py", b"upload_repair_v1.py",
@@ -45,7 +58,8 @@ WRITER_MARKERS = (b"gce_segment_offloader.py", b"gcs_drive_drain.py",
 MAX_CYCLES = 5000  # >72 hours at one empty scan per minute; STOP still wins.
 IDLE_SECONDS = 60
 MIN_WINDOW_SECONDS = 1290  # 20-minute pair, runner margin, and clock slack.
-MAX_STANDING_SECONDS = 3600  # A reviewed nonlocal assertion expires within one hour.
+MAX_STANDING_SECONDS = 24 * 3600  # Reviewed or renewed nonlocal assertion expires within 24 hours.
+ACCOUNT_VERIFICATION_TTL_SECONDS = 7 * 24 * 3600
 CONTINUOUS_ROOT = Path("/data/gcs-drive-retained-continuous")
 MAX_CACHE_BYTES = 4 * (1 << 30)
 SNAPSHOT_RESERVATION_BYTES = 16 * (1 << 20)  # <=9 receipts + manifests at 1 MiB each.
@@ -102,15 +116,21 @@ def _file_sha256(path: Path, limit: int) -> str:
     return digest.hexdigest()
 
 
-def standing_envelope(path: Path, expected_sha256: str, *, authority_db: Path,
-                      oauth_file: Path, account_id: str, writer_id: str,
-                      now: float, require_root: bool = True) -> tuple[dict, str]:
-    """Verify immutable owner attestation, pinned credentials, and time scope.
+def renewal_envelope_path(envelope_path: Path) -> Path:
+    return envelope_path.with_name(envelope_path.name + ".renewed.json")
 
-    The envelope attests nonlocal holds; this function does not claim to
-    observe another host or a browser. The worker independently checks the
-    live Drive permission ID through its paced authority before media sends.
-    """
+
+def renewal_digest_path(envelope_path: Path) -> Path:
+    return envelope_path.with_name(envelope_path.name + ".renewed.sha256")
+
+
+def _verify_envelope_identity(
+    path: Path, expected_sha256: str, *, authority_db: Path,
+    oauth_file: Path, account_id: str, writer_id: str,
+    now: float, stop_at: float | None = None,
+    require_root: bool = True, require_active_window: bool = True,
+) -> tuple[dict, str]:
+    effective_stop_at = STOP_AT if stop_at is None else _finite(stop_at, "stop_at")
     if not SHA256.fullmatch(expected_sha256):
         raise Conflict("Standing envelope digest is invalid")
     if require_root and (os.geteuid() != 0 or path.stat().st_uid != 0 or
@@ -131,16 +151,17 @@ def standing_envelope(path: Path, expected_sha256: str, *, authority_db: Path,
     issued = _finite(envelope.get("issued_at"), "standing issue time")
     identity_at = _finite(envelope.get("account_identity_verified_at"),
                           "account verification time")
-    if issued > now or identity_at > issued or now - identity_at > 72 * 3600:
+    if (issued > now or identity_at > issued or
+        now - identity_at > ACCOUNT_VERIFICATION_TTL_SECONDS):
         raise Conflict("Standing account verification is missing or stale")
     untils = tuple(_finite(envelope.get(key), key) for key in (
         "manual_colab_hold_until", "netcup_nonwriter_hold_until",
         "other_writer_hold_until"))
-    # A distant timestamp in a remote-writer attestation cannot silently
-    # authorize an unattended multi-day run. Renewal needs a new reviewed
-    # file/digest and a fresh supervisor start.
-    exclusion_until = min(*untils, STOP_AT, issued + MAX_STANDING_SECONDS)
-    if exclusion_until < now + MIN_WINDOW_SECONDS:
+    hold_until = min(*untils, effective_stop_at)
+    exclusion_until = min(hold_until, issued + MAX_STANDING_SECONDS)
+    if hold_until < now + MIN_WINDOW_SECONDS or (
+        require_active_window and exclusion_until < now + MIN_WINDOW_SECONDS
+    ):
         raise Conflict("Standing nonlocal exclusion cannot cover another pair")
     pinned_oauth = envelope.get("oauth_file_sha256")
     if not isinstance(pinned_oauth, str) or not SHA256.fullmatch(pinned_oauth):
@@ -148,6 +169,23 @@ def standing_envelope(path: Path, expected_sha256: str, *, authority_db: Path,
     if _file_sha256(oauth_file, 64 * 1024) != pinned_oauth:
         raise Conflict("Existing OAuth bytes differ from verified account binding")
     return envelope, expected_sha256
+
+
+def standing_envelope(path: Path, expected_sha256: str, *, authority_db: Path,
+                      oauth_file: Path, account_id: str, writer_id: str,
+                      now: float, stop_at: float | None = None,
+                      require_root: bool = True) -> tuple[dict, str]:
+    """Verify immutable owner attestation, pinned credentials, and time scope.
+
+    The envelope attests nonlocal holds; this function does not claim to
+    observe another host or a browser. The worker independently checks the
+    live Drive permission ID through its paced authority before media sends.
+    """
+    return _verify_envelope_identity(
+        path, expected_sha256, authority_db=authority_db,
+        oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
+        now=now, stop_at=stop_at, require_root=require_root,
+        require_active_window=True)
 
 
 def local_writer_preflight(*, unit_state=None, proc_cmdlines=None) -> dict:
@@ -187,6 +225,194 @@ def local_writer_preflight(*, unit_state=None, proc_cmdlines=None) -> dict:
         if any(marker in cmdline for marker in WRITER_MARKERS):
             raise Conflict("Another known Drive writer process is running")
     return {"legacy_units": report, "processes_inspected": observed}
+
+
+def _cmdline_tokens(cmdline: bytes) -> list[str]:
+    text = cmdline.decode("utf-8", errors="surrogateescape")
+    if "\x00" in text:
+        return [tok for tok in text.split("\x00") if tok]
+    return text.split()
+
+
+def _cmdline_flag_value(tokens: list[str], flag: str) -> str | None:
+    prefix = flag + "="
+    for idx, token in enumerate(tokens):
+        if token == flag and idx + 1 < len(tokens):
+            return tokens[idx + 1]
+        if token.startswith(prefix):
+            return token[len(prefix):]
+    return None
+
+
+def renewal_writer_preflight(
+    *, authority_db: Path, account_id: str, writer_id: str,
+    unit_state=None, proc_cmdlines=None,
+) -> dict:
+    """Verify legacy units are inactive/disabled and no foreign writer process exists.
+
+    Canonical retained supervisor/runner/overflow processes are permitted only
+    when bound to the exact canonical authority_db, account_id, and writer_id.
+    """
+    canonical_db = authority_db.resolve(strict=True)
+    base_report = local_writer_preflight(
+        unit_state=unit_state, proc_cmdlines=lambda: ())
+    if proc_cmdlines is None:
+        def proc_cmdlines():
+            for path in Path("/proc").glob("[0-9]*/cmdline"):
+                try:
+                    with path.open("rb") as source:
+                        yield source.read(4097)
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    raise Conflict("Process inventory is unreadable") from error
+    observed = 0
+    canonical_retained = 0
+    for cmdline in proc_cmdlines():
+        observed += 1
+        if observed > 32768 or len(cmdline) > 4096:
+            raise Conflict("Process inventory exceeds bound")
+        if any(marker in cmdline for marker in FOREIGN_WRITER_MARKERS):
+            raise Conflict("Another known Drive writer process is running")
+        if any(marker in cmdline for marker in CANONICAL_RETAINED_MARKERS):
+            tokens = _cmdline_tokens(cmdline)
+            cmd_account = _cmdline_flag_value(tokens, "--account-id")
+            cmd_writer = _cmdline_flag_value(tokens, "--writer-id")
+            cmd_db = _cmdline_flag_value(tokens, "--authority-db")
+            if (cmd_account != account_id or cmd_writer != writer_id or
+                not cmd_db or Path(cmd_db).resolve(strict=False) != canonical_db):
+                raise Conflict("Another known Drive writer process is running")
+            canonical_retained += 1
+    return {
+        "legacy_units": base_report["legacy_units"],
+        "processes_inspected": observed,
+        "canonical_retained_processes": canonical_retained,
+    }
+
+
+def _atomic_write_private(path: Path, raw: bytes) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise Conflict("Standing renewal path is symlinked")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp_path, path)
+        parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+
+
+def _load_active_standing(
+    envelope_path: Path, expected_sha256: str, *,
+    authority_db: Path, oauth_file: Path, account_id: str, writer_id: str,
+    now: float, stop_at: float | None = None, require_root: bool = True,
+) -> tuple[dict, str]:
+    renewed_path = renewal_envelope_path(envelope_path)
+    digest_path = renewal_digest_path(envelope_path)
+    has_renewed = renewed_path.exists() or renewed_path.is_symlink()
+    has_digest = digest_path.exists() or digest_path.is_symlink()
+    if has_renewed != has_digest:
+        raise Conflict("Renewed standing envelope companion is incomplete")
+    if not has_renewed:
+        return standing_envelope(
+            envelope_path, expected_sha256, authority_db=authority_db,
+            oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
+            now=now, stop_at=stop_at, require_root=require_root)
+    root_envelope, _ = _verify_envelope_identity(
+        envelope_path, expected_sha256, authority_db=authority_db,
+        oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
+        now=now, stop_at=stop_at, require_root=require_root,
+        require_active_window=False)
+    if (digest_path.is_symlink() or not digest_path.is_file() or
+        digest_path.stat().st_size > 256):
+        raise Conflict("Renewed standing envelope digest file is invalid")
+    if require_root and (os.geteuid() != 0 or digest_path.stat().st_uid != 0 or
+                         stat.S_IMODE(digest_path.stat().st_mode) & 0o077):
+        raise Conflict("Standing envelope must be root-owned and private")
+    renewed_sha256 = digest_path.read_text(encoding="ascii").strip()
+    renewed_envelope, _ = standing_envelope(
+        renewed_path, renewed_sha256, authority_db=authority_db,
+        oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
+        now=now, stop_at=stop_at, require_root=require_root)
+    if (renewed_envelope.get("root_envelope_sha256") not in (None, expected_sha256) or
+        renewed_envelope["issued_at"] < root_envelope["issued_at"] or
+        renewed_envelope["account_identity_verified_at"] !=
+            root_envelope["account_identity_verified_at"] or
+        renewed_envelope["oauth_file_sha256"] != root_envelope["oauth_file_sha256"] or
+        any(renewed_envelope[key] != root_envelope[key] for key in (
+            "manual_colab_hold_until", "netcup_nonwriter_hold_until",
+            "other_writer_hold_until"))):
+        raise Conflict("Renewed standing envelope lineage or hold bounds differ")
+    return renewed_envelope, renewed_sha256
+
+
+def renew_standing_envelope(
+    envelope_path: Path, expected_sha256: str, *,
+    authority_db: Path, oauth_file: Path, account_id: str, writer_id: str,
+    now: float | None = None, stop_at: float | None = None,
+    unit_state=None, proc_cmdlines=None, require_root: bool = True,
+) -> tuple[dict, str]:
+    """Automatically renew the standing envelope when all single-writer gates pass."""
+    if authority_db.is_symlink() or not authority_db.is_file():
+        raise Conflict("Standing renewal authority database is missing or symlinked")
+    canonical_db = authority_db.resolve(strict=True)
+    current_now = time.time() if now is None else _finite(now, "renewal time")
+    lock_path = canonical_db.with_name(canonical_db.name + ".renewal.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        preflight = renewal_writer_preflight(
+            authority_db=canonical_db, account_id=account_id,
+            writer_id=writer_id, unit_state=unit_state,
+            proc_cmdlines=proc_cmdlines)
+        account = TransferAuthority.inspect_retained_account(
+            canonical_db, writer_id=writer_id, account_id=account_id)
+        _account_gate(account, current_now)
+        active_envelope, active_digest = _load_active_standing(
+            envelope_path, expected_sha256, authority_db=canonical_db,
+            oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
+            now=current_now, stop_at=stop_at, require_root=require_root)
+        renewed = {
+            "schema": ENVELOPE_SCHEMA,
+            "account_id": account_id,
+            "writer_id": writer_id,
+            "drive_root": DRIVE_ROOT,
+            "bucket": BUCKET,
+            "authority_db": str(canonical_db),
+            "owner_reference": active_envelope["owner_reference"],
+            "issued_at": max(current_now, active_envelope["issued_at"]),
+            "account_identity_verified_at": active_envelope["account_identity_verified_at"],
+            "manual_colab_hold_until": active_envelope["manual_colab_hold_until"],
+            "netcup_nonwriter_hold_until": active_envelope["netcup_nonwriter_hold_until"],
+            "other_writer_hold_until": active_envelope["other_writer_hold_until"],
+            "oauth_file_sha256": active_envelope["oauth_file_sha256"],
+            "root_envelope_sha256": expected_sha256,
+            "renewed_from_sha256": active_digest,
+            "renewal_preflight": preflight,
+        }
+        raw = json.dumps(renewed, sort_keys=True, separators=(",", ":"),
+                         allow_nan=False).encode()
+        renewed_digest = hashlib.sha256(raw).hexdigest()
+        renewed_path = renewal_envelope_path(envelope_path)
+        digest_path = renewal_digest_path(envelope_path)
+        _atomic_write_private(renewed_path, raw)
+        _atomic_write_private(digest_path, (renewed_digest + "\n").encode("ascii"))
+        return standing_envelope(
+            renewed_path, renewed_digest, authority_db=canonical_db,
+            oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
+            now=current_now, stop_at=stop_at, require_root=require_root)
+    finally:
+        os.close(fd)
 
 
 def review_evidence(candidate: dict, *, account_id: str, writer_id: str,
@@ -342,14 +568,20 @@ def _last_status(path: Path) -> dict:
 def _runner(*, snapshot_path: Path, snapshot_sha256: str, snapshot_dir: Path,
             authority_db: Path, evidence_dir: Path, account_id: str,
             writer_id: str, oauth_file: Path, status_file: Path,
-            monotonic_stop: float | None = None) -> tuple[int, dict]:
+            monotonic_stop: float | None = None,
+            max_concurrent_pairs: int = DEFAULT_CONCURRENT_PAIRS,
+            stop_at: float | None = None) -> tuple[int, dict]:
+    effective_stop_at = STOP_AT if stop_at is None else _finite(stop_at, "stop_at")
     command = [sys.executable, "-B", str(Path(__file__).with_name("gcs_drive_retained_runner.py")),
                "--snapshot-json", str(snapshot_path), "--snapshot-sha256", snapshot_sha256,
                "--snapshot-dir", str(snapshot_dir), "--authority-db", str(authority_db),
                "--evidence-dir", str(evidence_dir), "--account-id", account_id,
                "--writer-id", writer_id, "--oauth-file", str(oauth_file),
-               "--status-file", str(status_file)]
-    remaining = STOP_AT - time.time() - 30
+               "--status-file", str(status_file),
+               "--max-concurrent-pairs", str(max_concurrent_pairs)]
+    if stop_at is not None:
+        command.extend(["--stop-at-epoch", repr(effective_stop_at)])
+    remaining = effective_stop_at - time.time() - 30
     if monotonic_stop is not None:
         remaining = min(remaining, monotonic_stop - time.monotonic() - 30)
     code, _ = _run_bounded(command, timeout=min(8 * 1200 + 60, remaining))
@@ -364,10 +596,16 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
                capture_dir: Path = CAPTURE_SEGMENTS_DIR,
                cache_check=check_snapshot_cache,
                require_root: bool = True,
-               max_cycles: int = MAX_CYCLES) -> dict:
+               max_cycles: int = MAX_CYCLES,
+               max_concurrent_pairs: int = DEFAULT_CONCURRENT_PAIRS,
+               stop_at: float | None = None) -> dict:
     """Continue successful bounded snapshots; stop on ambiguous results."""
+    effective_stop_at = STOP_AT if stop_at is None else _finite(stop_at, "stop_at")
     if (not sys.platform.startswith("linux") or type(max_cycles) is not int or
-        not 0 < max_cycles <= MAX_CYCLES or work_root.is_symlink() or
+        not 0 < max_cycles <= MAX_CYCLES or
+        type(max_concurrent_pairs) is not int or
+        not 1 <= max_concurrent_pairs <= MAX_CONCURRENT_PAIRS or
+        work_root.is_symlink() or
         not work_root.is_dir() or work_root.resolve() != CONTINUOUS_ROOT or
         authority_db.is_symlink() or
         not authority_db.is_file()):
@@ -381,10 +619,12 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         started_wall, started_monotonic = clock(), monotonic()
-        initial_envelope, _ = standing_envelope(
+        initial_envelope, active_digest = _load_active_standing(
             envelope_path, envelope_sha256, authority_db=canonical,
             oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
-            now=started_wall, require_root=require_root)
+            now=started_wall, stop_at=effective_stop_at,
+            require_root=require_root)
+        active_issued_at = initial_envelope["issued_at"]
         standing_wall_stop = min(
             initial_envelope["manual_colab_hold_until"],
             initial_envelope["netcup_nonwriter_hold_until"],
@@ -392,10 +632,50 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             initial_envelope["issued_at"] + MAX_STANDING_SECONDS)
         standing_monotonic_stop = started_monotonic + max(
             0, standing_wall_stop - started_wall)
-        capture_monotonic_stop = started_monotonic + max(0, STOP_AT - started_wall)
+        capture_monotonic_stop = started_monotonic + max(
+            0, effective_stop_at - started_wall)
         monotonic_stop = min(capture_monotonic_stop, standing_monotonic_stop)
+
+        def _has_renewal_companion() -> bool:
+            r_path = renewal_envelope_path(envelope_path)
+            d_path = renewal_digest_path(envelope_path)
+            return (
+                r_path.exists() or r_path.is_symlink() or
+                d_path.exists() or d_path.is_symlink()
+            )
+
+        def _adopt_standing(now_wall: float, now_mono: float) -> tuple[dict, str]:
+            nonlocal active_digest, active_issued_at, standing_wall_stop
+            nonlocal standing_monotonic_stop, monotonic_stop
+            env, dig = _load_active_standing(
+                envelope_path, envelope_sha256, authority_db=canonical,
+                oauth_file=oauth_file, account_id=account_id,
+                writer_id=writer_id, now=now_wall, stop_at=effective_stop_at,
+                require_root=require_root)
+            new_wall_stop = min(
+                env["manual_colab_hold_until"],
+                env["netcup_nonwriter_hold_until"],
+                env["other_writer_hold_until"],
+                env["issued_at"] + MAX_STANDING_SECONDS)
+            if dig != active_digest and env["issued_at"] >= active_issued_at:
+                standing_wall_stop = new_wall_stop
+                standing_monotonic_stop = now_mono + max(
+                    0, standing_wall_stop - now_wall)
+                monotonic_stop = min(
+                    capture_monotonic_stop, standing_monotonic_stop)
+                active_digest = dig
+                active_issued_at = env["issued_at"]
+                _event(
+                    status_path, supervisor_id, "standing_renewed",
+                    pairs_closed=closed, standing_envelope_sha256=dig,
+                    standing_wall_stop=standing_wall_stop,
+                )
+            elif new_wall_stop < standing_wall_stop:
+                standing_wall_stop = new_wall_stop
+            return env, dig
+
         def remaining() -> float:
-            return min(STOP_AT - clock(), standing_wall_stop - clock(),
+            return min(effective_stop_at - clock(), standing_wall_stop - clock(),
                        monotonic_stop - monotonic())
         def stop_reason() -> str:
             standing_left = min(standing_wall_stop - clock(),
@@ -405,17 +685,16 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             return "capture_stop_approaching"
         _event(status_path, supervisor_id, "starting", pairs_closed=0)
         for _cycle in range(max_cycles):
-            now = clock()
+            now, now_mono = clock(), monotonic()
+            if _has_renewal_companion():
+                _adopt_standing(now, now_mono)
             if remaining() < MIN_WINDOW_SECONDS:
                 reason = stop_reason()
                 _event(status_path, supervisor_id, "stopped",
                        reason=reason, pairs_closed=closed)
                 return {"state": "stopped", "reason": reason,
                         "pairs_closed": closed}
-            envelope, digest = standing_envelope(
-                envelope_path, envelope_sha256, authority_db=canonical,
-                oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
-                now=now, require_root=require_root)
+            envelope, digest = _adopt_standing(now, monotonic())
             account = TransferAuthority.inspect_retained_account(
                 canonical, writer_id=writer_id, account_id=account_id)
             _account_gate(account, now)
@@ -428,6 +707,8 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             cache_check(work_root, capture_dir)
             def monitor_snapshot():
                 cache_check(work_root, capture_dir)
+                if _has_renewal_companion():
+                    _adopt_standing(clock(), monotonic())
                 if remaining() < MIN_WINDOW_SECONDS:
                     raise WindowClosing(stop_reason())
             snapshot, snapshot_raw = snapshot_fn(account_id=account_id, writer_id=writer_id,
@@ -454,19 +735,19 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             # Recheck the standing file, pinned OAuth bytes, and local writers
             # *after* selection so the observation time below is honest.
             observed = clock()
+            if _has_renewal_companion():
+                _adopt_standing(observed, monotonic())
             if remaining() < MIN_WINDOW_SECONDS:
                 raise WindowClosing(stop_reason())
-            envelope, digest = standing_envelope(
-                envelope_path, envelope_sha256, authority_db=canonical,
-                oauth_file=oauth_file, account_id=account_id, writer_id=writer_id,
-                now=observed, require_root=require_root)
+            envelope, digest = _adopt_standing(observed, monotonic())
             local_report = local_check()
             account = TransferAuthority.inspect_retained_account(
                 canonical, writer_id=writer_id, account_id=account_id)
             _account_gate(account, observed)
             exclusion_until = min(envelope["manual_colab_hold_until"],
                                   envelope["netcup_nonwriter_hold_until"],
-                                  envelope["other_writer_hold_until"], STOP_AT,
+                                  envelope["other_writer_hold_until"],
+                                  effective_stop_at,
                                   envelope["issued_at"] + MAX_STANDING_SECONDS)
             for candidate in candidates:
                 evidence = review_evidence(candidate, account_id=account_id,
@@ -481,13 +762,19 @@ def run_cycles(*, envelope_path: Path, envelope_sha256: str, authority_db: Path,
             _event(status_path, supervisor_id, "batch_running", pairs_closed=closed,
                    runner_status_path=str(status_file),
                    snapshot_sha256=hashlib.sha256(snapshot_raw).hexdigest())
-            code, result = runner_fn(snapshot_path=snapshot_path,
-                                     snapshot_sha256=hashlib.sha256(snapshot_raw).hexdigest(),
-                                     snapshot_dir=snapshot_dir, authority_db=canonical,
-                                     evidence_dir=evidence_dir, account_id=account_id,
-                                     writer_id=writer_id, oauth_file=oauth_file,
-                                     status_file=status_file,
-                                     monotonic_stop=monotonic_stop)
+            runner_kwargs = dict(
+                snapshot_path=snapshot_path,
+                snapshot_sha256=hashlib.sha256(snapshot_raw).hexdigest(),
+                snapshot_dir=snapshot_dir, authority_db=canonical,
+                evidence_dir=evidence_dir, account_id=account_id,
+                writer_id=writer_id, oauth_file=oauth_file,
+                status_file=status_file,
+                monotonic_stop=monotonic_stop,
+            )
+            if runner_fn is _runner:
+                runner_kwargs["max_concurrent_pairs"] = max_concurrent_pairs
+                runner_kwargs["stop_at"] = stop_at
+            code, result = runner_fn(**runner_kwargs)
             finished = result.get("pairs_closed")
             if type(finished) is not int or not 0 <= finished <= len(candidates):
                 raise Conflict("Runner closed-pair count differs from snapshot")
@@ -535,14 +822,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--oauth-file", type=Path, required=True)
     parser.add_argument("--account-id", required=True)
     parser.add_argument("--writer-id", required=True)
-    parser.add_argument("--work-root", type=Path, required=True)
+    parser.add_argument("--work-root", type=Path, default=None)
+    parser.add_argument(
+        "--max-concurrent-pairs", type=int,
+        default=DEFAULT_CONCURRENT_PAIRS,
+        choices=tuple(range(1, MAX_CONCURRENT_PAIRS + 1)),
+    )
+    parser.add_argument("--stop-at-epoch", type=float, default=None)
+    parser.add_argument("--renew-standing", action="store_true")
     args = parser.parse_args(argv)
     try:
-        result = run_cycles(envelope_path=args.standing_envelope,
-                            envelope_sha256=args.standing_sha256,
-                            authority_db=args.authority_db, oauth_file=args.oauth_file,
-                            account_id=args.account_id, writer_id=args.writer_id,
-                            work_root=args.work_root)
+        if args.renew_standing:
+            renewed, digest = renew_standing_envelope(
+                args.standing_envelope, args.standing_sha256,
+                authority_db=args.authority_db, oauth_file=args.oauth_file,
+                account_id=args.account_id, writer_id=args.writer_id,
+                stop_at=args.stop_at_epoch,
+            )
+            print(json.dumps({
+                "event": "retained_standing_renewed",
+                "standing_envelope_sha256": digest,
+                "issued_at": renewed["issued_at"],
+                "renewed_envelope_path": str(renewal_envelope_path(args.standing_envelope)),
+            }, sort_keys=True))
+            return 0
+        if args.work_root is None:
+            raise Conflict("Continuous supervisor requires --work-root")
+        result = run_cycles(
+            envelope_path=args.standing_envelope,
+            envelope_sha256=args.standing_sha256,
+            authority_db=args.authority_db, oauth_file=args.oauth_file,
+            account_id=args.account_id, writer_id=args.writer_id,
+            work_root=args.work_root,
+            max_concurrent_pairs=args.max_concurrent_pairs,
+            stop_at=args.stop_at_epoch,
+        )
         print(json.dumps({"event": "retained_continuous_result", **result}, sort_keys=True))
         return 0 if result["reason"] == "capture_stop_approaching" else 75
     except Exception as error:

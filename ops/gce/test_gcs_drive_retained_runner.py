@@ -380,6 +380,151 @@ class RunnerTests(unittest.TestCase):
         again = runner.release_closed_pair_stage(RELEASE, key, mapping_sha, data_root=self.root)
         self.assertEqual(again["state"], "already_empty")
 
+    def _make_wave_candidates(self, count: int = 3) -> list[dict]:
+        from gcs_drive_retained_overflow import INDEX_PREFIX
+        candidates = []
+        for idx in range(count):
+            run_id = f"{idx + 1:032x}"
+            manifest, _ = fixture_manifest()
+            manifest = json.loads(json.dumps(manifest))
+            manifest["release_id"] = run_id
+            manifest["payload"] = dict(manifest["payload"], generation=100 + idx)
+            manifest["receipt"] = dict(
+                manifest["receipt"],
+                object=manifest["payload"]["object"] + f".g{100 + idx}.receipt.json",
+                generation=200 + idx,
+            )
+            key = runner.pair_key(manifest)
+            manifest["folder_name"] = "catbird-overflow-" + key[:32]
+            manifest["index_object"] = INDEX_PREFIX + key + ".json"
+            raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+            digest = hashlib.sha256(raw).hexdigest()
+            m_path = self.snapshot_dir / f"manifest-{idx}.json"
+            m_path.write_bytes(raw)
+            ev = {
+                "run_id": run_id,
+                "writer_id": "synthetic-writer",
+                "account_id": ACCOUNT,
+                "reviewed_manifest_sha256": digest,
+                "history_basis": "unproven",
+                "account_identity_verified": True,
+                "all_writers_excluded": True,
+                "quota_rejection_accepted": True,
+                "exclusion_valid_until": time.time() + 7200,
+                "observed_at": time.time(),
+                "evidence_sha256": f"{idx + 1:064x}",
+            }
+            (self.evidence_dir / f"{run_id}.json").write_text(json.dumps(ev))
+            candidates.append({
+                "pair_key": key,
+                "release_id": run_id,
+                "manifest_path": str(m_path),
+                "manifest_sha256": digest,
+                "reserved_bytes": manifest["max_charged_bytes"],
+            })
+        snap_raw = json.dumps(
+            {"schema": runner.SNAPSHOT_SCHEMA, "candidates": candidates},
+            sort_keys=True,
+        ).encode()
+        self.snapshot.write_bytes(snap_raw)
+        self.snapshot_digest = hashlib.sha256(snap_raw).hexdigest()
+        return candidates
+
+    def test_stop_at_decoupled_from_collector_stop_at(self):
+        self.assertEqual(runner.COLLECTOR_STOP_AT, 1_792_836_600)
+        self.assertGreater(runner.STOP_AT, runner.COLLECTOR_STOP_AT)
+        self.assertEqual(runner.STOP_AT - runner.COLLECTOR_STOP_AT, 7 * 86400)
+
+    def test_concurrent_pair_wave_executes_and_closes_all_pairs(self):
+        candidates = self._make_wave_candidates(3)
+        invoked_commands = []
+        closed_runs = set()
+
+        def inspect_pair(_db, *, run_id, **_kwargs):
+            return {
+                "status": "closed" if run_id in closed_runs else "unadmitted",
+                "mapping_sha256": f"{int(run_id, 16):064x}",
+            }
+
+        def child(command, **_kwargs):
+            invoked_commands.append(command)
+            idx = command.index("--run-id")
+            closed_runs.add(command[idx + 1])
+            return 0
+
+        with (mock.patch.object(runner, "STOP_AT", time.time() + 3600),
+              mock.patch.object(runner, "DATA_ROOT", self.root.resolve()),
+              mock.patch.object(runner.sys, "platform", "linux"),
+              mock.patch.object(runner.TransferAuthority, "inspect_retained_account",
+                                side_effect=self.ledger.inspect_account),
+              mock.patch.object(runner.TransferAuthority, "list_retained_pairs",
+                                side_effect=self.ledger.list_pairs),
+              mock.patch.object(runner.TransferAuthority, "inspect_retained_pair",
+                                side_effect=inspect_pair),
+              mock.patch.object(runner, "check_disk",
+                                return_value={"free_after_reservation_bytes": 1})):
+            result = runner.run_snapshot(
+                snapshot_json=self.snapshot, snapshot_sha256=self.snapshot_digest,
+                snapshot_dir=self.snapshot_dir, authority_db=self.root / "ledger.sqlite",
+                evidence_dir=self.evidence_dir, account_id=ACCOUNT,
+                writer_id="synthetic-writer", oauth_file=self.oauth,
+                status_file=self.status, data_root=self.root,
+                capture_dir=self.capture_dir, child_runner=child,
+                max_concurrent_pairs=3)
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["pairs_closed"], 3)
+        self.assertEqual(len(invoked_commands), 3)
+        for cmd in invoked_commands:
+            self.assertIn("--max-concurrent-runs", cmd)
+            idx = cmd.index("--max-concurrent-runs")
+            self.assertEqual(cmd[idx + 1], "3")
+        self.assertEqual(closed_runs, {c["release_id"] for c in candidates})
+
+    def test_concurrent_pair_wave_stops_when_any_child_fails(self):
+        candidates = self._make_wave_candidates(3)
+        closed_runs = {candidates[0]["release_id"], candidates[2]["release_id"]}
+
+        def inspect_pair(_db, *, run_id, **_kwargs):
+            return {
+                "status": "closed" if run_id in closed_runs else "active",
+                "mapping_sha256": "a" * 64 if run_id in closed_runs else None,
+            }
+
+        def child(command, **kwargs):
+            idx = command.index("--run-id")
+            run_id = command[idx + 1]
+            if run_id == candidates[1]["release_id"]:
+                kwargs["log_path"].write_text(
+                    '{"event":"overflow_drive_http_stop","http_status":429}\n'
+                )
+                return 75
+            return 0
+
+        with (mock.patch.object(runner, "STOP_AT", time.time() + 3600),
+              mock.patch.object(runner, "DATA_ROOT", self.root.resolve()),
+              mock.patch.object(runner.sys, "platform", "linux"),
+              mock.patch.object(runner.TransferAuthority, "inspect_retained_account",
+                                side_effect=self.ledger.inspect_account),
+              mock.patch.object(runner.TransferAuthority, "list_retained_pairs",
+                                side_effect=self.ledger.list_pairs),
+              mock.patch.object(runner.TransferAuthority, "inspect_retained_pair",
+                                side_effect=inspect_pair),
+              mock.patch.object(runner, "check_disk",
+                                return_value={"free_after_reservation_bytes": 1})):
+            with self.assertRaises(Conflict):
+                runner.run_snapshot(
+                    snapshot_json=self.snapshot, snapshot_sha256=self.snapshot_digest,
+                    snapshot_dir=self.snapshot_dir, authority_db=self.root / "ledger.sqlite",
+                    evidence_dir=self.evidence_dir, account_id=ACCOUNT,
+                    writer_id="synthetic-writer", oauth_file=self.oauth,
+                    status_file=self.status, data_root=self.root,
+                    capture_dir=self.capture_dir, child_runner=child,
+                    max_concurrent_pairs=3)
+        latest = self._latest_status()
+        self.assertEqual(latest["state"], "stopped")
+        self.assertEqual(latest["stop_reason"], "drive_http_429")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -293,6 +293,7 @@ class TransferAuthority:
         clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
         boot_id: str | None = None, recovery_only: bool = False,
+        max_concurrent_runs: int = 1,
     ):
         """Begin one reviewed pair, or recover only its pending index commit."""
         from retained_transfer_authority import RetainedObservationAuthority
@@ -301,6 +302,7 @@ class TransferAuthority:
             manifest_bytes=manifest_bytes, evidence=evidence, deadline_at=deadline_at,
             clock=clock, monotonic_clock=monotonic_clock, boot_id=boot_id,
             recovery_only=recovery_only,
+            max_concurrent_runs=max_concurrent_runs,
         )
 
     @classmethod

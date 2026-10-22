@@ -8,6 +8,7 @@ No failed child or nonterminal pair is automatically retried.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import ctypes
 import datetime as dt
@@ -32,14 +33,20 @@ from gcs_drive_retained_overflow import (
     BUCKET, CAPTURE_RESTART_FLOOR_BYTES, CAPTURE_SEGMENTS_DIR, DRIVE_ROOT,
     FINAL_STATUS, _canonical, load_overflow_manifest, pair_key,
 )
+from retained_transfer_authority import GLOBAL_ROLLING_CAP_BYTES
 
 
-STOP_AT = dt.datetime(2026, 10, 24, 10, 10, tzinfo=dt.timezone.utc).timestamp()
+COLLECTOR_STOP_AT = dt.datetime(2026, 10, 24, 10, 10, tzinfo=dt.timezone.utc).timestamp()
+# Decoupled from collector stop so a downsized n2-standard-2 VM can drain the
+# remaining GCS buffer backlog after the collector finishes.
+STOP_AT = dt.datetime(2026, 10, 31, 10, 10, tzinfo=dt.timezone.utc).timestamp()
 SCHEMA = "catbird.drive.retained-runner.v1"
 SNAPSHOT_SCHEMA = "catbird.drive.retained-snapshot.v1"
 RELEASE_SCHEMA = "catbird.drive.retained-cache-release.v1"
 STAGE_RELEASE_APPROVAL_REF = "josh-authorized-2026-10-22-verified-local-stage-release"
 MAX_PAIRS = 8
+MAX_CONCURRENT_PAIRS = 4
+DEFAULT_CONCURRENT_PAIRS = 3
 MAX_RESERVED_BYTES = MAX_PAIRS * PILOT_CHARGE_LIMIT
 MAX_STAGED_BYTES = 32 * (1 << 30)
 DATA_ROOT = Path("/data")
@@ -167,6 +174,26 @@ def check_disk(candidate: dict, *, data_root: Path, capture_dir: Path,
     reserve = 2 * (manifest["payload"]["bytes"] + manifest["receipt"]["bytes"])
     reserve += CONTROL_STAGING_BYTES
     free = shutil.disk_usage(capture_dir).free
+    if (size + reserve > max_staged_bytes or
+            free - reserve < CAPTURE_RESTART_FLOOR_BYTES):
+        raise Conflict("Retained staging would breach capture restart headroom or ceiling")
+    return {"staged_bytes": size, "reserved_stage_bytes": reserve,
+            "free_before_bytes": free, "free_after_reservation_bytes": free - reserve}
+
+
+def check_disk_wave(wave: list[dict] | tuple[dict, ...], *, data_root: Path,
+                    capture_dir: Path, max_staged_bytes: int = MAX_STAGED_BYTES) -> dict:
+    first = check_disk(wave[0], data_root=data_root, capture_dir=capture_dir,
+                       max_staged_bytes=max_staged_bytes)
+    if len(wave) == 1 or "staged_bytes" not in first or "free_before_bytes" not in first:
+        return first
+    size = first["staged_bytes"]
+    free = first["free_before_bytes"]
+    reserve = sum(
+        2 * (item["manifest"]["payload"]["bytes"] + item["manifest"]["receipt"]["bytes"])
+        + CONTROL_STAGING_BYTES
+        for item in wave
+    )
     if (size + reserve > max_staged_bytes or
             free - reserve < CAPTURE_RESTART_FLOOR_BYTES):
         raise Conflict("Retained staging would breach capture restart headroom or ceiling")
@@ -489,7 +516,9 @@ def _kill_child_tree(child: subprocess.Popen) -> None:
 
 def _run_child(command: list[str], *, deadline: float, status: Status,
                log_path: Path, runner_stop_monotonic: float,
-               capture_dir: Path, inflight_allowance: int) -> int:
+               capture_dir: Path, inflight_allowance: int,
+               stop_at: float | None = None) -> int:
+    effective_stop = STOP_AT if stop_at is None else stop_at
     if not sys.platform.startswith("linux"):
         raise Conflict("Retained runner watchdog requires Linux")
     if log_path.exists() or log_path.is_symlink():
@@ -504,7 +533,7 @@ def _run_child(command: list[str], *, deadline: float, status: Status,
                          time.monotonic() + max(0, deadline - time.time()) - 5)
             status.update(state="transferring", child_pid=child.pid)
             while child.poll() is None:
-                if time.monotonic() >= cutoff or time.time() >= STOP_AT - 30:
+                if time.monotonic() >= cutoff or time.time() >= effective_stop - 30:
                     _kill_child_tree(child)
                     raise Conflict("Retained child exceeded pair or capture STOP bound")
                 try:
@@ -526,14 +555,126 @@ def _run_child(command: list[str], *, deadline: float, status: Status,
             status.update(child_pid=None)
 
 
+def _run_children_concurrent(
+    wave_tasks: list[dict], *, deadline: float, status: Status,
+    runner_stop_monotonic: float, capture_dir: Path,
+    stop_at: float | None = None, child_runner=_run_child,
+) -> list[int]:
+    if len(wave_tasks) == 1:
+        task = wave_tasks[0]
+        return [child_runner(
+            task["command"], deadline=deadline, status=status,
+            log_path=task["log_path"], runner_stop_monotonic=runner_stop_monotonic,
+            capture_dir=capture_dir, inflight_allowance=task["inflight_allowance"],
+        )]
+    if child_runner is not _run_child:
+        with ThreadPoolExecutor(max_workers=len(wave_tasks)) as pool:
+            futures = [
+                pool.submit(
+                    child_runner, task["command"], deadline=deadline, status=status,
+                    log_path=task["log_path"], runner_stop_monotonic=runner_stop_monotonic,
+                    capture_dir=capture_dir, inflight_allowance=task["inflight_allowance"],
+                )
+                for task in wave_tasks
+            ]
+            return [f.result() for f in futures]
+    effective_stop = STOP_AT if stop_at is None else stop_at
+    if not sys.platform.startswith("linux"):
+        raise Conflict("Retained runner watchdog requires Linux")
+    for task in wave_tasks:
+        if task["log_path"].exists() or task["log_path"].is_symlink():
+            raise Conflict("Runner output log already exists")
+    outputs = []
+    children = []
+    parent_pid = os.getpid()
+    try:
+        for task in wave_tasks:
+            out = open(task["log_path"], "xb", buffering=0)
+            outputs.append(out)
+            child = subprocess.Popen(
+                task["command"], stdout=out, stderr=subprocess.STDOUT,
+                start_new_session=True, close_fds=True,
+                preexec_fn=lambda: _arm_parent_death(parent_pid),
+            )
+            children.append(child)
+        cutoff = min(runner_stop_monotonic - STOP_MARGIN_SECONDS / 2,
+                     time.monotonic() + max(0, deadline - time.time()) - 5)
+        status.update(state="transferring", child_pid=children[0].pid,
+                      child_pids=[c.pid for c in children])
+        while any(c.poll() is None for c in children):
+            if any(c.poll() not in (None, 0) for c in children):
+                for c in children:
+                    if c.poll() is None:
+                        _kill_child_tree(c)
+                break
+            if time.monotonic() >= cutoff or time.time() >= effective_stop - 30:
+                for c in children:
+                    if c.poll() is None:
+                        _kill_child_tree(c)
+                raise Conflict("Retained child exceeded pair or capture STOP bound")
+            try:
+                free = shutil.disk_usage(capture_dir).free
+            except OSError as error:
+                for c in children:
+                    if c.poll() is None:
+                        _kill_child_tree(c)
+                raise Conflict("Capture filesystem became unavailable") from error
+            active_inflight = sum(
+                task["inflight_allowance"]
+                for task, c in zip(wave_tasks, children)
+                if c.poll() is None
+            )
+            if free - active_inflight < CAPTURE_RESTART_FLOOR_BYTES:
+                for c in children:
+                    if c.poll() is None:
+                        _kill_child_tree(c)
+                raise Conflict("In-flight retained transfer would breach capture free floor")
+            status.update(capture_free_bytes=free)
+            time.sleep(max(0, min(HEARTBEAT_SECONDS, cutoff - time.monotonic())))
+        return [c.returncode if c.returncode is not None else 1 for c in children]
+    except BaseException:
+        for c in children:
+            if c.poll() is None:
+                _kill_child_tree(c)
+        raise
+    finally:
+        for out in outputs:
+            with contextlib.suppress(OSError):
+                out.close()
+        status.update(child_pid=None, child_pids=None)
+
+
+def _child_stop_reason(code: int, log_path: Path) -> str:
+    reason = "pair_exit_" + str(code)
+    if code == 75:
+        with contextlib.suppress(OSError, ValueError, Conflict):
+            if log_path.stat().st_size <= 64 * 1024:
+                for line in log_path.read_text().splitlines()[-4:]:
+                    record = json.loads(line, object_pairs_hook=_strict_object,
+                                        parse_constant=_bad_constant)
+                    if (isinstance(record, dict) and
+                            record.get("event") == "overflow_drive_http_stop" and
+                            record.get("http_status") in (403, 429)):
+                        reason = "drive_http_" + str(record["http_status"])
+    return reason
+
+
 def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Path,
                  authority_db: Path, evidence_dir: Path, account_id: str,
                  writer_id: str, oauth_file: Path, status_file: Path,
                  data_root: Path = Path("/data"), capture_dir: Path = CAPTURE_SEGMENTS_DIR,
                  max_staged_bytes: int = MAX_STAGED_BYTES,
+                 max_concurrent_pairs: int = 1,
+                 stop_at: float | None = None,
                  child_runner=_run_child) -> dict:
     if not sys.platform.startswith("linux"):
         raise Conflict("Retained runner requires Linux")
+    if (type(max_concurrent_pairs) is not int or
+            not 1 <= max_concurrent_pairs <= MAX_CONCURRENT_PAIRS):
+        raise Conflict("Runner max_concurrent_pairs must be 1..4")
+    effective_stop = STOP_AT if stop_at is None else stop_at
+    if type(effective_stop) not in (int, float) or not math.isfinite(effective_stop) or effective_stop <= 0:
+        raise Conflict("Runner stop_at epoch is invalid")
     if (not account_id or not writer_id or evidence_dir.is_symlink()
             or not evidence_dir.is_dir() or data_root.resolve() != DATA_ROOT):
         raise Conflict("Runner identity, evidence directory, or data root differs")
@@ -542,7 +683,7 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
     candidates = load_snapshot(snapshot_json, snapshot_sha256, snapshot_dir, account_id)
     if not candidates:
         raise Conflict("Empty current-live snapshot is not historical coverage proof")
-    seconds = STOP_AT - time.time()
+    seconds = effective_stop - time.time()
     if seconds < MIN_LAUNCH_SECONDS:
         raise Conflict("Capture STOP has insufficient time for another retained pair")
     monotonic_stop = time.monotonic() + seconds
@@ -556,87 +697,116 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status = Status(status_file, runner_id, snapshot_sha256)
         try:
-            for candidate in candidates:
+            index = 0
+            while index < len(candidates):
+                wave = list(candidates[index:index + max_concurrent_pairs])
                 now = time.time()
-                duration = candidate["manifest"]["max_duration_seconds"]
+                duration = max(c["manifest"]["max_duration_seconds"] for c in wave)
                 required_window = max(MIN_LAUNCH_SECONDS, duration + STOP_MARGIN_SECONDS + 30)
-                if (STOP_AT - now < required_window
+                if (effective_stop - now < required_window
                         or monotonic_stop - time.monotonic() < required_window):
                     status.update(state="stopped", stop_reason="capture_stop_approaching")
                     break
                 account = TransferAuthority.inspect_retained_account(
                     authority_db, writer_id=writer_id, account_id=account_id)
                 _account_gate(account, now)
+                if account.get("mapping_partition_remaining_bytes", -1) < MAPPING_RESERVATION_BYTES * len(wave):
+                    raise Conflict("Retained account has unresolved, cooldown, partition, or clock stop")
+                known_rolling = account.get("known_local_rolling_bytes", 0)
+                while len(wave) > 1 and known_rolling + sum(c["reserved_bytes"] for c in wave) > GLOBAL_ROLLING_CAP_BYTES:
+                    wave.pop()
+                if known_rolling + sum(c["reserved_bytes"] for c in wave) > GLOBAL_ROLLING_CAP_BYTES:
+                    raise Conflict("Retained pair would exceed 700 GB rolling cap")
                 rows = TransferAuthority.list_retained_pairs(
                     authority_db, writer_id=writer_id, account_id=account_id)
-                _candidate_gate(candidate, rows)
+                for candidate in wave:
+                    _candidate_gate(candidate, rows)
                 reclaim_closed_stages(rows, data_root=data_root)
-                disk = check_disk(candidate, data_root=data_root, capture_dir=capture_dir,
-                                  max_staged_bytes=max_staged_bytes)
-                deadline = min(now + duration, STOP_AT - STOP_MARGIN_SECONDS,
+                disk = check_disk_wave(wave, data_root=data_root, capture_dir=capture_dir,
+                                       max_staged_bytes=max_staged_bytes)
+                deadline = min(now + duration, effective_stop - STOP_MARGIN_SECONDS,
                                now + monotonic_stop - time.monotonic() - STOP_MARGIN_SECONDS)
                 if deadline - now <= 330:
                     raise Conflict("Insufficient reviewed transfer window before capture STOP")
-                review_path = evidence_dir / (candidate["run_id"] + ".json")
-                if not _under(review_path, evidence_dir):
-                    raise Conflict("Fresh evidence path differs")
-                try:
-                    _evidence(review_path, candidate, account_id, writer_id, deadline, now)
-                except Conflict:
-                    status.update(state="awaiting_fresh_evidence", stop_reason="fresh_pair_evidence_missing",
-                                  last_pair=candidate["pair_key"])
+                wave_tasks = []
+                missing_evidence_pair = None
+                for candidate in wave:
+                    review_path = evidence_dir / (candidate["run_id"] + ".json")
+                    if not _under(review_path, evidence_dir):
+                        raise Conflict("Fresh evidence path differs")
+                    try:
+                        _evidence(review_path, candidate, account_id, writer_id, deadline, now)
+                    except Conflict:
+                        missing_evidence_pair = candidate["pair_key"]
+                        break
+                    run_work = data_root / ("gcs-drive-retained-" + candidate["run_id"])
+                    log_path = data_root / ("retained-run-" + runner_id + "-" + candidate["run_id"] + ".log")
+                    command = [sys.executable, "-B", str(Path(__file__).with_name("gcs_drive_retained_overflow.py")),
+                               "--overflow-manifest", str(candidate["manifest_path"]),
+                               "--run-id", candidate["run_id"], "--account-id", account_id,
+                               "--writer-id", writer_id, "--authority-db", str(authority_db),
+                               "--review-evidence", str(review_path),
+                               "--deadline-epoch", str(deadline), "--work-dir", str(run_work),
+                               "--oauth-file", str(oauth_file), "--once", "--retain-gcs",
+                               "--quota-observation"]
+                    if max_concurrent_pairs > 1:
+                        command.extend(["--max-concurrent-runs", str(max_concurrent_pairs)])
+                    wave_tasks.append({
+                        "candidate": candidate,
+                        "command": command,
+                        "log_path": log_path,
+                        "inflight_allowance": (
+                            candidate["manifest"]["payload"]["bytes"]
+                            + candidate["manifest"]["receipt"]["bytes"]
+                            + CONTROL_STAGING_BYTES
+                        ),
+                    })
+                if not wave_tasks:
+                    status.update(state="awaiting_fresh_evidence",
+                                  stop_reason="fresh_pair_evidence_missing",
+                                  last_pair=missing_evidence_pair)
                     break
-                run_work = data_root / ("gcs-drive-retained-" + candidate["run_id"])
-                log_path = data_root / ("retained-run-" + runner_id + "-" + candidate["run_id"] + ".log")
-                command = [sys.executable, "-B", str(Path(__file__).with_name("gcs_drive_retained_overflow.py")),
-                           "--overflow-manifest", str(candidate["manifest_path"]),
-                           "--run-id", candidate["run_id"], "--account-id", account_id,
-                           "--writer-id", writer_id, "--authority-db", str(authority_db),
-                           "--review-evidence", str(review_path),
-                           "--deadline-epoch", str(deadline), "--work-dir", str(run_work),
-                           "--oauth-file", str(oauth_file), "--once", "--retain-gcs",
-                           "--quota-observation"]
-                status.update(state="admitting_pair", last_pair=candidate["pair_key"],
+                status.update(state="admitting_pair",
+                              last_pair=wave_tasks[-1]["candidate"]["pair_key"],
                               child_deadline_epoch=deadline, disk=disk,
                               cooldown_until=account["cooldown_until"],
                               charged_bytes_observed=account["known_local_rolling_bytes"])
-                code = child_runner(command, deadline=deadline, status=status,
-                                    log_path=log_path, runner_stop_monotonic=monotonic_stop,
-                                    capture_dir=capture_dir,
-                                    inflight_allowance=(candidate["manifest"]["payload"]["bytes"]
-                                                        + candidate["manifest"]["receipt"]["bytes"]
-                                                        + CONTROL_STAGING_BYTES))
-                if code != 0:
-                    reason = "pair_exit_" + str(code)
-                    if code == 75:
-                        with contextlib.suppress(OSError, ValueError, Conflict):
-                            if log_path.stat().st_size <= 64 * 1024:
-                                for line in log_path.read_text().splitlines()[-4:]:
-                                    record = json.loads(line, object_pairs_hook=_strict_object,
-                                                        parse_constant=_bad_constant)
-                                    if (isinstance(record, dict) and
-                                            record.get("event") == "overflow_drive_http_stop" and
-                                            record.get("http_status") in (403, 429)):
-                                        reason = "drive_http_" + str(record["http_status"])
-                    status.update(state="stopped", stop_reason=reason)
-                    raise Conflict("Retained pair exited without verified closure")
+                codes = _run_children_concurrent(
+                    wave_tasks, deadline=deadline, status=status,
+                    runner_stop_monotonic=monotonic_stop, capture_dir=capture_dir,
+                    stop_at=effective_stop, child_runner=child_runner,
+                )
+                for task, code in zip(wave_tasks, codes):
+                    if code != 0:
+                        reason = _child_stop_reason(code, task["log_path"])
+                        status.update(state="stopped", stop_reason=reason)
+                        raise Conflict("Retained pair exited without verified closure")
                 account_after = TransferAuthority.inspect_retained_account(
                     authority_db, writer_id=writer_id, account_id=account_id)
                 _account_gate(account_after, time.time())
-                row = TransferAuthority.inspect_retained_pair(
-                    authority_db, writer_id=writer_id, account_id=account_id,
-                    run_id=candidate["run_id"], pair_key=candidate["pair_key"],
-                    manifest_sha256=candidate["manifest_sha256"])
-                if (row.get("status") != "closed"
-                        or not SHA256.fullmatch(str(row.get("mapping_sha256") or ""))):
-                    raise Conflict("Child exited without durable shared mapping commit")
-                release_closed_pair_stage(
-                    candidate["run_id"], candidate["pair_key"], row["mapping_sha256"],
-                    data_root=data_root)
-                status.update(state="pair_closed", pairs_closed=status.base["pairs_closed"] + 1,
-                              last_mapping_sha256=row["mapping_sha256"],
-                              charged_bytes_observed=account_after["known_local_rolling_bytes"],
-                              cooldown_until=account_after["cooldown_until"])
+                for task in wave_tasks:
+                    candidate = task["candidate"]
+                    row = TransferAuthority.inspect_retained_pair(
+                        authority_db, writer_id=writer_id, account_id=account_id,
+                        run_id=candidate["run_id"], pair_key=candidate["pair_key"],
+                        manifest_sha256=candidate["manifest_sha256"])
+                    if (row.get("status") != "closed"
+                            or not SHA256.fullmatch(str(row.get("mapping_sha256") or ""))):
+                        raise Conflict("Child exited without durable shared mapping commit")
+                    release_closed_pair_stage(
+                        candidate["run_id"], candidate["pair_key"], row["mapping_sha256"],
+                        data_root=data_root)
+                    status.update(state="pair_closed", pairs_closed=status.base["pairs_closed"] + 1,
+                                  last_pair=candidate["pair_key"],
+                                  last_mapping_sha256=row["mapping_sha256"],
+                                  charged_bytes_observed=account_after["known_local_rolling_bytes"],
+                                  cooldown_until=account_after["cooldown_until"])
+                if missing_evidence_pair is not None:
+                    status.update(state="awaiting_fresh_evidence",
+                                  stop_reason="fresh_pair_evidence_missing",
+                                  last_pair=missing_evidence_pair)
+                    break
+                index += len(wave_tasks)
             else:
                 status.update(state="completed", stop_reason="snapshot_exhausted")
         except BaseException as error:
@@ -659,6 +829,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--oauth-file", type=Path, required=True)
     parser.add_argument("--status-file", type=Path, default=Path("/data/gcs-buffer/retained_runner_status.jsonl"))
     parser.add_argument("--max-staged-bytes", type=int, default=MAX_STAGED_BYTES)
+    parser.add_argument("--max-concurrent-pairs", type=int,
+                        default=DEFAULT_CONCURRENT_PAIRS, choices=(1, 2, 3, 4))
+    parser.add_argument("--stop-at-epoch", type=float, default=None)
     args = parser.parse_args(argv)
     try:
         result = run_snapshot(snapshot_json=args.snapshot_json,
@@ -666,7 +839,9 @@ def main(argv: list[str] | None = None) -> int:
                               authority_db=args.authority_db, evidence_dir=args.evidence_dir,
                               account_id=args.account_id, writer_id=args.writer_id,
                               oauth_file=args.oauth_file, status_file=args.status_file,
-                              max_staged_bytes=args.max_staged_bytes)
+                              max_staged_bytes=args.max_staged_bytes,
+                              max_concurrent_pairs=args.max_concurrent_pairs,
+                              stop_at=args.stop_at_epoch)
         print(json.dumps({"event": "retained_runner_result", "state": result["state"],
                           "pairs_closed": result["pairs_closed"],
                           "stop_reason": result["stop_reason"]}, sort_keys=True))

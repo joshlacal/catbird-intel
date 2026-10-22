@@ -36,7 +36,8 @@ LEGACY_DIAGNOSTIC_BUCKET = "catbird-436600-jetstream-buffer-20261020"
 LEGACY_DIAGNOSTIC_PAYLOAD_GENERATION = 1792518093053185
 MAPPING_PARTITION_BYTES = 33_554_432
 MAPPING_MAX_BODY_BYTES = 16_384
-GLOBAL_ROLLING_CAP_BYTES = 700 * (1 << 30)
+GLOBAL_ROLLING_CAP_BYTES = 700_000_000_000
+MAX_CONCURRENT_RUNS = 4
 RECONCILIATION_SCHEMA = "catbird.drive.retained-receipt-500-reconciliation.v1"
 STATUS_PROBE_RECONCILIATION_SCHEMA = (
     "catbird.drive.retained-status-probe-reconciliation.v1"
@@ -226,7 +227,7 @@ class RetainedObservationAuthority:
                  writer_id: str, account_id: str, manifest: dict,
                  manifest_sha256: str, pair_key: str, boot_id: str,
                  clock: Callable[[], float], monotonic_clock: Callable[[], float],
-                 recovery_only: bool):
+                 recovery_only: bool, max_concurrent_runs: int = 1):
         self.db = db
         self.db_path = str(path.resolve())
         self.release_id = run_id
@@ -239,6 +240,7 @@ class RetainedObservationAuthority:
         self.clock = clock
         self.monotonic_clock = monotonic_clock
         self.recovery_only = recovery_only
+        self.max_concurrent_runs = max_concurrent_runs
         self.process_host = socket.gethostname()
         self.process_pid = os.getpid()
         self.process_nonce = _PROCESS_NONCE
@@ -306,6 +308,13 @@ class RetainedObservationAuthority:
                     pair_key TEXT NOT NULL, proof_json TEXT NOT NULL,
                     proof_sha256 TEXT NOT NULL, applied_at REAL NOT NULL
                 );
+                CREATE TABLE retained_run_claim (
+                    run_id TEXT PRIMARY KEY REFERENCES retained_run(id),
+                    process_host TEXT NOT NULL,
+                    process_pid INTEGER NOT NULL,
+                    process_nonce TEXT NOT NULL,
+                    max_concurrent_runs INTEGER NOT NULL CHECK(max_concurrent_runs BETWEEN 1 AND 4)
+                );
             """)
             db.execute("INSERT INTO retained_account VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)", (
                 writer_id, account_id, str(path.resolve()), None, None, None, None,
@@ -313,6 +322,60 @@ class RetainedObservationAuthority:
             ))
         finally:
             db.close()
+
+    def _has_run_claim_table(self) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_run_claim'"
+        ).fetchone() is not None
+
+    def _ensure_run_claim_table(self) -> None:
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS retained_run_claim (
+                run_id TEXT PRIMARY KEY REFERENCES retained_run(id),
+                process_host TEXT NOT NULL,
+                process_pid INTEGER NOT NULL,
+                process_nonce TEXT NOT NULL,
+                max_concurrent_runs INTEGER NOT NULL CHECK(max_concurrent_runs BETWEEN 1 AND 4)
+            )
+        """)
+
+    def _run_claim(self, run_id: str) -> sqlite3.Row | None:
+        if not self._has_run_claim_table():
+            return None
+        return self.db.execute(
+            "SELECT * FROM retained_run_claim WHERE run_id=?", (run_id,),
+        ).fetchone()
+
+    def _claim_process_alive(self, claim: sqlite3.Row) -> bool:
+        if (claim["process_host"] != self.process_host or
+            type(claim["process_pid"]) is not int or claim["process_pid"] <= 0):
+            return False
+        if claim["process_pid"] == self.process_pid:
+            return True
+        try:
+            os.kill(claim["process_pid"], 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+        return True
+
+    def _blocking_unresolved_count(self, now: float, active_run_ids: set[str]) -> int:
+        resolved = self._reconciled_attempt_ids()
+        count = 0
+        for row in self.db.execute("SELECT * FROM retained_attempt WHERE status='unresolved'"):
+            if row["id"] in resolved:
+                continue
+            if (row["run_id"] in active_run_ids and
+                row["http_status"] is None and
+                now < row["charge_through"]):
+                continue
+            count += 1
+        if self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+            "name='retained_receipt_recovery_attempt'").fetchone():
+            count += self.db.execute(
+                "SELECT COUNT(*) FROM retained_receipt_recovery_attempt "
+                "WHERE status='unresolved'").fetchone()[0]
+        return count
 
     @classmethod
     def import_legacy_result(
@@ -476,9 +539,10 @@ class RetainedObservationAuthority:
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND "
                     "name='retained_receipt_recovery_attempt'").fetchone() else 0)
             unresolved = authority._effective_unresolved_count()
-            nonterminal = db.execute(
-                "SELECT id,status FROM retained_run WHERE status!='closed'"
-            ).fetchone()
+            nonterminals = db.execute(
+                "SELECT id,status FROM retained_run WHERE status!='closed' ORDER BY started_at,id"
+            ).fetchall()
+            nonterminal = nonterminals[0] if nonterminals else None
             return {
                 "admission_mode": "retained_pair_observation",
                 "history_proven": False,
@@ -494,6 +558,8 @@ class RetainedObservationAuthority:
                 "known_local_rolling_bytes": authority._known_usage(now),
                 "nonterminal_run_id": nonterminal["id"] if nonterminal else None,
                 "nonterminal_status": nonterminal["status"] if nonterminal else None,
+                "active_run_count": len(nonterminals),
+                "nonterminal_run_ids": [row["id"] for row in nonterminals],
             }
         finally:
             db.close()
@@ -505,10 +571,15 @@ class RetainedObservationAuthority:
         clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
         boot_id: str | None = None, recovery_only: bool = False,
+        max_concurrent_runs: int = 1,
     ) -> "RetainedObservationAuthority":
         _required_identity(run_id, "run ID")
         _required_identity(writer_id, "writer ID")
         _required_identity(account_id, "account ID")
+        if type(max_concurrent_runs) is not int or not 1 <= max_concurrent_runs <= MAX_CONCURRENT_RUNS:
+            raise AuthorityBlocked("Retained max_concurrent_runs must be 1..4")
+        if recovery_only and max_concurrent_runs != 1:
+            raise AuthorityBlocked("Retained recovery_only requires single-run mode")
         manifest, digest, key = _reviewed_manifest(manifest_bytes, run_id, account_id)
         now = _finite_nonnegative(clock(), "clock")
         deadline = _finite_nonnegative(deadline_at, "deadline")
@@ -526,7 +597,8 @@ class RetainedObservationAuthority:
                         account_id=account_id, manifest=manifest,
                         manifest_sha256=digest, pair_key=key, boot_id=boot,
                         clock=clock, monotonic_clock=monotonic_clock,
-                        recovery_only=recovery_only)
+                        recovery_only=recovery_only,
+                        max_concurrent_runs=max_concurrent_runs)
         try:
             with authority._transaction():
                 account = authority._account(require_process=False)
@@ -534,6 +606,8 @@ class RetainedObservationAuthority:
                     raise AuthorityBlocked("Retained ledger clock regressed")
                 if account["boot_id"] is not None and account["boot_id"] != boot and not recovery_only:
                     raise AuthorityBlocked("Retained ledger boot changed; reconciliation required")
+                if max_concurrent_runs > 1:
+                    authority._ensure_run_claim_table()
                 authority._validate_all()
                 if db.execute("SELECT COUNT(*) FROM retained_import").fetchone()[0] != 1:
                     raise AuthorityBlocked("Reviewed legacy diagnostic charge is not imported")
@@ -581,16 +655,39 @@ class RetainedObservationAuthority:
                             for r in prior)
                     ):
                         raise AuthorityBlocked("Retained payload generation already has a run")
-                    if any(r["status"] != "closed" for r in prior):
-                        raise AuthorityBlocked("Prior retained pair is not index committed")
-                    if authority._effective_unresolved_count():
-                        raise AuthorityBlocked("Unresolved prior Drive send blocks next pair")
+                    nonterminal_runs = [r for r in prior if r["status"] != "closed"]
+                    if max_concurrent_runs == 1:
+                        if nonterminal_runs:
+                            raise AuthorityBlocked("Prior retained pair is not index committed")
+                        if authority._effective_unresolved_count():
+                            raise AuthorityBlocked("Unresolved prior Drive send blocks next pair")
+                    else:
+                        if len(nonterminal_runs) >= max_concurrent_runs:
+                            raise AuthorityBlocked("Prior retained pair is not index committed")
+                        for open_r in nonterminal_runs:
+                            claim = authority._run_claim(open_r["id"])
+                            if (claim is None or
+                                claim["max_concurrent_runs"] != max_concurrent_runs or
+                                open_r["deadline_at"] <= now or
+                                not authority._claim_process_alive(claim)):
+                                raise AuthorityBlocked("Prior retained pair is not index committed")
+                        if authority._blocking_unresolved_count(
+                            now, {r["id"] for r in nonterminal_runs}
+                        ):
+                            raise AuthorityBlocked("Unresolved prior Drive send blocks next pair")
                     if account["cooldown_until"] > now:
                         raise AuthorityBlocked("Provider quota cooldown remains active")
                     mapping_used = db.execute(
                         "SELECT COALESCE(SUM(bytes),0) FROM retained_mapping_reservation"
                     ).fetchone()[0]
-                    if mapping_used + MAPPING_MAX_BODY_BYTES > MAPPING_PARTITION_BYTES:
+                    unreserved_open = sum(
+                        1 for r in nonterminal_runs
+                        if not db.execute(
+                            "SELECT 1 FROM retained_mapping_reservation WHERE run_id=?",
+                            (r["id"],),
+                        ).fetchone()
+                    )
+                    if mapping_used + (unreserved_open + 1) * MAPPING_MAX_BODY_BYTES > MAPPING_PARTITION_BYTES:
                         raise AuthorityBlocked("Fixed GCS mapping partition cannot cover a new pair")
                     db.execute("INSERT INTO retained_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                         run_id, digest, manifest_bytes, key,
@@ -598,6 +695,14 @@ class RetainedObservationAuthority:
                         manifest["control_allowance_bytes"], manifest["max_charged_bytes"],
                         None, 0, 0, "active", None, _canonical(evidence), now, deadline,
                     ))
+                    if max_concurrent_runs > 1:
+                        db.execute(
+                            "INSERT OR REPLACE INTO retained_run_claim VALUES (?,?,?,?,?)",
+                            (run_id, authority.process_host, authority.process_pid,
+                             authority.process_nonce, max_concurrent_runs),
+                        )
+                    elif authority._has_run_claim_table():
+                        db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (run_id,))
                 db.execute(
                     "UPDATE retained_account SET boot_id=COALESCE(boot_id,?),process_host=?,"
                     "process_pid=?,process_nonce=?,last_clock=? WHERE id=1",
@@ -630,10 +735,19 @@ class RetainedObservationAuthority:
         if (account is None or account["writer_id"] != self.writer_id or
             account["account_id"] != self.account_id or account["db_path"] != self.db_path):
             raise AuthorityBlocked("Retained account, writer or ledger path changed")
-        if require_process and (
-            account["process_host"], account["process_pid"], account["process_nonce"]
-        ) != (self.process_host, self.process_pid, self.process_nonce):
-            raise AuthorityBlocked("Retained writer process claim changed")
+        if require_process:
+            claim = self._run_claim(self.release_id)
+            if claim is not None:
+                if ((claim["process_host"], claim["process_pid"], claim["process_nonce"]) !=
+                    (self.process_host, self.process_pid, self.process_nonce) or
+                    account["process_host"] != self.process_host or
+                    account["process_pid"] is None or
+                    account["process_nonce"] is None):
+                    raise AuthorityBlocked("Retained writer process claim changed")
+            elif (
+                account["process_host"], account["process_pid"], account["process_nonce"]
+            ) != (self.process_host, self.process_pid, self.process_nonce):
+                raise AuthorityBlocked("Retained writer process claim changed")
         if account["boot_id"] is not None and account["boot_id"] != self.boot_id and not self.recovery_only:
             raise AuthorityBlocked("Retained boot identity changed")
         if (account["next_slot"] < 0 or account["last_clock"] < 0 or
@@ -1025,8 +1139,33 @@ class RetainedObservationAuthority:
                 account["next_slot"] < wall + PACING_SECONDS - 1e-9):
                 raise AuthorityBlocked("Retained persisted next slot is before last dispatch")
         runs = self.db.execute("SELECT * FROM retained_run").fetchall()
-        if sum(run["status"] != "closed" for run in runs) > 1:
-            raise AuthorityBlocked("Multiple retained runs are nonterminal")
+        nonterminal_runs = [run for run in runs if run["status"] != "closed"]
+        if self._has_run_claim_table():
+            claims = {
+                row["run_id"]: row
+                for row in self.db.execute("SELECT * FROM retained_run_claim").fetchall()
+            }
+            by_id = {run["id"]: run for run in runs}
+            for claimed_id, claim in claims.items():
+                claimed_run = by_id.get(claimed_id)
+                if (claimed_run is None or claimed_run["status"] == "closed" or
+                    type(claim["max_concurrent_runs"]) is not int or
+                    not 1 <= claim["max_concurrent_runs"] <= MAX_CONCURRENT_RUNS or
+                    not isinstance(claim["process_host"], str) or not claim["process_host"] or
+                    type(claim["process_pid"]) is not int or claim["process_pid"] <= 0 or
+                    not isinstance(claim["process_nonce"], str) or not claim["process_nonce"]):
+                    raise AuthorityBlocked("Retained run claim is orphaned or malformed")
+        else:
+            claims = {}
+        if len(nonterminal_runs) > 1:
+            if len(nonterminal_runs) > MAX_CONCURRENT_RUNS:
+                raise AuthorityBlocked("Multiple retained runs are nonterminal")
+            for open_run in nonterminal_runs:
+                claim = claims.get(open_run["id"])
+                if (claim is None or
+                    claim["max_concurrent_runs"] < 2 or
+                    len(nonterminal_runs) > claim["max_concurrent_runs"]):
+                    raise AuthorityBlocked("Multiple retained runs are nonterminal")
         payload_identities = set()
         for run in runs:
             manifest, digest, key = _reviewed_manifest(run["manifest_raw"], run["id"], self.account_id)
@@ -1386,6 +1525,11 @@ class RetainedObservationAuthority:
             self.db.execute("UPDATE retained_attempt SET status=?,http_status=?,"
                             "charge_through=MAX(charge_through,?) WHERE id=?",
                             ("settled" if settled else "unresolved", status_code, now, attempt_id))
+            if not settled and self._has_run_claim_table():
+                self.db.execute(
+                    "UPDATE retained_run_claim SET max_concurrent_runs=1 WHERE run_id=?",
+                    (self.release_id,),
+                )
             if status_code in (403, 429):
                 self.db.execute("UPDATE retained_account SET cooldown_until=MAX(cooldown_until,?) WHERE id=1",
                                 (now + QUOTA_COOLDOWN_SECONDS,))
@@ -1521,6 +1665,12 @@ class RetainedObservationAuthority:
                 "WHERE id=?",
                 (uncommitted_retry_bytes, self.release_id),
             )
+            if (self._has_run_claim_table() and self.max_concurrent_runs > 1 and
+                self._effective_unresolved_count(self.release_id) == 0):
+                self.db.execute(
+                    "UPDATE retained_run_claim SET max_concurrent_runs=? WHERE run_id=?",
+                    (self.max_concurrent_runs, self.release_id),
+                )
             self.db.execute(
                 "UPDATE retained_account SET last_clock=? WHERE id=1", (now,),
             )
@@ -1613,8 +1763,23 @@ class RetainedObservationAuthority:
                 reservation["mapping_sha256"] != mapping_sha256):
                 raise AuthorityBlocked("Shared index commit does not match verified mapping")
             self.db.execute("UPDATE retained_run SET status='closed' WHERE id=?", (self.release_id,))
-            self.db.execute("UPDATE retained_account SET process_host=NULL,process_pid=NULL,"
-                            "process_nonce=NULL,last_clock=? WHERE id=1", (now,))
+            remaining_claim = None
+            if self._has_run_claim_table():
+                self.db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (self.release_id,))
+                remaining_claim = self.db.execute(
+                    "SELECT process_host,process_pid,process_nonce "
+                    "FROM retained_run_claim ORDER BY rowid LIMIT 1"
+                ).fetchone()
+            if remaining_claim is not None:
+                self.db.execute(
+                    "UPDATE retained_account SET process_host=?,process_pid=?,"
+                    "process_nonce=?,last_clock=? WHERE id=1",
+                    (remaining_claim["process_host"], remaining_claim["process_pid"],
+                     remaining_claim["process_nonce"], now),
+                )
+            else:
+                self.db.execute("UPDATE retained_account SET process_host=NULL,process_pid=NULL,"
+                                "process_nonce=NULL,last_clock=? WHERE id=1", (now,))
 
     def pair_status(self, pair_key: str, manifest_sha256: str) -> str:
         self._validate_all()

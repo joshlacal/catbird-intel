@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic renewal timer for Catbird GCS-to-Drive 24h standing envelope
+
+[Timer]
+OnBootSec=15m
+OnUnitActiveSec=6h
+Persistent=true
+Unit=catbird-gcs-drive-standing-renewal.service
+
+[Install]
+WantedBy=timers.target

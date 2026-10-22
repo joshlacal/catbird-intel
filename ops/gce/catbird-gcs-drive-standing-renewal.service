@@ -1,0 +1,21 @@
+[Unit]
+Description=Renew Catbird GCS-to-Drive standing writer exclusion envelope
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=-/etc/default/catbird-gcs-drive-retained
+ExecStart=/usr/bin/python3 -B /opt/catbird/ops/gce/gcs_drive_retained_continuous.py \
+  --renew-standing \
+  --standing-envelope ${STANDING_ENVELOPE} \
+  --standing-sha256 ${STANDING_SHA256} \
+  --authority-db /data/gcs-drive-retained-authority/authority.sqlite \
+  --oauth-file /root/.config/catbird-drive/oauth.json \
+  --account-id ${ACCOUNT_ID} \
+  --writer-id ${WRITER_ID}
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes

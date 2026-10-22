@@ -1142,6 +1142,83 @@ class TeacherHarnessAcceptanceTests(unittest.TestCase):
         self.assertFalse(sig_prose["is_link_or_mention_only"])
         self.assertFalse(sig_prose["is_media_without_substantive_prose"])
 
+        # Subdomain, compound-TLD, and query-suffix bare URLs
+        for bare_url in (
+            "deanblundell.substack.com/p/new-americ...",
+            "www.cbc.ca/news/canada/...",
+            "www.telegraph.co.uk/news/2026/10...",
+            "www.cidrap.umn.edu/antimicrobia...",
+            "plan.lavote.gov?utm_content&...",
+        ):
+            sub_post = {
+                "uri": "at://did:plc:u/app.bsky.feed.post/sublink",
+                "text": bare_url,
+                "langs": ["en"],
+                "post_type": "original",
+                "embed_type": "external",
+                "external_uri": f"https://{bare_url}",
+                "image_count": 0,
+                "has_video": 0,
+            }
+            sig_sub = build_systemone_clef_request(sub_post, config=self.config)["state"]["structural_signals"]
+            self.assertEqual(sig_sub["substantive_prose_word_count"], 0, msg=bare_url)
+            self.assertTrue(sig_sub["is_link_or_mention_only"], msg=bare_url)
+
+        # Hashtag-only image post with no alt text
+        hashtag_media_post = {
+            "uri": "at://did:plc:u/app.bsky.feed.post/hashimg",
+            "text": "#streetphotography #WashingtonDC",
+            "langs": ["en"],
+            "post_type": "original",
+            "embed_type": "images",
+            "external_uri": "",
+            "image_count": 1,
+            "has_video": 0,
+        }
+        sig_hash = build_systemone_clef_request(hashtag_media_post, config=self.config)["state"]["structural_signals"]
+        self.assertEqual(sig_hash["substantive_prose_word_count"], 0)
+        self.assertTrue(sig_hash["is_media_without_substantive_prose"])
+
+        # Mathematical Italic Unicode prose with attached image is recognized as substantive prose via NFKC
+        unicode_prose_post = {
+            "uri": "at://did:plc:u/app.bsky.feed.post/uniprose",
+            "text": "𝐴𝑟𝑒 𝑤𝑒 𝑝𝑟𝑒𝑜𝑟𝑑𝑎𝑖𝑛𝑒𝑑 𝑡𝑜 𝑏𝑒 𝑝𝑟𝑜𝑑𝑢𝑐𝑡𝑠 𝑜𝑓 𝑜𝑢𝑟 𝑛𝑎𝑡𝑢𝑟𝑒?",
+            "langs": ["en"],
+            "post_type": "original",
+            "embed_type": "images",
+            "external_uri": "",
+            "image_count": 1,
+            "has_video": 0,
+        }
+        sig_uni = build_systemone_clef_request(unicode_prose_post, config=self.config)["state"]["structural_signals"]
+        self.assertGreaterEqual(sig_uni["substantive_prose_word_count"], 8)
+        self.assertFalse(sig_uni["is_media_without_substantive_prose"])
+
+        # When context_dependent is False and no component is insufficient, missing_context_kind is normalized to 'none'
+        scorable_resp = {
+            "model": "Cloudflare/clef-flash",
+            "answers": {
+                **{
+                    f"{c}_score": {
+                        "type": "score",
+                        "score": 0.0,
+                        "confidence": 0.95,
+                        "probabilities": {"0": 0.95, "1": 0.05, "2": 0.0, "3": 0.0},
+                    }
+                    for c in COMPONENT_ORDER
+                },
+                **{f"{c}_insufficient": {"type": "noul", "noul": 0.04} for c in COMPONENT_ORDER},
+                "topic": {"type": "choice", "choice": "none_or_everyday", "confidence": 0.85},
+                "context_dependent": {"type": "noul", "noul": 0.14},
+                "missing_context_kind": {"type": "choice", "choice": "multi_post_history", "confidence": 0.42},
+                "stance_ambiguity": {"type": "choice", "choice": "none", "confidence": 0.90},
+            },
+        }
+        parsed_scorable = parse_systemone_clef_response(scorable_resp)
+        self.assertFalse(parsed_scorable["context_dependent"])
+        self.assertFalse(parsed_scorable["has_insufficient_component"])
+        self.assertEqual(parsed_scorable["missing_context_kind"], "none")
+
 
 if __name__ == "__main__":
     unittest.main()

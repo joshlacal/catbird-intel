@@ -1,0 +1,268 @@
+{
+  "schema": "catbird_phase0_72h_soak_qualification_v1",
+  "host_alias": "netcup",
+  "soak_window": {
+    "required_soak_start": "2026-10-19T13:00:00+00:00",
+    "required_soak_end": "2026-10-22T13:00:00+00:00",
+    "measured_at": "2026-10-22T13:11:30+00:00",
+    "elapsed_hours": 72.05
+  },
+  "overall_verdict": {
+    "master_plan_phase0_done_criteria_passed": 2,
+    "master_plan_phase0_done_criteria_total": 4,
+    "soak_contract_12_gates_passed": 6,
+    "soak_contract_12_gates_failed": 3,
+    "soak_contract_12_gates_unknown": 1,
+    "soak_contract_12_gates_unperformed": 2,
+    "qualification": "UNQUALIFIED",
+    "deployment_authorized": false
+  },
+  "master_plan_phase0_done_criteria": {
+    "1_continuous_ingest_72h_gap_le_60s_after_reconnect": {
+      "status": "FAIL",
+      "process_heartbeat_continuity_status": "PASS",
+      "stream_delivery_lag_le_60s_status": "FAIL",
+      "metrics": {
+        "expected_10s_intervals_72h": 25920,
+        "observed_10s_intervals_72h": 25916,
+        "coverage_72h": 0.999846,
+        "heartbeat_gaps_over_60s_72h": 0,
+        "longest_heartbeat_gap_seconds_72h": 0,
+        "final_24h_expected_intervals": 8640,
+        "final_24h_observed_intervals": 8640,
+        "final_24h_zero_event_intervals": 0,
+        "lag_over_60s_intervals_72h": 404,
+        "lag_over_60s_intervals_final_24h": 61,
+        "max_lag_ms_72h": 2228309,
+        "p99_lag_ms_72h": 720534,
+        "max_lag_ms_final_24h": 335683,
+        "p99_lag_ms_final_24h": 2828,
+        "p50_lag_ms_final_24h": 141,
+        "reconnects_72h": 10,
+        "reconnects_final_24h": 4,
+        "lag_clock_caveat": "catbird-intel-ingest computes lag_ms from post record.createdAt (user-supplied display timestamp) rather than verified relay witnessedAt",
+        "lag_over_60s_episodes_72h": [
+          {
+            "window_utc": "2026-10-19T13:06:06Z..2026-10-19T13:19:43Z",
+            "samples_over_60s": 81,
+            "max_lag_ms": 848702,
+            "cause": "Initial catchup after 2026-10-19T13:00Z soak start"
+          },
+          {
+            "window_utc": "2026-10-19T14:17:33Z..2026-10-19T14:55:17Z",
+            "samples_over_60s": 228,
+            "max_lag_ms": 2228309,
+            "cause": "MalformedError Invalid string length + cursor rewind + failover to jetstream.us-west.bsky.network"
+          },
+          {
+            "window_utc": "2026-10-20T06:23:20Z..2026-10-20T06:28:50Z",
+            "samples_over_60s": 34,
+            "max_lag_ms": 149261,
+            "cause": "Transient stream backlog"
+          },
+          {
+            "window_utc": "2026-10-21T17:42:42Z..2026-10-21T17:52:42Z",
+            "samples_over_60s": 61,
+            "max_lag_ms": 335683,
+            "cause": "Post-reconnect backlog ~9m after 2026-10-21T17:33:28Z WebSocket 1006 abnormal closure"
+          }
+        ],
+        "cross_source_sequence_inversion_defect": {
+          "description": "During the 2026-10-19 14:18Z..14:55Z failover to jetstream.us-west.bsky.network, time_us sequences around 27,154,623,469 were written into ReplacingMergeTree(seq) tables, exceeding jetstream.us-east.bsky.network sequences on 2026-10-22 13:08Z (26,306,655,634) by ~848M.",
+          "account_status_rows_shadowed": 206,
+          "identities_rows_shadowed": 173
+        }
+      }
+    },
+    "2_timed_delete_propagation_le_5s_across_every_serving_table": {
+      "status": "FAIL",
+      "base_tables_and_v_posts_live_status": "PASS",
+      "derived_serving_tables_status": "FAIL",
+      "controlled_test_account_write_delete_probe_status": "UNPERFORMED",
+      "metrics": {
+        "static_delete_invariant_10_base_tables": {
+          "deletions_ledger_rows": 3782404,
+          "engagements_visible_deleted": 0,
+          "posts_visible_deleted": 0,
+          "follows_visible_deleted": 0,
+          "blocks_visible_deleted": 0,
+          "listitems_visible_deleted": 0,
+          "lists_visible_deleted": 0,
+          "starterpacks_visible_deleted": 0,
+          "feedgens_visible_deleted": 0,
+          "profiles_visible_deleted": 0,
+          "visibility_visible_deleted": 0
+        },
+        "timed_live_natural_delete_probe": {
+          "window_utc": "2026-10-22T13:09:47Z..2026-10-22T13:10:41Z",
+          "poll_interval_ms": 100,
+          "sample_count": 125,
+          "clock": "wire_indexed_at_to_first_hidden_in_v_posts_live",
+          "min_ms": 796,
+          "p50_ms": 1895,
+          "p95_ms": 2864,
+          "p99_ms": 3049,
+          "max_ms": 3065,
+          "visible_in_v_posts_live_at_detection": 0,
+          "visible_in_item_communities_final_at_detection": 15,
+          "visible_in_community_items_final_at_detection": 0
+        },
+        "derived_serving_tables_stale_deleted_exposure": {
+          "refresh_cadence_seconds": 900,
+          "item_communities_final_visible_deleted_posts": 10831,
+          "community_items_final_visible_deleted_posts": 0,
+          "community_directory_final_inactive_accounts": 15,
+          "api_in_memory_cache_has_live_delete_filter": false
+        }
+      }
+    },
+    "3_steady_state_14d_hot_window_disk_projection_le_30gb": {
+      "status": "PASS",
+      "metrics": {
+        "elapsed_hours": 72.05,
+        "current_catbird_db_active_bytes": 5074195721,
+        "current_catbird_db_active_gib": 4.7257,
+        "hot_tables_current_gib": 3.9788,
+        "state_tables_current_gib": 0.6754,
+        "serving_tables_current_gib": 0.0715,
+        "projected_14d_hot_window_gib": 18.81,
+        "projected_14d_hot_window_gb_decimal": 20.20,
+        "projected_14d_state_growth_gib": 3.20,
+        "projected_14d_total_catbird_db_gib": 22.00,
+        "projected_14d_total_catbird_db_gb_decimal": 23.62,
+        "ceiling_gb": 30.0,
+        "root_fs_total_bytes": 539792977920,
+        "root_fs_used_bytes": 329053433856,
+        "root_fs_avail_bytes": 188692852736,
+        "root_fs_free_fraction": 0.349565,
+        "projected_used_with_50gb_scratch_fraction": 0.684003
+      }
+    },
+    "4_production_service_p99_latencies_unchanged_vs_2026_10_19_baseline": {
+      "status": "PASS",
+      "metrics": {
+        "baseline_2026_10_19_1300Z": {
+          "mls_ds_3001_health": {"p50_ms": 1.0, "p95_ms": 1.5, "p99_ms": 2.4, "max_ms": 3.0},
+          "svc_3006_health": {"p50_ms": 0.8, "p95_ms": 1.0, "p99_ms": 1.3, "max_ms": 1.8},
+          "clickhouse_select1": {"p50_ms": 1.9, "p95_ms": 2.3, "p99_ms": 2.6, "max_ms": 3.2}
+        },
+        "probe_run1_2026_10_22_130357Z_during_verify_queries": {
+          "mls_ds_3001_health": {"n": 200, "p50_ms": 1.2, "p95_ms": 1.9, "p99_ms": 2.7, "max_ms": 4.4, "p99_ratio_vs_baseline": 1.125},
+          "svc_3006_health": {"n": 200, "p50_ms": 0.8, "p95_ms": 1.4, "p99_ms": 3.2, "max_ms": 11.7, "p99_ratio_vs_baseline": 2.4615},
+          "clickhouse_select1": {"n": 200, "p50_ms": 2.0, "p95_ms": 2.9, "p99_ms": 3.9, "max_ms": 7.6, "p99_ratio_vs_baseline": 1.5}
+        },
+        "probe_run2_2026_10_22_131122Z_steady_state": {
+          "mls_ds_3001_health": {"n": 200, "p50_ms": 1.1, "p95_ms": 1.8, "p99_ms": 3.2, "max_ms": 5.3, "p99_ratio_vs_baseline": 1.3333},
+          "svc_3006_health": {"n": 200, "p50_ms": 0.8, "p95_ms": 1.4, "p99_ms": 2.8, "max_ms": 8.0, "p99_ratio_vs_baseline": 2.1538},
+          "clickhouse_select1": {"n": 200, "p50_ms": 2.0, "p95_ms": 2.7, "p99_ms": 3.9, "max_ms": 5.9, "p99_ratio_vs_baseline": 1.5}
+        },
+        "production_services_active": {
+          "catbird-mls-server": "active",
+          "catbird-nest-prod": "active",
+          "catbird-pds": "active",
+          "catbird-firehose": "active",
+          "caddy": "active",
+          "postgresql": "active",
+          "swan": "active",
+          "catbird-feedgen": "active",
+          "catbird-feed-ingest": "active",
+          "catbird-intel-ingest": "active",
+          "catbird-intel-api": "active",
+          "clickhouse-server": "active"
+        },
+        "new_service_errors": 0
+      }
+    }
+  },
+  "gates": {
+    "continuity": {
+      "status": "measured",
+      "source_receipt": "netcup:catbird.ingest_health:2026-10-22T13:03:27Z",
+      "observed_start": "2026-10-19T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "coverage": 0.999846
+    },
+    "final_24h_continuity": {
+      "status": "measured",
+      "source_receipt": "netcup:catbird.ingest_health:2026-10-22T13:03:27Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "unexplained_gaps_over_60s": 0
+    },
+    "lag": {
+      "status": "measured",
+      "source_receipt": "netcup:catbird.ingest_health:2026-10-22T13:03:27Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "clock": "display_createdAt_not_witnessedAt",
+      "p99_ms": 2828,
+      "max_ms": 335683
+    },
+    "cursor_completeness": {
+      "status": "measured",
+      "source_receipt": "netcup:journalctl:catbird-intel-ingest:2026-10-22T13:05:37Z",
+      "observed_start": "2026-10-19T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "unresolved_notices": 0,
+      "undisposed_skips": 2
+    },
+    "delete_invariant": {
+      "status": "measured",
+      "source_receipt": "netcup:clickhouse:delete_invariant_and_serving_audit:2026-10-22T13:06:15Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "visible_deleted_records": 10831
+    },
+    "visibility_latency": {
+      "status": "measured",
+      "source_receipt": "netcup:clickhouse:live_natural_delete_probe_n125:2026-10-22T13:10:41Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "clock": "durable_ingest_commit_to_first_hidden",
+      "sample_count": 125,
+      "p99_ms": 3049,
+      "max_ms": 3065
+    },
+    "controlled_create_delete": {
+      "status": "unperformed"
+    },
+    "cross_archive": {
+      "status": "unperformed"
+    },
+    "resource_pressure": {
+      "status": "measured",
+      "source_receipt": "netcup:catbird.ingest_health+system.parts:2026-10-22T13:05:37Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "failed_writes": 0,
+      "parts_limit_errors": 0,
+      "flush_p99_ms": 226,
+      "partition_parts_limit_fraction": 0.146667
+    },
+    "merge_trend": {
+      "status": "measured",
+      "source_receipt": "netcup:system.merges+system.part_log:2026-10-22T13:05:37Z",
+      "observed_start": "2026-10-22T07:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "monotone_growth_windows_6h": 0
+    },
+    "disk": {
+      "status": "measured",
+      "source_receipt": "netcup:df_root+system.parts:2026-10-22T13:05:37Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "free_fraction": 0.349565,
+      "projected_used_with_scratch_fraction": 0.684003
+    },
+    "production_interference": {
+      "status": "measured",
+      "source_receipt": "netcup:deploy/prod-latency-probe.sh:2026-10-22T13:11:22Z",
+      "observed_start": "2026-10-21T13:00:00Z",
+      "observed_end": "2026-10-22T13:00:00Z",
+      "p99_baseline_ratio": 1.5,
+      "svc_3006_p99_baseline_ratio": 2.1538,
+      "mls_ds_3001_p99_baseline_ratio": 1.3333,
+      "new_service_errors": 0
+    }
+  }
+}

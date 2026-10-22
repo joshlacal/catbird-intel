@@ -1,0 +1,148 @@
+{
+  "schema": "catbird_clef_flash_30post_insufficient_probe_v1",
+  "generated_at": "2026-10-22T13:32:00+00:00",
+  "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O (mps, bfloat16)",
+  "source_corpus": "catbird-intel/eval/anthropic_teacher_pilot_v1/state.sqlite3",
+  "alt_text_verification_source": "netcup:catbird.posts FINAL (has_alt_text == 0 verified on all 10 image_only_no_alt posts)",
+  "models": {
+    "clef_flash": {
+      "repo_id": "Cloudflare/clef-flash",
+      "revision": "f0b7d3cd65296abfe459e6c228b618f5d8b26d2f",
+      "mean_ms_per_post": 4569.2,
+      "mps_allocated_mb": 18180.0
+    },
+    "political_debate": {
+      "repo_id": "mlburnham/Political_DEBATE_large_v1.0",
+      "revision": "1a3aff1ecb97ad93a6de598f7414b1707de7e7c3",
+      "mean_ms_per_post": 13.7,
+      "mps_allocated_mb": 1660.0
+    }
+  },
+  "before_vs_after_summary": {
+    "corpus_wide_eligible_train_scan_n57815": {
+      "single_token_original_link_posts_missed_by_url_regex_before": 250,
+      "single_token_original_link_posts_missed_by_url_regex_after": 0,
+      "hashtag_only_original_image_posts_missed_by_substance_analyzer_before": 103,
+      "hashtag_only_original_image_posts_missed_by_substance_analyzer_after": 0
+    },
+    "group_1_link_only_n10": {
+      "composition": "5 standard single-domain bare URLs + 5 multi-label subdomain / compound-TLD bare URLs (.substack.com, .cbc.ca, .telegraph.co.uk, .ibtimes.co.uk, .cidrap.umn.edu)",
+      "before_fix": {
+        "structural_is_link_or_mention_only_true": "5/10 (50.0%)",
+        "any_component_insufficient": "10/10 (100.0%)",
+        "all_5_components_insufficient": "10/10 (100.0%)",
+        "component_level_insufficient_cells": "50/50 (100.0%)",
+        "politicalness_noul_min_max": [0.972, 0.983],
+        "missing_context_kind_external_link": "10/10 (100.0%)",
+        "political_debate_false_positive_ge_050": "7/10 (70.0%)"
+      },
+      "after_fix": {
+        "structural_is_link_or_mention_only_true": "10/10 (100.0%)",
+        "any_component_insufficient": "10/10 (100.0%)",
+        "all_5_components_insufficient": "10/10 (100.0%)",
+        "component_level_insufficient_cells": "50/50 (100.0%)",
+        "politicalness_noul_min_max": [0.975, 0.984],
+        "missing_context_kind_external_link": "10/10 (100.0%)",
+        "political_debate_false_positive_ge_050": "7/10 (70.0%)"
+      }
+    },
+    "group_2_image_only_no_alt_n10": {
+      "composition": "6 emoji/date/credit-only no-alt image posts + 4 hashtag-only no-alt image posts (all 10 verified has_alt_text == 0 on netcup catbird.posts FINAL)",
+      "before_fix": {
+        "structural_is_media_without_substantive_prose_true": "6/10 (60.0%)",
+        "any_component_insufficient": "10/10 (100.0%)",
+        "all_5_components_insufficient": "8/10 (80.0%)",
+        "component_level_insufficient_cells": "48/50 (96.0%)",
+        "politicalness_noul_min_max": [0.682, 0.956],
+        "missing_context_kind_media_visual": "10/10 (100.0%)",
+        "political_debate_false_positive_ge_050": "2/10 (20.0%)"
+      },
+      "after_fix": {
+        "structural_is_media_without_substantive_prose_true": "10/10 (100.0%)",
+        "any_component_insufficient": "10/10 (100.0%)",
+        "all_5_components_insufficient": "10/10 (100.0%)",
+        "component_level_insufficient_cells": "50/50 (100.0%)",
+        "politicalness_noul_min_max": [0.890, 0.956],
+        "missing_context_kind_media_visual": "10/10 (100.0%)",
+        "political_debate_false_positive_ge_050": "2/10 (20.0%)"
+      }
+    },
+    "group_3_normal_prose_n10": {
+      "composition": "9 standard Latin substantive-prose posts (5 political, 4 non-political) + 1 Mathematical Italic Unicode substantive-prose post with image",
+      "before_fix": {
+        "structural_false_media_without_prose": "1/10 (10.0%)",
+        "any_component_insufficient": "0/10 (0.0%)",
+        "all_5_components_scorable": "10/10 (100.0%)",
+        "politicalness_noul_min_max": [0.022, 0.424],
+        "missing_context_kind_none": "8/10 (80.0%; 2 spurious non-none when context_dependent=False)"
+      },
+      "after_fix": {
+        "structural_false_media_without_prose": "0/10 (0.0%)",
+        "any_component_insufficient": "0/10 (0.0%)",
+        "all_5_components_scorable": "10/10 (100.0%)",
+        "politicalness_noul_min_max": [0.022, 0.111],
+        "missing_context_kind_none": "10/10 (100.0%)"
+      }
+    }
+  },
+  "cross_teacher_agreement": {
+    "probe_30_scorable_subset": {
+      "total_probe_posts_N": 30,
+      "excluded_insufficient_posts": 20,
+      "explicit_scorable_n": 10,
+      "binary_agreement_at_050_count": 9,
+      "binary_agreement_at_050_rate": 0.9,
+      "pearson_r": 0.838,
+      "spearman_rho": 0.878,
+      "single_disagreement_uri": "at://did:plc:5fl4f67ahwmcjxzuphkcshqz/app.bsky.feed.post/3mybbvrje5c2x",
+      "single_disagreement_note": "Clef-Flash continuous_0_1=0.655 (ord 2) vs Political_DEBATE=0.000 on lowercase 'maga' political post"
+    },
+    "probe_30_unmasked_if_insufficient_ignored": {
+      "explicit_n": 30,
+      "binary_agreement_at_050_count": 20,
+      "binary_agreement_at_050_rate": 0.6667,
+      "note": "Without Clef-Flash insufficiency gating, Political_DEBATE_large_v1.0 hallucinates politicalness >= 0.89 on 7/10 bare URLs and 2/10 captionless/hashtag-only image posts (9/20 = 45.0% false-positive rate on non-prose posts)."
+    },
+    "stratified_64_pilot_reference": {
+      "total_pilot_slice_N": 64,
+      "excluded_insufficient_posts": 10,
+      "explicit_scorable_n": 54,
+      "binary_agreement_at_050_count": 50,
+      "binary_agreement_at_050_rate": 0.9259,
+      "pearson_r": 0.8241,
+      "spearman_rho": 0.5726
+    }
+  },
+  "probe_30_posts": [
+    {"idx": 1, "group": "link_only", "uri": "at://did:plc:6mk7butyxuujdx7scjphegqx/app.bsky.feed.post/3myagzgybk22q", "author_did": "did:plc:6mk7butyxuujdx7scjphegqx", "text": "www.instagram.com/reel/DerQBPl...", "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.978, "after_pol_noul": 0.978, "clef_pol_cont": 0.025, "pd_pol_prob": 0.0, "after_missing_kind": "external_link"},
+    {"idx": 2, "group": "link_only", "uri": "at://did:plc:6qy77x4m7s5iiquvzlnyri4y/app.bsky.feed.post/3myayey3x622v", "author_did": "did:plc:6qy77x4m7s5iiquvzlnyri4y", "text": "youtu.be/WQMhYRkIzns?...", "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.975, "after_pol_noul": 0.975, "clef_pol_cont": 0.022, "pd_pol_prob": 0.477, "after_missing_kind": "external_link"},
+    {"idx": 3, "group": "link_only", "uri": "at://did:plc:7rnxcgucela7xsxw4fqkk5hx/app.bsky.feed.post/3mybaknlnbc2n", "author_did": "did:plc:7rnxcgucela7xsxw4fqkk5hx", "text": "www.youtube.com/watch?v=lG1T...", "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.977, "after_pol_noul": 0.977, "clef_pol_cont": 0.026, "pd_pol_prob": 0.016, "after_missing_kind": "external_link"},
+    {"idx": 4, "group": "link_only", "uri": "at://did:plc:b24wuqxqihteydjp6mtkfkdz/app.bsky.feed.post/3mybubdylik2w", "author_did": "did:plc:b24wuqxqihteydjp6mtkfkdz", "text": "www.threads.com/@alisonspenc...", "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.976, "after_pol_noul": 0.976, "clef_pol_cont": 0.04, "pd_pol_prob": 0.999, "after_missing_kind": "external_link"},
+    {"idx": 5, "group": "link_only", "uri": "at://did:plc:b6f74e5uwpyxmba7undo7uvm/app.bsky.feed.post/3myah5hkvj22j", "author_did": "did:plc:b6f74e5uwpyxmba7undo7uvm", "text": "ketv.com/article/kaye...", "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.982, "after_pol_noul": 0.982, "clef_pol_cont": 0.225, "pd_pol_prob": 0.999, "after_missing_kind": "external_link"},
+    {"idx": 6, "group": "link_only", "uri": "at://did:plc:poxxsebzfnj4kepqazbtwdld/app.bsky.feed.post/3myavoickhk2l", "author_did": "did:plc:poxxsebzfnj4kepqazbtwdld", "text": "deanblundell.substack.com/p/new-americ...", "before_words": 1, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.983, "after_pol_noul": 0.983, "clef_pol_cont": 0.251, "pd_pol_prob": 1.0, "after_missing_kind": "external_link"},
+    {"idx": 7, "group": "link_only", "uri": "at://did:plc:gn2v34uezrjbfdxnjxlg7khz/app.bsky.feed.post/3mybabi574s2u", "author_did": "did:plc:gn2v34uezrjbfdxnjxlg7khz", "text": "www.cbc.ca/news/canada/...", "before_words": 4, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.972, "after_pol_noul": 0.98, "clef_pol_cont": 0.385, "pd_pol_prob": 1.0, "after_missing_kind": "external_link"},
+    {"idx": 8, "group": "link_only", "uri": "at://did:plc:vcfh7ntd6rzdyaikfgrapxxa/app.bsky.feed.post/3mybm4itfe22v", "author_did": "did:plc:vcfh7ntd6rzdyaikfgrapxxa", "text": "www.telegraph.co.uk/news/2026/10...", "before_words": 2, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.983, "after_pol_noul": 0.984, "clef_pol_cont": 0.409, "pd_pol_prob": 1.0, "after_missing_kind": "external_link"},
+    {"idx": 9, "group": "link_only", "uri": "at://did:plc:mht2n7vmom6xuyelxgu7uxu2/app.bsky.feed.post/3myad4xwnyc2e", "author_did": "did:plc:mht2n7vmom6xuyelxgu7uxu2", "text": "www.ibtimes.co.uk/albania-prot...", "before_words": 3, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.981, "after_pol_noul": 0.983, "clef_pol_cont": 0.326, "pd_pol_prob": 1.0, "after_missing_kind": "external_link"},
+    {"idx": 10, "group": "link_only", "uri": "at://did:plc:viflamzasnec2prd3b7y2yg5/app.bsky.feed.post/3myb26iq3u22c", "author_did": "did:plc:viflamzasnec2prd3b7y2yg5", "text": "www.cidrap.umn.edu/antimicrobia...", "before_words": 1, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.976, "after_pol_noul": 0.976, "clef_pol_cont": 0.153, "pd_pol_prob": 0.0, "after_missing_kind": "external_link"},
+    {"idx": 11, "group": "image_only_no_alt", "uri": "at://did:plc:z263hkwg2geayqpnj7vm5zln/app.bsky.feed.post/3mybdgdg2l22e", "author_did": "did:plc:z263hkwg2geayqpnj7vm5zln", "text": "10/19/26\n🎥JaysWorld411", "has_alt_text": 0, "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.956, "after_pol_noul": 0.956, "clef_pol_cont": 0.025, "pd_pol_prob": 0.003, "after_missing_kind": "media_visual"},
+    {"idx": 12, "group": "image_only_no_alt", "uri": "at://did:plc:2ee2lpay2iccdwq5e4wci6gr/app.bsky.feed.post/3myavrgv6ys2a", "author_did": "did:plc:2ee2lpay2iccdwq5e4wci6gr", "text": "🐈‍⬛️🎃🐈‍⬛️", "has_alt_text": 0, "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.89, "after_pol_noul": 0.89, "clef_pol_cont": 0.008, "pd_pol_prob": 0.0, "after_missing_kind": "media_visual"},
+    {"idx": 13, "group": "image_only_no_alt", "uri": "at://did:plc:2vkhnnvcmczmln57lzaoggf7/app.bsky.feed.post/3mybhgwimek2j", "author_did": "did:plc:2vkhnnvcmczmln57lzaoggf7", "text": "😋🎂🍒🥧💦", "has_alt_text": 0, "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.899, "after_pol_noul": 0.899, "clef_pol_cont": 0.008, "pd_pol_prob": 0.0, "after_missing_kind": "media_visual"},
+    {"idx": 14, "group": "image_only_no_alt", "uri": "at://did:plc:2zmlpiynrrzsqsq2m3b4waxe/app.bsky.feed.post/3myafkrb6as2d", "author_did": "did:plc:2zmlpiynrrzsqsq2m3b4waxe", "text": "👏🏻👏🏻👏🏻", "has_alt_text": 0, "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.898, "after_pol_noul": 0.898, "clef_pol_cont": 0.013, "pd_pol_prob": 0.983, "after_missing_kind": "media_visual"},
+    {"idx": 15, "group": "image_only_no_alt", "uri": "at://did:plc:5f3zgnzr67wlbidak2pfxyw2/app.bsky.feed.post/3myasqestuc27", "author_did": "did:plc:5f3zgnzr67wlbidak2pfxyw2", "text": "✔️✔️✔️🔥", "has_alt_text": 0, "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.891, "after_pol_noul": 0.891, "clef_pol_cont": 0.014, "pd_pol_prob": 0.167, "after_missing_kind": "media_visual"},
+    {"idx": 16, "group": "image_only_no_alt", "uri": "at://did:plc:66s566by3kttcyj5nz755fcy/app.bsky.feed.post/3myasjvcnjs2u", "author_did": "did:plc:66s566by3kttcyj5nz755fcy", "text": "👹👹👹👹😡", "has_alt_text": 0, "before_words": 0, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.908, "after_pol_noul": 0.908, "clef_pol_cont": 0.013, "pd_pol_prob": 0.027, "after_missing_kind": "media_visual"},
+    {"idx": 17, "group": "image_only_no_alt", "uri": "at://did:plc:43thj5rj2bdnt35iseg4yrvl/app.bsky.feed.post/3myade36dds2q", "author_did": "did:plc:43thj5rj2bdnt35iseg4yrvl", "text": "#streetphotography #WashingtonDC", "has_alt_text": 0, "before_words": 2, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.828, "after_pol_noul": 0.939, "clef_pol_cont": 0.03, "pd_pol_prob": 1.0, "after_missing_kind": "media_visual"},
+    {"idx": 18, "group": "image_only_no_alt", "uri": "at://did:plc:6f3g47kcg3rblbzhfkfoocbo/app.bsky.feed.post/3myadwtc4tc27", "author_did": "did:plc:6f3g47kcg3rblbzhfkfoocbo", "text": "#Sky #Clouds #Photography", "has_alt_text": 0, "before_words": 3, "after_words": 0, "before_insuff_comps": 4, "after_insuff_comps": 5, "before_pol_noul": 0.756, "after_pol_noul": 0.902, "clef_pol_cont": 0.008, "pd_pol_prob": 0.0, "after_missing_kind": "media_visual"},
+    {"idx": 19, "group": "image_only_no_alt", "uri": "at://did:plc:6bkuwwwrc4ndfrijo5wxlni7/app.bsky.feed.post/3myb4wbdcos25", "author_did": "did:plc:6bkuwwwrc4ndfrijo5wxlni7", "text": "#YouCanSeeEverything", "has_alt_text": 0, "before_words": 1, "after_words": 0, "before_insuff_comps": 4, "after_insuff_comps": 5, "before_pol_noul": 0.682, "after_pol_noul": 0.902, "clef_pol_cont": 0.059, "pd_pol_prob": 0.015, "after_missing_kind": "media_visual"},
+    {"idx": 20, "group": "image_only_no_alt", "uri": "at://did:plc:6rq35rsjg3cs5p6zlm3cocjn/app.bsky.feed.post/3myadxkcuys2k", "author_did": "did:plc:6rq35rsjg3cs5p6zlm3cocjn", "text": "#minimalMonday\n#aofoto", "has_alt_text": 0, "before_words": 2, "after_words": 0, "before_insuff_comps": 5, "after_insuff_comps": 5, "before_pol_noul": 0.761, "after_pol_noul": 0.896, "clef_pol_cont": 0.01, "pd_pol_prob": 0.0, "after_missing_kind": "media_visual"},
+    {"idx": 21, "group": "normal_prose", "uri": "at://did:plc:55f4w76s4zpkdkrnraxsw4rj/app.bsky.feed.post/3mybzwc7uu22h", "author_did": "did:plc:55f4w76s4zpkdkrnraxsw4rj", "text": "The optimal outcome of all of these JP/KR actions...", "before_words": 26, "after_words": 26, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.056, "after_pol_noul": 0.056, "clef_pol_cont": 0.731, "pd_pol_prob": 1.0, "before_missing_kind": "multi_post_history", "after_missing_kind": "none"},
+    {"idx": 22, "group": "normal_prose", "uri": "at://did:plc:5fl4f67ahwmcjxzuphkcshqz/app.bsky.feed.post/3mybbvrje5c2x", "author_did": "did:plc:5fl4f67ahwmcjxzuphkcshqz", "text": "if you were maga you don’t get a place in the...", "before_words": 34, "after_words": 34, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.099, "after_pol_noul": 0.099, "clef_pol_cont": 0.655, "pd_pol_prob": 0.0, "before_missing_kind": "reply_parent", "after_missing_kind": "none"},
+    {"idx": 23, "group": "normal_prose", "uri": "at://did:plc:6agqw5elnc6wrsd3y4feqpik/app.bsky.feed.post/3myauklyqas2n", "author_did": "did:plc:6agqw5elnc6wrsd3y4feqpik", "text": "The internet for Ukraine is still slowed down...", "before_words": 42, "after_words": 42, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.05, "after_pol_noul": 0.05, "clef_pol_cont": 0.837, "pd_pol_prob": 1.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 24, "group": "normal_prose", "uri": "at://did:plc:crcetsm2zlxmiupmc44h3do7/app.bsky.feed.post/3myahpsml4c2n", "author_did": "did:plc:crcetsm2zlxmiupmc44h3do7", "text": "Man, stop showing me that dumbass in the white house...", "before_words": 20, "after_words": 20, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.111, "after_pol_noul": 0.111, "clef_pol_cont": 0.746, "pd_pol_prob": 1.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 25, "group": "normal_prose", "uri": "at://did:plc:czon4vg3i5sgdwifdxtamztb/app.bsky.feed.post/3myb2nkrvtc2o", "author_did": "did:plc:czon4vg3i5sgdwifdxtamztb", "text": "Twenty years ago, I was cheering on Republicans...", "before_words": 45, "after_words": 45, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.022, "after_pol_noul": 0.022, "clef_pol_cont": 0.803, "pd_pol_prob": 1.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 26, "group": "normal_prose", "uri": "at://did:plc:26gfiesadzjgf44w2dv5yeo7/app.bsky.feed.post/3myaciahlhc26", "author_did": "did:plc:26gfiesadzjgf44w2dv5yeo7", "text": "Latin sentence of the day: ita fit ut is assit...", "before_words": 38, "after_words": 38, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.048, "after_pol_noul": 0.048, "clef_pol_cont": 0.018, "pd_pol_prob": 0.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 27, "group": "normal_prose", "uri": "at://did:plc:3g5eekutje7fd4brqww4lchf/app.bsky.feed.post/3mya7nd7xv22b", "author_did": "did:plc:3g5eekutje7fd4brqww4lchf", "text": "Ukraine has to get their own system ASAP...", "before_words": 33, "after_words": 33, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.059, "after_pol_noul": 0.059, "clef_pol_cont": 0.842, "pd_pol_prob": 1.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 28, "group": "normal_prose", "uri": "at://did:plc:6ljgjxzdd7a7qi3bkemejmmf/app.bsky.feed.post/3myabtlzx3k25", "author_did": "did:plc:6ljgjxzdd7a7qi3bkemejmmf", "text": "Only 21 plat left before I can finally afford...", "before_words": 18, "after_words": 18, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.079, "after_pol_noul": 0.079, "clef_pol_cont": 0.011, "pd_pol_prob": 0.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 29, "group": "normal_prose", "uri": "at://did:plc:d2mfbwwpd7haxkd5xdq6hcih/app.bsky.feed.post/3myaaulssxc2q", "author_did": "did:plc:d2mfbwwpd7haxkd5xdq6hcih", "text": "even more is that some government officials...", "before_words": 29, "after_words": 29, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.043, "after_pol_noul": 0.043, "clef_pol_cont": 0.687, "pd_pol_prob": 1.0, "before_missing_kind": "none", "after_missing_kind": "none"},
+    {"idx": 30, "group": "normal_prose", "uri": "at://did:plc:ubyfko4oyqhvydzasnnktiou/app.bsky.feed.post/3myapd3czc223", "author_did": "did:plc:ubyfko4oyqhvydzasnnktiou", "text": "𝐴𝑟𝑒 𝑤𝑒 𝑝𝑟𝑒𝑜𝑟𝑑𝑎𝑖𝑛𝑒𝑑 𝑡𝑜 𝑏𝑒 𝑝𝑟𝑜𝑑𝑢𝑐𝑡𝑠 𝑜𝑓 𝑜𝑢𝑟 𝑛𝑎𝑡𝑢𝑟𝑒?...", "before_words": 0, "after_words": 23, "before_insuff_comps": 0, "after_insuff_comps": 0, "before_pol_noul": 0.424, "after_pol_noul": 0.105, "clef_pol_cont": 0.07, "pd_pol_prob": 0.0, "before_missing_kind": "none", "after_missing_kind": "none"}
+  ]
+}

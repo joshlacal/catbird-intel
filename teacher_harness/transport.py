@@ -652,13 +652,17 @@ SYSTEMONE_INSUFFICIENT_NOUL_CRITERIA: dict[str, str] = {
 }
 
 _SYSTEMONE_URL_RE = re.compile(
-    r"(?:https?:/+\S+|(?:www\.|[a-zA-Z0-9-]+\.(?:com|org|net|io|gov|edu|me|co|be|ly|social|app|tv|news|blog|la|gg|xyz|info|uk|de|fr|jp|br))(?:/\S*)?)",
+    r"(?:https?:/+\S+|www\.\S+|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,16}[/?#]\S*|(?:[a-zA-Z0-9-]+\.)+(?:com|org|net|io|gov|edu|me|co|be|ly|social|app|tv|news|blog|la|gg|xyz|info|uk|ca|au|us|eu|de|fr|jp|br|mp|is|ph|now|bot|link|store|site|substack|bsky)(?:\.[a-zA-Z]{2,3})?(?:[/?#]\S*)?)",
     re.IGNORECASE,
 )
 _SYSTEMONE_HANDLE_RE = re.compile(r"@[a-zA-Z0-9._-]+")
+_SYSTEMONE_HASHTAG_RE = re.compile(r"#[^\s#]+")
 _SYSTEMONE_CREDIT_RE = re.compile(r"[🎥📸📹📷🎬]\s*\S+")
 _SYSTEMONE_DATE_RE = re.compile(r"\b\d{1,4}[/-]\d{1,2}(?:[/-]\d{1,4})?\b")
-_SYSTEMONE_WORD_RE = re.compile(r"[a-zA-Z\u00C0-\u024F]{2,}")
+_SYSTEMONE_WORD_RE = re.compile(
+    r"[^\W\d_]{2,}|[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]",
+    re.UNICODE,
+)
 
 
 def _analyze_systemone_text_substance(
@@ -666,12 +670,15 @@ def _analyze_systemone_text_substance(
     context_texts: list[str],
     structural_signals: dict[str, Any],
 ) -> dict[str, Any]:
-    """Compute non-leaking structural diagnostics for bare links, @mentions, and unattached media."""
-    combined = " ".join([text, *context_texts])
+    """Compute non-leaking structural diagnostics for bare links, @mentions, hashtags, and unattached media."""
+    import unicodedata
+
+    combined = unicodedata.normalize("NFKC", " ".join([text, *context_texts]))
     has_url_in_text = bool(_SYSTEMONE_URL_RE.search(combined))
     has_handle_in_text = bool(_SYSTEMONE_HANDLE_RE.search(combined))
     cleaned = _SYSTEMONE_URL_RE.sub(" ", combined)
     cleaned = _SYSTEMONE_HANDLE_RE.sub(" ", cleaned)
+    cleaned = _SYSTEMONE_HASHTAG_RE.sub(" ", cleaned)
     cleaned = _SYSTEMONE_CREDIT_RE.sub(" ", cleaned)
     cleaned = _SYSTEMONE_DATE_RE.sub(" ", cleaned)
     words = _SYSTEMONE_WORD_RE.findall(cleaned)
@@ -852,7 +859,9 @@ def parse_systemone_clef_response(
     context_dep_noul = float(context_dep_ans.get("noul", 0.0))
     context_dependent = context_dep_noul >= insufficient_threshold or any_insufficient
     missing_context_kind = str(missing_kind_ans.get("choice", "none"))
-    if any_insufficient and missing_context_kind == "none":
+    if not context_dependent:
+        missing_context_kind = "none"
+    elif any_insufficient and missing_context_kind == "none":
         missing_context_kind = "reply_parent"
 
     out: dict[str, Any] = {

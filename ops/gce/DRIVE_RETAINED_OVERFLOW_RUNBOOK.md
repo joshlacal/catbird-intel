@@ -189,6 +189,29 @@ Any `active`, `verified`, or `index_pending` pair, `file_upload_inflight`, or
 uncertain index create requires manual reconciliation; the serial runner will
 not auto-recover it.
 
+## Draining Open Pairs Before Any Service Stop or Restart (1 or 2 Workers)
+
+Because `gcs_drive_retained_continuous.py` and `gcs_drive_retained_runner.py` arm `PR_SET_PDEATHSIG = SIGKILL` on child processes, running `systemctl stop` while any pair is open kills the in-flight worker(s) and leaves open run(s) in `authority.sqlite`. With `--max-concurrent-pairs 2`, there is rarely a moment when zero pairs are open unless new wave admissions are explicitly held first.
+
+**Every service stop, unit change, code deploy, or VM checkpoint MUST drain all open pairs to `0` first:**
+
+1. **Hold future wave admissions in the active cycle:**
+   Inspect the latest `batch_running` entry in `/data/gcs-drive-retained-continuous/continuous_status.jsonl` to find the active `/data/gcs-drive-retained-continuous/cycle-<id>/evidence/` directory, and query `authority.sqlite` for currently nonterminal `run_id`s (`SELECT id FROM retained_run WHERE status != 'closed'`). Move `evidence/<run_id>.json` for all **not-yet-opened** candidate `run_id`s in that cycle to `/opt/catbird-drive-retained-continuous-20261021/_trash/drain-<UTC>/`.
+   - Do **not** touch the `evidence/<run_id>.json` file(s) of the currently open pair(s).
+   - The active wave (1 or 2 concurrent workers) finishes uploading, verifies SHA-256/MD5 readback, commits its GCS mapping, transitions to `status='closed'`, and releases its local stage via `release_closed_pair_stage`.
+   - When `gcs_drive_retained_runner.py` advances to the next wave in the batch, it sees the next candidate's `evidence/<run_id>.json` is absent, sets `state="awaiting_fresh_evidence"`, and exits the batch cleanly without admitting another pair.
+2. **Stop the service during the inter-batch window with 0 open pairs:**
+   Wait until `runner_status.jsonl` records `state="awaiting_fresh_evidence"` (or `"completed"`) and verify on `authority.sqlite` that:
+   - `SELECT COUNT(*) FROM retained_run WHERE status != 'closed'` is `0`, and
+   - effective unresolved attempts are `0`.
+   Immediately run:
+   ```sh
+   sudo systemctl stop catbird-drive-retained-continuous-20261021.service
+   ```
+   (During the ~15–20s read-only `gcs_drive_retained_queue.py` scan at the start of the next cycle, no pair is open in `authority.sqlite` and no Drive request is in flight.)
+3. **Re-verify after `systemctl stop`:**
+   Confirm `ActiveState=inactive`, `SELECT COUNT(*) FROM retained_run WHERE status != 'closed'` is `0`, and effective unresolved attempts are `0` before editing unit files, deploying code, or stopping `js`.
+
 ## Collector `meta.pebble` Checkpoint Procedure (Mind the Supervisor Poweroff)
 
 `catbird-gcs-buffer.service` runs `gcs_buffer_supervisor.py` with
@@ -199,10 +222,8 @@ supervisor to detect container exit and **immediately power off the GCE VM**
 When taking a cold `meta.pebble` checkpoint (such as Checkpoint #2 after
 failed-repo retries finish in `steady_state`), follow this exact sequence:
 
-1. **Quiesce the Drive writer on a closed-pair boundary:**
-   Wait until the current pair finishes and closes (`status='closed'` in
-   `authority.sqlite` and `nonterminal_run_id` is `None`), then stop the writer
-   service cleanly before touching `js`:
+1. **Drain all open pairs (1 or 2 workers) and stop the Drive writer on a zero-open-pair boundary:**
+   Follow the **Draining Open Pairs Before Any Service Stop or Restart** procedure above so the active wave (both pairs under `--max-concurrent-pairs 2`) finishes and closes (`SELECT COUNT(*) FROM retained_run WHERE status != 'closed'` is `0` in `authority.sqlite`), then stop the writer service cleanly before touching `js`:
    ```sh
    sudo systemctl stop catbird-drive-retained-continuous-20261021.service
    ```

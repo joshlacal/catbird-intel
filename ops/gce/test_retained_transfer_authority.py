@@ -708,9 +708,9 @@ class RetainedAuthorityTests(unittest.TestCase):
     def test_boot_change_or_wall_clock_regression_blocks_new_upload_run(self):
         authority, manifest, digest = self.open_run(1)
         self.reserve(authority, manifest, digest)
-        self.finish_index(authority, manifest, digest)
         with self.assertRaises(AuthorityBlocked):
             self.open_run(2, boot_id="different-boot")
+        self.finish_index(authority, manifest, digest)
         self.clock.advance(-1)
         with self.assertRaises(AuthorityBlocked):
             self.open_run(2)
@@ -1162,6 +1162,115 @@ class RetainedAuthorityTests(unittest.TestCase):
             clock=self.clock)
         self.assertIsNone(inspected["nonterminal_run_id"])
         self.assertEqual(inspected["unresolved_attempts"], 0)
+
+    def test_clean_reboot_opens_next_pair_while_open_pair_requires_adoption(self):
+        self.monotonic.value = 50000.0
+        run1, m1, d1 = self.open_run(1, boot_id="boot-1")
+        self.reserve(run1, m1, d1)
+        p1, _ = self.request(run1, m1["payload"]["bytes"], "media_chunk")
+        run1.mark_dispatch(p1)
+        run1.finish_request(p1, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r1, _ = self.request(run1, m1["receipt"]["bytes"], "media_chunk")
+        run1.mark_dispatch(r1)
+        run1.finish_request(r1, 200)
+        self.finish_index(run1, m1, d1)
+
+        with sqlite3.connect(self.db_path) as db:
+            acct_before = db.execute(
+                "SELECT boot_id, last_dispatch_wall, last_dispatch_monotonic "
+                "FROM retained_account WHERE id=1"
+            ).fetchone()
+        self.assertEqual(acct_before[0], "boot-1")
+        self.assertIsNotNone(acct_before[1])
+        self.assertIsNotNone(acct_before[2])
+
+        # Clean reboot with zero open pairs and zero unresolved attempts:
+        # monotonic clock resets lower than prior boot, next pair opens cleanly.
+        self.clock.advance(30.0)
+        self.monotonic.value = 5.0
+        run2, m2, d2 = self.open_run(2, boot_id="boot-2")
+        with sqlite3.connect(self.db_path) as db:
+            acct_after_clean_boot = db.execute(
+                "SELECT boot_id, last_dispatch_wall, last_dispatch_monotonic "
+                "FROM retained_account WHERE id=1"
+            ).fetchone()
+        self.assertEqual(acct_after_clean_boot[0], "boot-2")
+        self.assertIsNone(acct_after_clean_boot[1])
+        self.assertIsNone(acct_after_clean_boot[2])
+
+        self.reserve(run2, m2, d2)
+        p2, _ = self.request(run2, m2["payload"]["bytes"], "media_chunk")
+        self.assertEqual(run2.seconds_until_dispatch(p2), 0.0)
+        run2.mark_dispatch(p2)
+        run2.finish_request(p2, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r2, _ = self.request(run2, m2["receipt"]["bytes"], "media_chunk")
+        run2.mark_dispatch(r2)
+        run2.finish_request(r2, 200)
+        self.finish_index(run2, m2, d2)
+
+        # Reboot while pair 3 is open: normal open_run for pair 3 or pair 4 is refused
+        # and adoption (resume_open=True) is still required.
+        dead_pid = 999998
+        m3 = self.manifest(3)
+        raw3, d3 = self.raw_and_digest(m3)
+        ev3 = self.evidence(m3, d3)
+        with patch.object(retained_module.os, "getpid", return_value=dead_pid):
+            run3 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m3["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw3, evidence=ev3,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="boot-2",
+            )
+            self.addCleanup(run3.close)
+            self.reserve(run3, m3, d3)
+            run3.close()
+
+        self.clock.advance(30.0)
+        self.monotonic.value = 2.0
+        with self.assertRaisesRegex(AuthorityBlocked, "boot changed; reconciliation required"):
+            self.open_run(4, boot_id="boot-3")
+        with self.assertRaisesRegex(AuthorityBlocked, "boot changed; reconciliation required"):
+            self.open_run(3, manifest=m3, boot_id="boot-3")
+
+        with patch.object(retained_module.os, "kill", side_effect=ProcessLookupError):
+            ev3_resumed = self.evidence(m3, d3, observed_at=self.clock())
+            adopted3 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m3["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw3, evidence=ev3_resumed,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="boot-3",
+                resume_open=True,
+            )
+            self.addCleanup(adopted3.close)
+        p3, _ = self.request(adopted3, m3["payload"]["bytes"], "media_chunk")
+        self.assertEqual(adopted3.seconds_until_dispatch(p3), 0.0)
+        adopted3.mark_dispatch(p3)
+        adopted3.finish_request(p3, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r3, _ = self.request(adopted3, m3["receipt"]["bytes"], "media_chunk")
+        adopted3.mark_dispatch(r3)
+        adopted3.finish_request(r3, 200)
+        self.finish_index(adopted3, m3, d3)
+
+        # Even if all runs are marked closed, any unresolved attempt still refuses
+        # a boot change on normal open_run.
+        with sqlite3.connect(self.db_path) as db:
+            db.execute(
+                "INSERT INTO retained_attempt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("unresolved-on-closed", m3["release_id"], self.clock(),
+                 self.clock(), self.clock() + 20, 20.0, None, None, 0,
+                 "resumable_status", "PUT", "resumable_status", "a" * 64,
+                 "b" * 64, "unresolved", 500),
+            )
+        self.clock.advance(30.0)
+        self.monotonic.value = 1.0
+        with self.assertRaisesRegex(AuthorityBlocked, "boot changed; reconciliation required"):
+            self.open_run(4, boot_id="boot-4")
 
 
 if __name__ == "__main__":

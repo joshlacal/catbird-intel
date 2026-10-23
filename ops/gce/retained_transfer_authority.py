@@ -715,15 +715,25 @@ class RetainedObservationAuthority:
                         resume_open=resume_open)
         try:
             with authority._transaction():
-                account = authority._account(require_process=False)
+                account = authority._account(
+                    require_process=False, allow_boot_change=True
+                )
                 if now < account["last_clock"]:
                     raise AuthorityBlocked("Retained ledger clock regressed")
                 if (account["boot_id"] is not None and account["boot_id"] != boot and
                     not (recovery_only or resume_open)):
-                    raise AuthorityBlocked("Retained ledger boot changed; reconciliation required")
+                    has_open_run = (
+                        db.execute(
+                            "SELECT 1 FROM retained_run WHERE status != 'closed' LIMIT 1"
+                        ).fetchone() is not None
+                    )
+                    if has_open_run or authority._effective_unresolved_count() > 0:
+                        raise AuthorityBlocked(
+                            "Retained ledger boot changed; reconciliation required"
+                        )
                 if max_concurrent_runs > 1:
                     authority._ensure_run_claim_table()
-                authority._validate_all()
+                authority._validate_all(allow_boot_change=True)
                 if db.execute("SELECT COUNT(*) FROM retained_import").fetchone()[0] != 1:
                     raise AuthorityBlocked("Reviewed legacy diagnostic charge is not imported")
                 imported = db.execute("SELECT * FROM retained_import").fetchone()
@@ -941,17 +951,16 @@ class RetainedObservationAuthority:
                     elif authority._has_run_claim_table():
                         db.execute("DELETE FROM retained_run_claim WHERE run_id=?", (run_id,))
                 boot_changed = (
-                    (recovery_only or resume_open) and
                     account["boot_id"] is not None and
                     account["boot_id"] != boot
                 )
                 db.execute(
-                    "UPDATE retained_account SET boot_id=CASE WHEN ? THEN ? ELSE COALESCE(boot_id,?) END,"
+                    "UPDATE retained_account SET boot_id=?,"
                     "process_host=?,process_pid=?,process_nonce=?,last_clock=?,"
                     "last_dispatch_wall=CASE WHEN ? THEN NULL ELSE last_dispatch_wall END,"
                     "last_dispatch_monotonic=CASE WHEN ? THEN NULL ELSE last_dispatch_monotonic END "
                     "WHERE id=1",
-                    (1 if (recovery_only or resume_open) else 0, boot, boot,
+                    (boot,
                      authority.process_host, authority.process_pid,
                      authority.process_nonce, now,
                      1 if boot_changed else 0,
@@ -976,7 +985,9 @@ class RetainedObservationAuthority:
                 raise AuthorityBlocked("Retained authority ledger unavailable or corrupt") from error
             raise
 
-    def _account(self, *, require_process: bool = True) -> sqlite3.Row:
+    def _account(
+        self, *, require_process: bool = True, allow_boot_change: bool = False
+    ) -> sqlite3.Row:
         if os.getpid() != self.process_pid:
             raise AuthorityBlocked("Retained authority handle cannot cross a process fork")
         account = self.db.execute("SELECT * FROM retained_account WHERE id=1").fetchone()
@@ -997,7 +1008,7 @@ class RetainedObservationAuthority:
             ) != (self.process_host, self.process_pid, self.process_nonce):
                 raise AuthorityBlocked("Retained writer process claim changed")
         if (account["boot_id"] is not None and account["boot_id"] != self.boot_id and
-            not (self.recovery_only or self.resume_open)):
+            not (allow_boot_change or self.recovery_only or self.resume_open)):
             raise AuthorityBlocked("Retained boot identity changed")
         if (account["next_slot"] < 0 or account["last_clock"] < 0 or
             account["cooldown_until"] < 0):
@@ -1386,9 +1397,11 @@ class RetainedObservationAuthority:
                 if proof is None or run["status"] == "active":
                     raise AuthorityBlocked("Closed receipt recovery lacks accepted proof")
 
-    def _validate_all(self) -> None:
+    def _validate_all(self, *, allow_boot_change: bool = False) -> None:
         """Semantic check beyond SQLite integrity before every admission."""
-        account = self._account(require_process=False)
+        account = self._account(
+            require_process=False, allow_boot_change=allow_boot_change
+        )
         imported = self.db.execute("SELECT * FROM retained_import").fetchall()
         if len(imported) > 1:
             raise AuthorityBlocked("Multiple legacy diagnostic imports")

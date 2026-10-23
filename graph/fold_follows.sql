@@ -76,6 +76,8 @@ DROP TABLE IF EXISTS g.accounts;
 DROP TABLE IF EXISTS g.host_coverage;
 DROP TABLE IF EXISTS g.coverage;
 DROP TABLE IF EXISTS g.follower_uids;
+DROP TABLE IF EXISTS g.uid_lookup;
+DROP TABLE IF EXISTS g.pid_lookup;
 
 -- Collector state, one row per DID. snapshot_rev is set only for completed downloads.
 CREATE TABLE g.snapshots
@@ -206,13 +208,28 @@ FROM
 SELECT pid, did, followers FROM g.producers ORDER BY pid
 INTO OUTFILE '__OUT__/producers.tsv' TRUNCATE FORMAT TSV;
 
--- Users are numbered in follower order; edges stream out already grouped by uid.
-SELECT toUInt32(dense_rank() OVER (ORDER BY f.follower) - 1) AS uid, p.pid AS pid
-FROM g.follows AS f
-INNER JOIN g.producers AS p ON f.producer = p.did
-WHERE f.follower IN (SELECT follower FROM g.followers_ok)
-ORDER BY uid, pid
-INTO OUTFILE '__OUT__/edges.bin' TRUNCATE FORMAT RowBinary;
+-- Followers with at least one kept producer, numbered in follower order.
+CREATE TABLE g.follower_uids (uid UInt32, did String) ENGINE = MergeTree ORDER BY uid AS
+SELECT toUInt32(row_number() OVER (ORDER BY follower) - 1) AS uid, follower AS did
+FROM
+(
+    SELECT follower FROM g.follows
+    WHERE follower IN (SELECT follower FROM g.followers_ok)
+      AND producer IN (SELECT did FROM g.producers)
+    GROUP BY follower
+);
+CREATE TABLE g.uid_lookup ENGINE = Join(ANY, LEFT, did) AS SELECT did, uid FROM g.follower_uids;
+CREATE TABLE g.pid_lookup ENGINE = Join(ANY, LEFT, did) AS SELECT did, pid FROM g.producers;
+
+-- g.follows is stored in follower order and uids follow that order, so edges
+-- stream out grouped by uid without a global sort.
+SELECT joinGet('g.uid_lookup', 'uid', follower) AS uid, joinGet('g.pid_lookup', 'pid', producer) AS pid
+FROM g.follows
+WHERE follower IN (SELECT did FROM g.follower_uids)
+  AND producer IN (SELECT did FROM g.producers)
+ORDER BY follower
+INTO OUTFILE '__OUT__/edges.bin' TRUNCATE FORMAT RowBinary
+SETTINGS optimize_read_in_order = 1;
 
 -- Coverage universe: the collector roster plus any DID with follow records.
 -- snapshot: a completed download or sync reset bounds the DID's state.
@@ -235,11 +252,11 @@ FROM
 (
     SELECT did FROM g.snapshots
     UNION DISTINCT
-    SELECT DISTINCT did FROM g.follow_events
+    SELECT did FROM g.follow_events GROUP BY did
 ) AS u
 LEFT JOIN g.snapshots AS s ON u.did = s.did
 LEFT JOIN g.floors AS f ON u.did = f.did
-LEFT JOIN (SELECT DISTINCT did FROM g.follow_events) AS ev ON u.did = ev.did;
+LEFT JOIN (SELECT did FROM g.follow_events GROUP BY did) AS ev ON u.did = ev.did;
 
 -- Per-host coverage over roster accounts with a known host. events_only counts
 -- 0.85 of a snapshot; the inverse weight is capped at 3x so one badly covered
@@ -294,16 +311,6 @@ SELECT * FROM g.host_coverage ORDER BY total_accounts DESC, host ASC
 INTO OUTFILE '__OUT__/host_coverage.tsv' TRUNCATE FORMAT TSVWithNames;
 
 -- Dense follower coverage weights aligned 1:1 with `uid` in edges.bin.
-CREATE TABLE g.follower_uids (uid UInt32, did String) ENGINE = MergeTree ORDER BY uid AS
-SELECT toUInt32(row_number() OVER (ORDER BY follower) - 1) AS uid, follower AS did
-FROM
-(
-    SELECT DISTINCT f.follower AS follower
-    FROM g.follows AS f
-    INNER JOIN g.producers AS p ON f.producer = p.did
-    WHERE f.follower IN (SELECT follower FROM g.followers_ok)
-);
-
 SELECT u.uid AS uid, u.did AS did,
        toUInt8(c.coverage != 'snapshot') AS is_stale,
        if(c.inverse_coverage_weight > 0, c.inverse_coverage_weight, 1.0) AS weight

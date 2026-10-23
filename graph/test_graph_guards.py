@@ -116,6 +116,7 @@ class GraphGuards(unittest.TestCase):
             pid, did, _ = line.split("\t")
             producers[int(pid)] = did
         edges = np.fromfile(out / "edges.bin", dtype=[("uid", "<u4"), ("pid", "<u4")])
+        self.assertTrue((np.diff(edges["uid"].astype(np.int64)) >= 0).all(), "simgraph needs edges sorted by uid")
         weights = [line.split("\t") for line in (out / "follower_weights.tsv").read_text().splitlines()]
         uid_did = {int(w[0]): w[1] for w in weights}
         got = {}

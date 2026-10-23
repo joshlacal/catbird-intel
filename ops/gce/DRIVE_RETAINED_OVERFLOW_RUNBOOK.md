@@ -206,32 +206,23 @@ failed-repo retries finish in `steady_state`), follow this exact sequence:
    ```sh
    sudo systemctl stop catbird-drive-retained-continuous-20261021.service
    ```
-2. **Stop the collector container (`js`) — expect VM poweroff:**
+2. **Disable Docker auto-restart on `js` and stop the collector container — expect VM poweroff:**
    ```sh
+   sudo docker update --restart=no js
    sudo docker stop -t 60 js
    ```
    Wait for `jetstream-selfhost-test` to transition to `TERMINATED` (`gcloud compute instances describe jetstream-selfhost-test --zone=us-west1-b --format='value(status)'`).
 3. **Start the VM and copy `meta.pebble` before the collector restarts:**
-   Temporarily disable `catbird-gcs-buffer.service` immediately upon SSH connect
-   (or stop `js` before it opens `meta.pebble`), copy `/data/jetstream/meta.pebble`
-   and `/data/jetstream/cursor.json` into `/data/checkpoints/<checkpoint-name>/`,
-   and verify `sha256sum` on `cursor.json`:
+   Because `catbird-gcs-buffer.service` is `static` (not enabled at boot) and `--restart=no` was set on `js`, `js` remains `exited` on boot and `/data/jetstream/meta.pebble` is completely cold. Copy `/data/jetstream/meta.pebble` into `/data/checkpoints/<checkpoint-name>/`:
    ```sh
    gcloud compute instances start jetstream-selfhost-test --project=catbird-436600 --zone=us-west1-b
-   # On VM before collector resumes:
-   sudo mkdir -p /data/checkpoints/post-failed-retries-<UTC>
-   sudo cp -a /data/jetstream/meta.pebble /data/checkpoints/post-failed-retries-<UTC>/meta.pebble
-   sudo cp -a /data/jetstream/cursor.json /data/checkpoints/post-failed-retries-<UTC>/cursor.json
+   # On VM while js is exited:
+   sudo mkdir -p /data/checkpoints/<checkpoint-name>
+   sudo cp -a /data/jetstream/meta.pebble /data/checkpoints/<checkpoint-name>/meta.pebble
    ```
-4. **Restart the collector, verify cursor/counts, export snapshot, and upload:**
-   - Start `js` (and `catbird-gcs-buffer.service`), then verify cursor, phase,
-     and repo counts (`Discovered`, `Downloaded`, `Pending`, `Errored`,
-     `Unavailable`) match pre-stop values.
-   - Restart `catbird-drive-retained-continuous-20261021.service` with
-     `--max-concurrent-pairs 1`.
-   - Run `repo_snapshot_export` **against the checkpoint copy only**
-     (`/data/checkpoints/post-failed-retries-<UTC>/meta.pebble`, never
-     `/data/jetstream/meta.pebble`), compress with `zstd -T0`, record row count
-     and SHA-256, and upload to
-     `gs://catbird-436600-jetstream-buffer-20261020/sources/gce-selfhost-001/buffer-admission-20261020/snapshots/`.
+4. **Restart the buffer supervisor (which starts `js`), verify cursor/counts, export snapshot, and upload:**
+   - **Important:** Do **not** run `docker start js` manually before starting `catbird-gcs-buffer.service`. `gcs_buffer_supervisor.py` asserts that `docker inspect js` is in state `exited no` (`expected stopped collector with restart disabled`), verifies the local segment backlog, and then runs `docker start js` itself (`collector_started_after_verified_backlog`). Starting `js` first or setting `--restart=unless-stopped` causes `gcs_buffer_supervisor.py` to fail preflight and immediately trigger `--poweroff-on-exit`.
+   - Start `catbird-gcs-buffer.service` and wait ~5 seconds for it to start `js`, then verify cursor, phase, and repo counts (`Discovered`, `Downloaded`, `Pending`, `Errored`, `Unavailable`) match pre-stop values.
+   - Restart `catbird-drive-retained-continuous-20261021.service` with `--max-concurrent-pairs 1`.
+   - Run `repo_snapshot_export` **against the checkpoint copy only** (`/data/checkpoints/<checkpoint-name>/meta.pebble`, never `/data/jetstream/meta.pebble`), compress with `zstd -T0`, record row count and SHA-256, and upload to `gs://catbird-436600-jetstream-buffer-20261020/sources/gce-selfhost-001/buffer-admission-20261020/snapshots/`.
 

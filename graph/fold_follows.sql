@@ -44,12 +44,14 @@
 --   account_coverage.tsv  per DID: snapshot_source, coverage, floor_rev, inactive
 --   coverage_stats.tsv    coverage totals and superseded-row count
 
--- Sized for the 128 GB M4 Max: aggregation and sorts spill to disk past 48 GB.
+-- Sized for the 128 GB M4 Max: an explicit 80 GB ceiling, with aggregation and
+-- sorts spilling to disk past 20 GB. The follow fold itself streams in key order.
 SET max_threads = 14,
-    max_bytes_before_external_group_by = 48000000000,
-    max_bytes_before_external_sort = 48000000000,
+    max_memory_usage = 80000000000,
+    max_bytes_before_external_group_by = 20000000000,
+    max_bytes_before_external_sort = 20000000000,
     join_algorithm = 'auto',
-    max_bytes_in_join = 24000000000,
+    max_bytes_in_join = 16000000000,
     optimize_aggregation_in_order = 1,
     input_format_parquet_allow_missing_columns = 1,
     use_structure_from_insertion_table_in_table_functions = 0;
@@ -64,6 +66,7 @@ CREATE OR REPLACE FUNCTION time_rev AS (t) -> bitShiftLeft(toUInt64(greatest(toU
 CREATE DATABASE IF NOT EXISTS g;
 DROP TABLE IF EXISTS g.snapshots;
 DROP TABLE IF EXISTS g.floors;
+DROP TABLE IF EXISTS g.floor_lookup;
 DROP TABLE IF EXISTS g.follow_events;
 DROP TABLE IF EXISTS g.follows;
 DROP TABLE IF EXISTS g.inactive;
@@ -162,24 +165,30 @@ SELECT did FROM g.snapshots
 WHERE (status = 'unavailable' OR active = 0)
   AND did NOT IN (SELECT did FROM netcup) AND did NOT IN (SELECT did FROM archive);
 
+-- Floors as an in-memory key lookup, so the fold below reads follow_events in its
+-- (did, rkey, rev) order and aggregates as it streams; a missing DID reads 0.
+CREATE TABLE g.floor_lookup ENGINE = Join(ANY, LEFT, did) AS SELECT did, floor FROM g.floors;
+
 -- Latest version per record at or above the DID's floor; a delete wins a rev tie.
-CREATE TABLE g.follows (follower String, producer String) ENGINE = MergeTree ORDER BY (follower, producer) AS
-SELECT DISTINCT did AS follower, subject AS producer
+-- The same account followed twice collapses in the ReplacingMergeTree merge.
+CREATE TABLE g.follows (follower String, producer String) ENGINE = ReplacingMergeTree ORDER BY (follower, producer) AS
+SELECT did AS follower, latest_subject AS producer
 FROM
 (
-    SELECT e.did AS did, e.rkey AS rkey,
-           argMax(e.is_delete, (e.rev, e.is_delete)) AS is_delete,
-           argMax(e.subject, (e.rev, e.is_delete)) AS subject
-    FROM g.follow_events AS e
-    LEFT JOIN g.floors AS f ON e.did = f.did
-    WHERE e.rev >= f.floor
-    GROUP BY e.did, e.rkey
+    SELECT did, rkey,
+           argMax(is_delete, (rev, is_delete)) AS latest_delete,
+           argMax(subject, (rev, is_delete)) AS latest_subject
+    FROM g.follow_events
+    WHERE rev >= joinGet('g.floor_lookup', 'floor', did)
+    GROUP BY did, rkey
 )
-WHERE is_delete = 0
-  AND startsWith(subject, 'did:')
+WHERE latest_delete = 0
+  AND startsWith(latest_subject, 'did:')
   AND follower != producer
   AND follower NOT IN (SELECT did FROM g.inactive)
-  AND producer NOT IN (SELECT did FROM g.inactive);
+  AND producer NOT IN (SELECT did FROM g.inactive)
+SETTINGS optimize_aggregation_in_order = 1, read_in_order_two_level_merge_threshold = 0;
+OPTIMIZE TABLE g.follows FINAL;
 
 -- Follow-spam accounts are dropped from the follower side.
 CREATE TABLE g.followers_ok (follower String) ENGINE = MergeTree ORDER BY follower AS
@@ -313,7 +322,7 @@ SELECT
     (SELECT countIf(coverage = 'events_only') FROM g.accounts) AS events_only_accounts,
     (SELECT countIf(coverage = 'missing') FROM g.accounts) AS missing_accounts,
     (SELECT count() FROM g.inactive) AS inactive_accounts,
-    (SELECT count() FROM g.follow_events AS e INNER JOIN g.floors AS f ON e.did = f.did WHERE e.rev < f.floor)
+    (SELECT count() FROM g.follow_events WHERE rev < joinGet('g.floor_lookup', 'floor', did))
         AS superseded_follow_rows
 INTO OUTFILE '__OUT__/coverage_stats.tsv' TRUNCATE FORMAT TSVWithNames;
 

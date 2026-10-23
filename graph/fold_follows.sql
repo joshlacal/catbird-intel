@@ -44,11 +44,12 @@
 --   account_coverage.tsv  per DID: snapshot_source, coverage, floor_rev, inactive
 --   coverage_stats.tsv    coverage totals and superseded-row count
 
-SET max_threads = 12,
-    max_bytes_before_external_group_by = 16000000000,
-    max_bytes_before_external_sort = 16000000000,
+-- Sized for the 128 GB M4 Max: aggregation and sorts spill to disk past 48 GB.
+SET max_threads = 14,
+    max_bytes_before_external_group_by = 48000000000,
+    max_bytes_before_external_sort = 48000000000,
     join_algorithm = 'auto',
-    max_bytes_in_join = 8000000000,
+    max_bytes_in_join = 24000000000,
     optimize_aggregation_in_order = 1,
     input_format_parquet_allow_missing_columns = 1,
     use_structure_from_insertion_table_in_table_functions = 0;

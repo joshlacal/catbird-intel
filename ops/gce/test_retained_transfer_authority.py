@@ -1272,6 +1272,188 @@ class RetainedAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(AuthorityBlocked, "boot changed; reconciliation required"):
             self.open_run(4, boot_id="boot-4")
 
+    def test_validate_all_hoisted_checks_preserve_all_failure_modes(self):
+        # Build a multi-run ledger with closed runs, an adopted run, and a reconciled attempt.
+        run1, m1, d1 = self.open_run(1, boot_id="boot-1")
+        self.reserve(run1, m1, d1)
+        p1, _ = self.request(run1, m1["payload"]["bytes"], "media_chunk")
+        run1.mark_dispatch(p1)
+        run1.finish_request(p1, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r1, _ = self.request(run1, m1["receipt"]["bytes"], "media_chunk")
+        run1.mark_dispatch(r1)
+        run1.finish_request(r1, 200)
+        self.finish_index(run1, m1, d1)
+
+        dead_pid = 999997
+        m2 = self.manifest(2)
+        raw2, d2 = self.raw_and_digest(m2)
+        ev2 = self.evidence(m2, d2)
+        with patch.object(retained_module.os, "getpid", return_value=dead_pid):
+            run2 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m2["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw2, evidence=ev2,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="boot-1",
+            )
+            self.addCleanup(run2.close)
+            self.reserve(run2, m2, d2)
+            undispatched_p2, _ = self.request(run2, m2["payload"]["bytes"], "media_chunk")
+            run2.close()
+
+        self.clock.advance(10.0)
+        self.monotonic.advance(10.0)
+        with patch.object(retained_module.os, "kill", side_effect=ProcessLookupError):
+            ev2_resumed = self.evidence(m2, d2, observed_at=self.clock())
+            adopted2 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m2["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw2, evidence=ev2_resumed,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="boot-1",
+                resume_open=True,
+            )
+            self.addCleanup(adopted2.close)
+        self.clock.advance(1.0)
+        self.monotonic.advance(1.0)
+        p2, _ = self.request(adopted2, m2["payload"]["bytes"], "media_chunk")
+        adopted2.mark_dispatch(p2)
+        adopted2.finish_request(p2, 200)
+        self.clock.advance(0.55)
+        self.monotonic.advance(0.55)
+        r2, _ = self.request(adopted2, m2["receipt"]["bytes"], "media_chunk")
+        adopted2.mark_dispatch(r2)
+        adopted2.finish_request(r2, 200)
+        self.finish_index(adopted2, m2, d2)
+
+        def assert_mutated_ledger_fails(sql_setup, expected_regex):
+            copy_path = self.db_path.parent / "mutated.sqlite"
+            src = sqlite3.connect(self.db_path)
+            dst = sqlite3.connect(copy_path)
+            src.backup(dst)
+            src.close()
+            dst.execute(
+                "UPDATE retained_account SET db_path=? WHERE id=1",
+                (str(copy_path.resolve()),),
+            )
+            sql_setup(dst)
+            dst.commit()
+            dst.close()
+            try:
+                with self.assertRaisesRegex(AuthorityBlocked, expected_regex):
+                    TransferAuthority.inspect_retained_account(
+                        copy_path,
+                        writer_id=self.writer_id,
+                        account_id=self.account_id,
+                        clock=self.clock,
+                    )
+            finally:
+                copy_path.unlink(missing_ok=True)
+
+        # 0. Reconciliation manifest mismatch & duplicate payload generation across runs
+        dup_m2 = self.manifest(1)
+        dup_m2["release_id"] = m2["release_id"]
+        dup_raw2, dup_d2 = self.raw_and_digest(dup_m2)
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_run SET manifest_raw=?, manifest_sha256=? WHERE id=?",
+                (dup_raw2, dup_d2, m2["release_id"]),
+            ),
+            "Retained crash-adoption reconciliation attempt identity differs",
+        )
+        dup_m1 = self.manifest(2)
+        dup_m1["release_id"] = m1["release_id"]
+        dup_raw1, dup_d1 = self.raw_and_digest(dup_m1)
+        assert_mutated_ledger_fails(
+            lambda db: (
+                db.execute("PRAGMA foreign_keys=OFF"),
+                db.execute(
+                    "UPDATE retained_run SET manifest_raw=?, manifest_sha256=?, pair_key='dup-key-1' WHERE id=?",
+                    (dup_raw1, dup_d1, m1["release_id"]),
+                ),
+            ),
+            "Retained ledger repeats a payload generation|Retained run manifest or limits changed",
+        )
+
+        # 1. Adoption initial deadline limit, adoption window malformed & adoption deadline mismatch
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_run_adoption SET prior_deadline_at = prior_deadline_at + 5"
+            ),
+            "Retained run manifest or limits changed",
+        )
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_run_adoption SET adopted_at = prior_started_at - 5"
+            ),
+            "Retained run adoption window is malformed",
+        )
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_run SET deadline_at = deadline_at + 1 WHERE id=?",
+                (m2["release_id"],),
+            ),
+            "Retained run deadline differs from latest adoption",
+        )
+
+        # 2. Reconciled credit / spend & unresolved attempt on closed run
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "DELETE FROM retained_reconciliation WHERE attempt_id=?",
+                (undispatched_p2,),
+            ),
+            "Index pending with uncertain Drive attempt|Retained index state or charge is malformed",
+        )
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_attempt SET status='unresolved', http_status=500 WHERE id=?",
+                (r1,),
+            ),
+            "Index pending with uncertain Drive attempt",
+        )
+
+        # 3. Mapping reservation object_name mismatch & missing mapping reservation
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_mapping_reservation SET object_name='wrong/object.json' WHERE run_id=?",
+                (m2["release_id"],),
+            ),
+            "Retained mapping reservation is malformed",
+        )
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "DELETE FROM retained_mapping_reservation WHERE run_id=?",
+                (m2["release_id"],),
+            ),
+            "Closed retained pair has no mapping reservation",
+        )
+
+        # 4. Orphan retained attempt
+        assert_mutated_ledger_fails(
+            lambda db: (
+                db.execute("PRAGMA foreign_keys=OFF"),
+                db.execute(
+                    "INSERT INTO retained_attempt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("orphan-att", "nonexistent-run", self.clock() - 50,
+                     self.clock() - 50, self.clock() - 30, 20.0, None, None, 0,
+                     "drive_api", "GET", "drive_api", "a" * 64,
+                     "b" * 64, "settled", 200),
+                ),
+            ),
+            "Orphan retained attempt",
+        )
+
+        # 5. Monotonic pacing violation within the same adoption epoch
+        assert_mutated_ledger_fails(
+            lambda db: db.execute(
+                "UPDATE retained_attempt SET dispatch_monotonic = "
+                "(SELECT dispatch_monotonic FROM retained_attempt WHERE id=?) + 0.1 "
+                "WHERE id=?",
+                (p2, r2),
+            ),
+            "Retained actual starts violate monotonic pacing",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

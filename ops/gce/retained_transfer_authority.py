@@ -1460,15 +1460,29 @@ class RetainedObservationAuthority:
                     claim["max_concurrent_runs"] < 2 or
                     len(nonterminal_runs) > claim["max_concurrent_runs"]):
                     raise AuthorityBlocked("Multiple retained runs are nonterminal")
+        adoptions_by_run: dict[str, list[sqlite3.Row]] = {}
+        if self._has_run_adoption_table():
+            for ad_row in self.db.execute(
+                "SELECT * FROM retained_run_adoption ORDER BY adopted_at, rowid"
+            ).fetchall():
+                adoptions_by_run.setdefault(ad_row["run_id"], []).append(ad_row)
+        all_attempts = self.db.execute("SELECT * FROM retained_attempt").fetchall()
+        attempts_by_run: dict[str, list[sqlite3.Row]] = {}
+        for attempt_row in all_attempts:
+            attempts_by_run.setdefault(attempt_row["run_id"], []).append(attempt_row)
+        reconciled_state: tuple[set[str], dict[str, int]] | None = None
+        unresolved_recovery_by_run: dict[str, int] | None = None
+        reviewed_by_run: dict[str, dict] = {}
         payload_identities = set()
         for run in runs:
             manifest, digest, key = _reviewed_manifest(run["manifest_raw"], run["id"], self.account_id)
+            reviewed_by_run[run["id"]] = manifest
             source = (manifest["bucket"], manifest["payload"]["object"],
                       manifest["payload"]["generation"])
             if source in payload_identities:
                 raise AuthorityBlocked("Retained ledger repeats a payload generation")
             payload_identities.add(source)
-            adoptions = self._run_adoptions(run["id"])
+            adoptions = adoptions_by_run.get(run["id"], ())
             initial_deadline = (
                 adoptions[0]["prior_deadline_at"] if adoptions else run["deadline_at"]
             )
@@ -1509,11 +1523,14 @@ class RetainedObservationAuthority:
                 [ad["prior_deadline_at"] for ad in adoptions] +
                 [ad["deadline_at"] for ad in adoptions]
             )
-            attempts = self.db.execute("SELECT * FROM retained_attempt WHERE run_id=?", (run["id"],)).fetchall()
+            attempts = attempts_by_run.get(run["id"], ())
             spent = 0
             for attempt in attempts:
                 spent += self._validate_attempt(attempt, run, max_deadline=max_deadline)
-            net_spent = spent - self._status_probe_reconciled_credits(run["id"])
+            if reconciled_state is None:
+                reconciled_state = self._reconciled_state()
+            reconciled_ids, reconciled_credits_by_run = reconciled_state
+            net_spent = spent - reconciled_credits_by_run.get(run["id"], 0)
             if net_spent < 0:
                 raise AuthorityBlocked("Retained pair status-probe credit exceeds spend")
             if run["status"] in ("active", "verified") and run["reserved"]:
@@ -1523,7 +1540,27 @@ class RetainedObservationAuthority:
                 if (not run["reserved"] or run["reserved_remaining"] != 0 or
                     not _valid_digest(run["mapping_sha256"]) or net_spent > run["budget_bytes"]):
                     raise AuthorityBlocked("Retained index state or charge is malformed")
-                if self._effective_unresolved_count(run["id"]):
+                if unresolved_recovery_by_run is None:
+                    unresolved_recovery_by_run = {}
+                    if self.db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                        "name='retained_receipt_recovery_attempt'"
+                    ).fetchone():
+                        for rec_row in self.db.execute(
+                            "SELECT r.original_run_id AS run_id, COUNT(*) AS cnt "
+                            "FROM retained_receipt_recovery_attempt a "
+                            "JOIN retained_receipt_recovery r ON r.id=a.recovery_id "
+                            "WHERE a.status='unresolved' "
+                            "GROUP BY r.original_run_id"
+                        ).fetchall():
+                            unresolved_recovery_by_run[rec_row["run_id"]] = rec_row["cnt"]
+                unresolved_for_run = (
+                    sum(
+                        att["status"] == "unresolved" and att["id"] not in reconciled_ids
+                        for att in attempts
+                    ) + unresolved_recovery_by_run.get(run["id"], 0)
+                )
+                if unresolved_for_run:
                     raise AuthorityBlocked("Index pending with uncertain Drive attempt")
             elif spent:
                 raise AuthorityBlocked("Unreserved retained pair has attempts")
@@ -1535,8 +1572,7 @@ class RetainedObservationAuthority:
         by_run = {run["id"]: run for run in runs}
         for item in mappings:
             run = by_run.get(item["run_id"])
-            reviewed = (_reviewed_manifest(run["manifest_raw"], run["id"], self.account_id)[0]
-                        if run is not None else None)
+            reviewed = reviewed_by_run.get(run["id"]) if run is not None else None
             if (run is None or run["status"] not in ("index_pending", "closed") or
                 item["pair_key"] != run["pair_key"] or
                 item["mapping_sha256"] != run["mapping_sha256"] or
@@ -1548,14 +1584,11 @@ class RetainedObservationAuthority:
                 not 0 < item["bytes"] <= MAPPING_MAX_BODY_BYTES or
                 not _valid_digest(item["reservation_id"])):
                 raise AuthorityBlocked("Retained mapping reservation is malformed")
-        if any(run["status"] == "closed" and not any(
-            item["run_id"] == run["id"] for item in mappings) for run in runs):
+        mapped_run_ids = {item["run_id"] for item in mappings}
+        if any(run["status"] == "closed" and run["id"] not in mapped_run_ids for run in runs):
             raise AuthorityBlocked("Closed retained pair has no mapping reservation")
         self._validate_recovery_rows()
-        all_attempts = self.db.execute("SELECT * FROM retained_attempt").fetchall()
-        if len(all_attempts) != sum(self.db.execute(
-            "SELECT COUNT(*) FROM retained_attempt WHERE run_id=?", (run["id"],)).fetchone()[0]
-            for run in runs):
+        if len(all_attempts) != sum(len(attempts_by_run.get(run["id"], ())) for run in runs):
             raise AuthorityBlocked("Orphan retained attempt")
         if self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND "
@@ -1584,7 +1617,7 @@ class RetainedObservationAuthority:
             if owner_a == owner_b and owner_a[0] == "run":
                 if any(
                     a["dispatched_at"] <= ad["adopted_at"] <= b["dispatched_at"]
-                    for ad in self._run_adoptions(owner_a[1])
+                    for ad in adoptions_by_run.get(owner_a[1], ())
                 ):
                     same_adoption_epoch = False
             if (

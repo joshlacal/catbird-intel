@@ -160,7 +160,7 @@ class GraphGuards(unittest.TestCase):
 
         self.assertEqual(
             SOURCE_IDS,
-            ("public_archive", "gce_main", "gce_bootstrap_live", "netcup_live"),
+            ("public_archive", "gce_main", "gce_bootstrap_live", "netcup_live", "repo_supplement"),
         )
         self.assertEqual(SCHEMA.names[0], "source_id")
         for sid in SOURCE_IDS:

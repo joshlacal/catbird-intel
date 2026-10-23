@@ -54,6 +54,7 @@ SOURCE_IDS = (
     "gce_main",
     "gce_bootstrap_live",
     "netcup_live",
+    "repo_supplement",
 )
 
 _SOURCE_ALIASES = {
@@ -73,6 +74,7 @@ _SOURCE_ALIASES = {
     "netcup_live": "netcup_live",
     "netcup-live": "netcup_live",
     "netcup": "netcup_live",
+    "repo_supplement": "repo_supplement",
 }
 
 _TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"

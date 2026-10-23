@@ -19,6 +19,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -35,8 +36,8 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
-	cid "github.com/ipfs/go-cid"
 	"github.com/bluesky-social/indigo/atproto/repo"
+	cid "github.com/ipfs/go-cid"
 )
 
 var defaultCollections = []string{
@@ -70,7 +71,7 @@ func main() {
 	in := flag.String("input", "", "repo_snapshot_export JSONL")
 	out := flag.String("out", "", "output directory")
 	rate := flag.Float64("rate", 12, "max getRepo requests per second per host")
-	workers := flag.Int("workers", 6, "concurrent downloads per host")
+	workers := flag.Int("workers", 32, "concurrent downloads per host (the pacer still caps -rate)")
 	reserve := flag.Float64("reserve", 0.25, "pause a host when RateLimit-Remaining falls below this share of the limit")
 	hosts := flag.String("hosts", "", "comma-separated hosts to fetch (default: all)")
 	limit := flag.Int("limit", 0, "fetch at most this many DIDs per host (0 = all)")
@@ -82,7 +83,13 @@ func main() {
 		os.Exit(2)
 	}
 	cfg := config{out: *out, rate: *rate, workers: *workers, reserve: *reserve, userAgent: *ua,
-		collections: map[string]bool{}, client: &http.Client{Timeout: 5 * time.Minute}}
+		collections: map[string]bool{}, client: &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{
+			// HTTP/1.1 with one connection per worker: a single multiplexed HTTP/2
+			// connection per host capped large-repo throughput at ~2 repos/s.
+			TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
+			MaxIdleConnsPerHost: *workers,
+			Proxy:               http.ProxyFromEnvironment,
+		}}}
 	for _, c := range strings.Split(*cols, ",") {
 		if c != "" {
 			cfg.collections[c] = true
@@ -262,8 +269,8 @@ func openWriters(dir, host string) (*writers, error) {
 	return w, nil
 }
 
-// commit appends one repo's events, then its snapshot row, then syncs, so a
-// snapshot row never exists without its events.
+// commit appends one repo's events, then its snapshot row (if any), then syncs,
+// so a snapshot row never exists without its events.
 func (w *writers) commit(events [][]byte, snapshot []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -274,6 +281,9 @@ func (w *writers) commit(events [][]byte, snapshot []byte) error {
 	}
 	if err := w.events.Sync(); err != nil {
 		return err
+	}
+	if snapshot == nil {
+		return nil
 	}
 	if _, err := w.snaps.Write(append(snapshot, '\n')); err != nil {
 		return err
@@ -306,6 +316,17 @@ func runHost(ctx context.Context, cfg config, host string, dids []string) error 
 			defer wg.Done()
 			for did := range jobs {
 				events, snap, err := fetchWithRetry(ctx, cfg, p, host, did)
+				var part partialError
+				if errors.As(err, &part) {
+					err = w.commit(events, nil)
+					if err == nil {
+						err = w.fail(did, part.Error())
+					}
+					if err != nil {
+						logf("host=%s write partial: %v", host, err)
+					}
+					continue
+				}
 				if err == nil {
 					err = w.commit(events, snap)
 				} else {
@@ -350,8 +371,9 @@ func fetchWithRetry(ctx context.Context, cfg config, p *pacer, host, did string)
 			return nil, nil, err
 		}
 		events, snap, err := fetch(ctx, cfg, p, host, did)
-		if err == nil {
-			return events, snap, nil
+		var part partialError
+		if err == nil || errors.As(err, &part) {
+			return events, snap, err
 		}
 		last = err
 		var perm permanentError
@@ -366,6 +388,13 @@ func fetchWithRetry(ctx context.Context, cfg config, p *pacer, host, did string)
 }
 
 type permanentError struct{ msg string }
+
+// partialError marks a repo whose CAR lacked some record blocks.
+type partialError struct{ missing int }
+
+func (e partialError) Error() string {
+	return fmt.Sprintf("partial: %d record blocks missing from CAR", e.missing)
+}
 
 func (e permanentError) Error() string { return e.msg }
 
@@ -403,9 +432,14 @@ func fetch(ctx context.Context, cfg config, p *pacer, host, did string) ([][]byt
 		return nil, nil, permanentError{"repo commit is for " + commit.DID}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	events, err := collectEvents(ctx, cfg, r, did, commit.Rev, now)
+	events, missing, err := collectEvents(ctx, cfg, r, did, commit.Rev, now)
 	if err != nil {
 		return nil, nil, permanentError{"records: " + err.Error()}
+	}
+	if missing > 0 {
+		// Without every record the download cannot supersede older state, so
+		// keep what arrived and record no snapshot rev for this DID.
+		return events, nil, partialError{missing}
 	}
 	snap, _ := json.Marshal(map[string]any{
 		"did": did, "status": "complete", "snapshot_rev": commit.Rev, "completed_at": now,
@@ -414,7 +448,8 @@ func fetch(ctx context.Context, cfg config, p *pacer, host, did string) ([][]byt
 	return events, snap, nil
 }
 
-func collectEvents(ctx context.Context, cfg config, r *repo.Repo, did, rev, now string) ([][]byte, error) {
+// collectEvents returns the kept records and how many had no record block.
+func collectEvents(ctx context.Context, cfg config, r *repo.Repo, did, rev, now string) (events [][]byte, missing int, err error) {
 	type entry struct {
 		path string
 		cid  cid.Cid
@@ -427,17 +462,18 @@ func collectEvents(ctx context.Context, cfg config, r *repo.Repo, did, rev, now 
 		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	sort.Slice(entries, func(a, b int) bool { return entries[a].path < entries[b].path })
-	events := make([][]byte, 0, len(entries))
+	events = make([][]byte, 0, len(entries))
 	for _, e := range entries {
 		path := e.path
 		i := strings.IndexByte(path, '/')
 		collection, rkey := path[:i], path[i+1:]
 		blk, err := r.RecordStore.Get(ctx, e.cid)
 		if err != nil {
-			return nil, fmt.Errorf("%s: missing record block", path)
+			missing++ // the PDS served the MST entry without its record block
+			continue
 		}
 		obj, err := atdata.UnmarshalCBOR(blk.RawData())
 		if err != nil {
@@ -449,11 +485,11 @@ func collectEvents(ctx context.Context, cfg config, r *repo.Repo, did, rev, now 
 				"rkey": rkey, "record": slimRecord(obj)},
 		})
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		events = append(events, ev)
 	}
-	return events, nil
+	return events, missing, nil
 }
 
 // slimRecord keeps the fields the extractor reads, as plain JSON values.

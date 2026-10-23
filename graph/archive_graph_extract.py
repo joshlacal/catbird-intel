@@ -30,8 +30,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import gcs_segments
+from post_extract import POST_COLLECTION, POST_SCHEMA, post_row_from_event
 
-GWS = "/usr/local/bin/gws"
+GWS = os.environ.get("CATBIRD_GWS", "/usr/local/bin/gws")
 ARCHIVE_SEGMENTS_FOLDER = "1Co7E4BnsWVVF_9Z4qkB0pn1Jzq05F8ae"  # public-archive-001/segments
 DECODER = pathlib.Path(
     "/Users/joshlacalamito/Developer/catbird-community-engine-20261018/tools/community-engine/backfill/decode_segments.mjs"
@@ -466,12 +467,24 @@ def rows_from_netcup_export(
     return rows
 
 
+def post_row(ev: dict, source_id: str) -> dict | None:
+    """Post row for a post commit; None for anything else (sync/account/identity
+    events stay in the graph extraction)."""
+    base = row_from_event(ev, source_id=source_id)
+    if base["kind"] != "commit" or base["collection"] != POST_COLLECTION:
+        return None
+    commit_obj = ev.get("commit") if isinstance(ev.get("commit"), dict) else {}
+    rec = ev.get("record") if isinstance(ev.get("record"), dict) else commit_obj.get("record")
+    return post_row_from_event({**base, "record": rec})
+
+
 def convert_shards(
     decoded_dir: pathlib.Path,
     out_dir: pathlib.Path,
     done: set[str],
     batch_tag: str,
     source_id: str = "public_archive",
+    posts: bool = False,
 ) -> int:
     resolved_source = normalize_source_id(source_id, default="public_archive")
     meta = json.loads((decoded_dir / "checkpoint.json").read_text())
@@ -491,10 +504,14 @@ def convert_shards(
             for line in fh:
                 if line.strip():
                     ev = json.loads(line)
-                    if should_keep_event(ev):
+                    if posts:
+                        row = post_row(ev, resolved_source)
+                        if row is not None:
+                            rows.append(row)
+                    elif should_keep_event(ev):
                         rows.append(row_from_event(ev, source_id=resolved_source))
-        table = pa.Table.from_pylist(rows, schema=SCHEMA)
-        dst = out_dir / f"events-{batch_tag}-{idx:02d}-{sha}.parquet"
+        table = pa.Table.from_pylist(rows, schema=POST_SCHEMA if posts else SCHEMA)
+        dst = out_dir / f"{'posts' if posts else 'events'}-{batch_tag}-{idx:02d}-{sha}.parquet"
         pq.write_table(table, dst, compression="zstd", compression_level=6)
         rows_total += len(rows)
         src.unlink()
@@ -518,6 +535,8 @@ def main() -> int:
     ap.add_argument("--max-index", type=int, default=None, help="skip segments above this index")
     ap.add_argument("--collections", default=",".join(COLLECTIONS),
                     help="comma-separated NSIDs to keep (add app.bsky.feed.like,app.bsky.feed.repost for engagement)")
+    ap.add_argument("--content", choices=("graph", "posts"), default="graph",
+                    help="graph: graph/actor collections in SCHEMA; posts: app.bsky.feed.post rows in POST_SCHEMA")
     ap.add_argument("--decoder", default=str(DECODER), help="path to decode_segments.mjs")
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
@@ -526,7 +545,8 @@ def main() -> int:
     args = ap.parse_args()
 
     global _ACTIVE_COLLECTIONS
-    collections = [c for c in args.collections.split(",") if c]
+    posts = args.content == "posts"
+    collections = [POST_COLLECTION] if posts else [c for c in args.collections.split(",") if c]
     _ACTIVE_COLLECTIONS = set(collections)
     decoder = pathlib.Path(args.decoder)
     work = pathlib.Path(args.work)
@@ -610,7 +630,7 @@ def main() -> int:
             return 2
         summary = json.loads(r.stdout)
         batch_tag = f"{batch[0][0]:06d}-{batch[-1][0]:06d}"
-        rows = convert_shards(decoded, events, shards_done, batch_tag, source_id=source_id)
+        rows = convert_shards(decoded, events, shards_done, batch_tag, source_id=source_id, posts=posts)
         dec_s = time.time() - t1
 
         for i, seg in batch:

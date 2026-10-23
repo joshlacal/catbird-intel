@@ -441,14 +441,14 @@ class RetainedObservationAuthority:
             evidence["bucket"], evidence["payload_object"],
             evidence["payload_generation"],
         )
-        now = _finite_nonnegative(clock(), "clock")
-        if now < evidence["last_dispatch_wall"]:
-            raise AuthorityBlocked("Import clock predates legacy dispatch")
         if not path.is_file():
             raise AuthorityBlocked("Retained ledger must be initialized before import")
         db = _connect(path, create=False)
         try:
             db.execute("BEGIN IMMEDIATE")
+            now = _finite_nonnegative(clock(), "clock")
+            if now < evidence["last_dispatch_wall"]:
+                raise AuthorityBlocked("Import clock predates legacy dispatch")
             account = db.execute("SELECT * FROM retained_account WHERE id=1").fetchone()
             if (account is None or account["writer_id"] != writer_id or
                 account["account_id"] != account_id or
@@ -694,13 +694,7 @@ class RetainedObservationAuthority:
         if recovery_only and resume_open:
             raise AuthorityBlocked("Cannot combine recovery_only and resume_open")
         manifest, digest, key = _reviewed_manifest(manifest_bytes, run_id, account_id)
-        now = _finite_nonnegative(clock(), "clock")
         deadline = _finite_nonnegative(deadline_at, "deadline")
-        if not now < deadline <= now + min(MAX_RUN_SECONDS, manifest["max_duration_seconds"]):
-            raise AuthorityBlocked("Retained run exceeds reviewed 20-minute deadline")
-        _review_evidence(evidence, run_id=run_id, writer_id=writer_id,
-                         account_id=account_id, manifest_sha256=digest,
-                         now=now, deadline_at=deadline)
         boot = _required_identity(boot_id if boot_id is not None else _boot_id(), "boot identity")
         path = Path(db_path)
         if not path.is_file():
@@ -715,6 +709,12 @@ class RetainedObservationAuthority:
                         resume_open=resume_open)
         try:
             with authority._transaction():
+                now = _finite_nonnegative(clock(), "clock")
+                if not now < deadline <= now + min(MAX_RUN_SECONDS, manifest["max_duration_seconds"]):
+                    raise AuthorityBlocked("Retained run exceeds reviewed 20-minute deadline")
+                _review_evidence(evidence, run_id=run_id, writer_id=writer_id,
+                                 account_id=account_id, manifest_sha256=digest,
+                                 now=now, deadline_at=deadline)
                 account = authority._account(
                     require_process=False, allow_boot_change=True
                 )

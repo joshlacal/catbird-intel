@@ -1454,6 +1454,135 @@ class RetainedAuthorityTests(unittest.TestCase):
             "Retained actual starts violate monotonic pacing",
         )
 
+    def test_concurrent_open_run_reads_clock_after_begin_immediate_lock(self):
+        import threading
+
+        t0 = self.clock()
+        m1 = self.manifest(1)
+        raw1, d1 = self.raw_and_digest(m1)
+        ev1 = self.evidence(m1, d1, observed_at=t0)
+
+        m2 = self.manifest(2)
+        raw2, d2 = self.raw_and_digest(m2)
+        ev2 = self.evidence(m2, d2, observed_at=t0)
+
+        # Call 2 enters open_run() first while shared_now == t0 (the earlier clock)
+        # and waits to acquire BEGIN IMMEDIATE until Call 1 has acquired BEGIN IMMEDIATE,
+        # advanced shared_now to t0 + 0.6, and committed last_clock = t0 + 0.6.
+        shared_now = [t0]
+        call2_clock_samples: list[float] = []
+        call2_waiting_on_lock = threading.Event()
+        call1_committed = threading.Event()
+        call2_opened = threading.Event()
+        call1_closed = threading.Event()
+        results: dict[str, object] = {}
+
+        orig_connect = retained_module._connect
+
+        def instrumented_connect(path: Path, *, create: bool = False):
+            conn = orig_connect(path, create=create)
+            if threading.current_thread().name == "open-run-2":
+                call2_waiting_on_lock.set()
+                # Wait until Call 1 has committed last_clock = t0 + 0.6 before Call 2
+                # acquires BEGIN IMMEDIATE inside _transaction().
+                call1_committed.wait(timeout=10.0)
+            return conn
+
+        def clock_for_call1() -> float:
+            if shared_now[0] < t0 + 0.6:
+                shared_now[0] = t0 + 0.6
+            return shared_now[0]
+
+        def clock_for_call2() -> float:
+            # If open_run() had sampled clock() before _connect() / BEGIN IMMEDIATE,
+            # this would have been called while shared_now[0] == t0 (< t0 + 0.6) and
+            # would have failed with "Retained ledger clock regressed".
+            val = shared_now[0]
+            call2_clock_samples.append(val)
+            return val
+
+        def run_call2():
+            try:
+                auth2 = TransferAuthority.open_retained_run(
+                    self.db_path, run_id=m2["release_id"], writer_id=self.writer_id,
+                    account_id=self.account_id, manifest_bytes=raw2, evidence=ev2,
+                    deadline_at=t0 + 20 * 60, clock=clock_for_call2,
+                    monotonic_clock=self.monotonic, boot_id="boot-race",
+                    max_concurrent_runs=2,
+                )
+                try:
+                    results["auth2_opened"] = True
+                    call2_opened.set()
+                    call1_closed.wait(timeout=10.0)
+                    shared_now[0] += 0.6
+                    self.monotonic.advance(0.6)
+                    self.reserve(auth2, m2, d2)
+                    p2, _ = self.request(auth2, m2["payload"]["bytes"], "media_chunk")
+                    auth2.mark_dispatch(p2)
+                    auth2.finish_request(p2, 200)
+                    shared_now[0] += 0.6
+                    self.monotonic.advance(0.6)
+                    r2, _ = self.request(auth2, m2["receipt"]["bytes"], "media_chunk")
+                    auth2.mark_dispatch(r2)
+                    auth2.finish_request(r2, 200)
+                    self.finish_index(auth2, m2, d2)
+                finally:
+                    auth2.close()
+            except Exception as exc:
+                results["err2"] = exc
+                call2_opened.set()
+
+        with patch.object(retained_module, "_connect", side_effect=instrumented_connect):
+            t2 = threading.Thread(target=run_call2, name="open-run-2")
+            t2.start()
+            self.assertTrue(call2_waiting_on_lock.wait(timeout=10.0))
+            # Call 2 has already passed pre-lock setup and is about to enter _transaction(),
+            # and must not have sampled its clock before acquiring BEGIN IMMEDIATE.
+            self.assertEqual(call2_clock_samples, [])
+
+            auth1 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw1, evidence=ev1,
+                deadline_at=t0 + 20 * 60, clock=clock_for_call1,
+                monotonic_clock=self.monotonic, boot_id="boot-race",
+                max_concurrent_runs=2,
+            )
+            self.addCleanup(auth1.close)
+            call1_committed.set()
+            self.assertTrue(call2_opened.wait(timeout=10.0))
+
+            shared_now[0] += 0.6
+            self.monotonic.advance(0.6)
+            self.reserve(auth1, m1, d1)
+            p1, _ = self.request(auth1, m1["payload"]["bytes"], "media_chunk")
+            auth1.mark_dispatch(p1)
+            auth1.finish_request(p1, 200)
+            shared_now[0] += 0.6
+            self.monotonic.advance(0.6)
+            r1, _ = self.request(auth1, m1["receipt"]["bytes"], "media_chunk")
+            auth1.mark_dispatch(r1)
+            auth1.finish_request(r1, 200)
+            self.finish_index(auth1, m1, d1)
+            call1_closed.set()
+            t2.join(timeout=10.0)
+
+        self.assertNotIn("err2", results, f"Call 2 failed unexpectedly: {results.get('err2')}")
+        self.assertTrue(results.get("auth2_opened"))
+        self.assertGreaterEqual(call2_clock_samples[0], t0 + 0.6)
+
+        # Verify the clock-regression guard inside _transaction() remains intact.
+        m3 = self.manifest(3)
+        raw3, d3 = self.raw_and_digest(m3)
+        ev3 = self.evidence(m3, d3, observed_at=t0)
+        with self.assertRaisesRegex(AuthorityBlocked, "Retained ledger clock regressed"):
+            TransferAuthority.open_retained_run(
+                self.db_path, run_id=m3["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw3, evidence=ev3,
+                deadline_at=t0 + 20 * 60, clock=lambda: t0,
+                monotonic_clock=self.monotonic, boot_id="boot-race",
+                max_concurrent_runs=2,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

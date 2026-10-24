@@ -27,7 +27,9 @@ from gcs_drive_retained_overflow import (
     validate_overflow_manifest,
 )
 from gcs_drive_retained_receipt_transport import ReceiptRecoveryTransport
-from retained_transfer_authority import RetainedObservationAuthority
+from retained_transfer_authority import (
+    MAX_MEDIA_CHUNK_BYTES, RetainedObservationAuthority,
+)
 
 
 MAX_PROBE_AGE_SECONDS = 60
@@ -169,7 +171,7 @@ class ReceiptRecoveryController:
         if self.is_payload_tail:
             if (type(old_attempt["bytes"]) is not int or
                     not 0 < old_attempt["bytes"] <=
-                        min(8 << 20, manifest["payload"]["bytes"])):
+                        min(MAX_MEDIA_CHUNK_BYTES, manifest["payload"]["bytes"])):
                 raise AuthorityBlocked("Original charged HTTP 500 receipt attempt differs")
             self.original_charge_bytes = old_attempt["bytes"]
         else:

@@ -39,6 +39,7 @@ MAPPING_PARTITION_BYTES = 33_554_432
 MAPPING_MAX_BODY_BYTES = 16_384
 GLOBAL_ROLLING_CAP_BYTES = 700_000_000_000
 MAX_CONCURRENT_RUNS = 4
+MAX_MEDIA_CHUNK_BYTES = 128 << 20
 RECONCILIATION_SCHEMA = "catbird.drive.retained-receipt-500-reconciliation.v1"
 STATUS_PROBE_RECONCILIATION_SCHEMA = (
     "catbird.drive.retained-status-probe-reconciliation.v1"
@@ -706,7 +707,7 @@ class RetainedObservationAuthority:
                         att["dispatched_at"] is None or
                         (att["kind"] != "media_chunk" and att["http_status"] is None and att["bytes"] <= 4096) or
                         (att["kind"] == "media_chunk" and att["target_category"] == "media_chunk" and
-                         att["method"] == "PUT" and 0 < att["bytes"] <= (8 << 20) and
+                         att["method"] == "PUT" and 0 < att["bytes"] <= MAX_MEDIA_CHUNK_BYTES and
                          att["dispatched_at"] is not None and
                          att["http_status"] in (None, 500, 502, 503, 504)) or
                         (att["kind"] == "resumable_status" and att["target_category"] == "resumable_status" and
@@ -1176,7 +1177,7 @@ class RetainedObservationAuthority:
                 is_media_attempt = (
                     attempt["kind"] == "media_chunk" and
                     attempt["target_category"] == "media_chunk" and
-                    0 < attempt["bytes"] <= (8 << 20) and
+                    0 < attempt["bytes"] <= MAX_MEDIA_CHUNK_BYTES and
                     (probe["http_status"] not in (200, 201) or
                      committed == attempt["bytes"])
                 )
@@ -1258,7 +1259,7 @@ class RetainedObservationAuthority:
                  if is_payload_tail else True)
             )
             expected_bytes_ok = (
-                (0 < attempt["bytes"] <= min(8 << 20, payload["bytes"]) and
+                (0 < attempt["bytes"] <= min(MAX_MEDIA_CHUNK_BYTES, payload["bytes"]) and
                  proof.get("payload_session_sha256") == attempt["target_sha256"])
                 if is_payload_tail else attempt["bytes"] == receipt["bytes"]
             )
@@ -1395,7 +1396,7 @@ class RetainedObservationAuthority:
                 if is_payload_tail else {receipt["bytes"] + (1 << 20)}
             )
             attempt_bytes_ok = (
-                0 < attempt["bytes"] <= min(8 << 20, payload["bytes"])
+                0 < attempt["bytes"] <= min(MAX_MEDIA_CHUNK_BYTES, payload["bytes"])
                 if is_payload_tail else attempt["bytes"] == receipt["bytes"]
             )
             if (not isinstance(evidence, dict) or
@@ -2593,7 +2594,7 @@ class RetainedObservationAuthority:
                 failed is not None and
                 failed["kind"] == "media_chunk" and
                 failed["target_category"] == "media_chunk" and
-                0 < failed["bytes"] <= (8 << 20) and
+                0 < failed["bytes"] <= MAX_MEDIA_CHUNK_BYTES and
                 (probe is None or probe["http_status"] not in (200, 201) or
                  committed_bytes == failed["bytes"])
             )

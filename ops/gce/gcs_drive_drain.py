@@ -36,6 +36,12 @@ RECEIPT_LIMIT = 1 << 20
 PILOT_PAYLOAD_LIMIT = 300 << 20
 PILOT_CHARGE_LIMIT = 320 << 20
 PILOT_DURATION_LIMIT = 20 * 60
+DRIVE_RESUMABLE_GRANULARITY = 256 << 10
+LEGACY_MEDIA_CHUNK_BYTES = 8 << 20
+DEFAULT_MEDIA_CHUNK_BYTES = 64 << 20
+ALT_MEDIA_CHUNK_BYTES = 128 << 20
+MAX_MEDIA_CHUNK_BYTES = 128 << 20
+MEDIA_CHUNK_TIMEOUT_SECONDS = 300
 FIELDS = "id,name,size,md5Checksum,mimeType,parents,trashed"
 FOLDER = "application/vnd.google-apps.folder"
 _DRIVE_REQUEST_LOCK = threading.Lock()
@@ -152,16 +158,24 @@ def load_pilot_manifest(path: Path, *, bucket: str, source_id: str,
 
 class SafeDrive:
     """Reuse only legacy OAuth refresh; never legacy upload/duplicate behavior."""
+    chunk_bytes = DEFAULT_MEDIA_CHUNK_BYTES
+
     @staticmethod
     def assert_complete_visibility():
         # drive.file can omit preexisting files the app has not created/opened.
         # No independently verifiable global listing proof is available yet.
         raise Conflict("Drive file-list uniqueness is unproven under drive.file; independent visibility proof required")
 
-    def __init__(self, oauth: Path, authority: TransferAuthority):
+    def __init__(self, oauth: Path, authority: TransferAuthority, *,
+                 chunk_bytes: int = DEFAULT_MEDIA_CHUNK_BYTES):
         if authority is None:
             raise Conflict("Drive requests require a transfer authority")
+        if (type(chunk_bytes) is not int or
+                not DRIVE_RESUMABLE_GRANULARITY <= chunk_bytes <= MAX_MEDIA_CHUNK_BYTES or
+                chunk_bytes % DRIVE_RESUMABLE_GRANULARITY != 0):
+            raise Conflict("Drive resumable chunk size must be a 256 KiB multiple in 256 KiB..128 MiB")
         self.authority = authority
+        self.chunk_bytes = chunk_bytes
         from gce_segment_offloader import DriveClient
         self.auth = DriveClient(oauth)
 
@@ -397,16 +411,21 @@ class SafeDrive:
         if not 0 <= offset < expected["size"]:
             raise Conflict("Drive upload offset outside payload")
         recoveries_used = 0
+        chunk_limit = getattr(self, "chunk_bytes", DEFAULT_MEDIA_CHUNK_BYTES)
+        if (type(chunk_limit) is not int or
+                not DRIVE_RESUMABLE_GRANULARITY <= chunk_limit <= MAX_MEDIA_CHUNK_BYTES or
+                chunk_limit % DRIVE_RESUMABLE_GRANULARITY != 0):
+            raise Conflict("Drive resumable chunk size must be a 256 KiB multiple in 256 KiB..128 MiB")
         with path.open("rb") as fh:
             fh.seek(offset)
             while offset < expected["size"]:
-                chunk = fh.read(min(8 << 20, expected["size"] - offset))
+                chunk = fh.read(min(chunk_limit, expected["size"] - offset))
                 if not chunk:
                     raise Conflict("Local upload file shortened")
                 end = offset + len(chunk)
                 try:
                     with self.request(session, "PUT", chunk, {"Content-Length": str(len(chunk)),
-                        "Content-Range": f"bytes {offset}-{end-1}/{expected['size']}"}, timeout=300,
+                        "Content-Range": f"bytes {offset}-{end-1}/{expected['size']}"}, timeout=MEDIA_CHUNK_TIMEOUT_SECONDS,
                         kind="media_chunk") as response:
                         uploaded = json.load(response)
                         if end != expected["size"]:

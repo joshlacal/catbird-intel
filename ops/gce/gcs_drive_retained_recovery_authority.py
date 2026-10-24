@@ -25,8 +25,8 @@ from drive_transfer_authority import (
     _required_identity, _valid_digest,
 )
 from retained_transfer_authority import (
-    GLOBAL_ROLLING_CAP_BYTES, RetainedObservationAuthority, _boot_id,
-    _reviewed_manifest,
+    GLOBAL_ROLLING_CAP_BYTES, MAX_MEDIA_CHUNK_BYTES,
+    RetainedObservationAuthority, _boot_id, _reviewed_manifest,
 )
 
 
@@ -228,7 +228,7 @@ class RecoveryAuthority:
                     Path(evidence["payload_stage_path"]).name !=
                         evidence["payload_name"] or
                     evidence.get("payload_sha256") != payload["sha256"] or
-                    not 0 < attempt["bytes"] <= min(8 << 20, payload["bytes"])):
+                    not 0 < attempt["bytes"] <= min(MAX_MEDIA_CHUNK_BYTES, payload["bytes"])):
                     raise AuthorityBlocked(
                         "Payload-tail recovery stage or size differs"
                     )

@@ -678,6 +678,7 @@ class DrainTests(unittest.TestCase):
             fh.write(b"\x00" * (9 << 20))
         expected = digest(path)
         drive = object.__new__(SafeDrive)
+        drive.chunk_bytes = 8 << 20
         drive.preflight = lambda *args: None
         drive.reserve_id = lambda: "reserved"
         final = {"id": "reserved", "name": path.name, "size": str(expected["size"]),
@@ -772,6 +773,7 @@ class DrainTests(unittest.TestCase):
         path.write_bytes(b"A" * (4 << 20) + b"B" * (5 << 20))
         expected = digest(path)
         drive = object.__new__(SafeDrive)
+        drive.chunk_bytes = 8 << 20
         drive.preflight = lambda *args: None
         drive.reserve_id = lambda: "reserved"
         final = {"id": "reserved", "name": path.name, "size": str(expected["size"]),
@@ -993,6 +995,124 @@ class DrainTests(unittest.TestCase):
                 self.assertEqual(len(reconcile_calls), 1)
                 self.assertEqual(reconcile_calls[0]["failed_attempt_id"], "probe-1")
                 self.assertEqual(reconcile_calls[0]["probe_attempt_id"], "probe-3")
+
+    def test_resumable_upload_64mib_default_and_128mib_option_and_8mib_resume_compat(self):
+        self.assertEqual(SafeDrive.chunk_bytes, 64 << 20)
+        for chunk_bytes in (64 << 20, 128 << 20):
+            with self.subTest(chunk_mib=chunk_bytes >> 20):
+                path = self.work / f"chunk-{chunk_bytes >> 20}m.bin"
+                total_size = chunk_bytes + (1 << 20)
+                with path.open("wb") as fh:
+                    fh.truncate(total_size)
+                expected = {"size": total_size, "sha256": "a" * 64, "md5": "b" * 32}
+                drive = object.__new__(SafeDrive)
+                if chunk_bytes != 64 << 20:
+                    drive.chunk_bytes = chunk_bytes
+                drive.preflight = lambda *args: None
+                drive.reserve_id = lambda: "reserved"
+                final = {"id": "reserved", "name": path.name, "size": str(total_size),
+                         "md5Checksum": expected["md5"], "parents": ["parent"]}
+                drive.metadata = lambda file_id: final
+                state, chunks, timeouts = {}, [], []
+
+                class Response(io.BytesIO):
+                    def __init__(self, body=b"", headers=None):
+                        super().__init__(body)
+                        self.headers = headers or {}
+
+                def request(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+                    if method == "POST":
+                        return Response(headers={"Location": "https://www.googleapis.com/upload/session"})
+                    if headers["Content-Range"].startswith("bytes */"):
+                        err = urllib.error.HTTPError(url, 308, "resume", {}, None)
+                        self.addCleanup(err.close)
+                        raise err
+                    chunks.append((len(data), headers["Content-Range"]))
+                    timeouts.append(timeout)
+                    if len(chunks) == 1:
+                        err = urllib.error.HTTPError(
+                            url, 308, "resume", {"Range": f"bytes=0-{chunk_bytes - 1}"}, None
+                        )
+                        self.addCleanup(err.close)
+                        raise err
+                    return Response(json.dumps(final).encode())
+
+                drive.request = request
+                result = drive.ensure_file(path, "parent", expected, state, lambda: None)
+                self.assertEqual(result, final)
+                self.assertEqual(
+                    chunks,
+                    [
+                        (chunk_bytes, f"bytes 0-{chunk_bytes - 1}/{total_size}"),
+                        (1 << 20, f"bytes {chunk_bytes}-{total_size - 1}/{total_size}"),
+                    ],
+                )
+                self.assertEqual(timeouts, [300, 300])
+                path.unlink()
+
+        # Verify a session that already committed two 8 MiB chunks (16 MiB) resumes
+        # seamlessly from offset 16 MiB using 64 MiB chunks.
+        resume_path = self.work / "resume-from-8mib.bin"
+        resume_total = (16 << 20) + (64 << 20) + (1 << 20)
+        with resume_path.open("wb") as fh:
+            fh.truncate(resume_total)
+        resume_expected = {"size": resume_total, "sha256": "c" * 64, "md5": "d" * 32}
+        drive = object.__new__(SafeDrive)
+        drive.preflight = lambda *args: None
+        final = {"id": "reserved", "name": resume_path.name, "size": str(resume_total),
+                 "md5Checksum": resume_expected["md5"], "parents": ["parent"]}
+        drive.metadata = lambda file_id: final
+        state = {"id": "reserved", "session": "https://www.googleapis.com/upload/session"}
+        resumed_chunks = []
+
+        class Response(io.BytesIO):
+            def __init__(self, body=b"", headers=None):
+                super().__init__(body)
+                self.headers = headers or {}
+
+        def resume_request(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+            if headers["Content-Range"].startswith("bytes */"):
+                err = urllib.error.HTTPError(
+                    url, 308, "resume", {"Range": f"bytes=0-{(16 << 20) - 1}"}, None
+                )
+                self.addCleanup(err.close)
+                raise err
+            resumed_chunks.append((len(data), headers["Content-Range"]))
+            if len(resumed_chunks) == 1:
+                err = urllib.error.HTTPError(
+                    url, 308, "resume", {"Range": f"bytes=0-{(80 << 20) - 1}"}, None
+                )
+                self.addCleanup(err.close)
+                raise err
+            return Response(json.dumps(final).encode())
+
+        drive.request = resume_request
+        result = drive.ensure_file(resume_path, "parent", resume_expected, state, lambda: None)
+        self.assertEqual(result, final)
+        self.assertEqual(
+            resumed_chunks,
+            [
+                (64 << 20, f"bytes {16 << 20}-{(80 << 20) - 1}/{resume_total}"),
+                (1 << 20, f"bytes {80 << 20}-{resume_total - 1}/{resume_total}"),
+            ],
+        )
+        resume_path.unlink()
+
+        # Invalid chunk sizes (non-multiple of 256 KiB or > 128 MiB) must be rejected.
+        for bad_chunk in (0, 100_000, (64 << 20) + 1024, (128 << 20) + (256 << 10)):
+            bad_drive = object.__new__(SafeDrive)
+            bad_drive.chunk_bytes = bad_chunk
+            bad_drive.preflight = lambda *args: None
+            bad_state = {"id": "reserved", "session": "https://www.googleapis.com/upload/session"}
+            def probe_308(url, method="GET", data=None, headers=None, timeout=60, kind="drive_api"):
+                err = urllib.error.HTTPError(url, 308, "resume", {}, None)
+                self.addCleanup(err.close)
+                raise err
+            bad_drive.request = probe_308
+            small = self.work / "small.bin"
+            small.write_bytes(b"x" * 16)
+            with self.assertRaisesRegex(Conflict, "256 KiB multiple in 256 KiB..128 MiB"):
+                bad_drive.ensure_file(small, "parent", digest(small), bad_state, lambda: None)
 
 
 if __name__ == "__main__":

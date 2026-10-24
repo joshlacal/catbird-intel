@@ -219,7 +219,7 @@ def main():
         is_payload_tail = receipt_session is None and isinstance(payload_session, str)
         if is_payload_tail:
             require(old['run_id'] == a.run_id and old['status'] == 'unresolved' and old['http_status'] == 500 and
-                    0 < old['bytes'] <= min(8 << 20, manifest['payload']['bytes']) and
+                    0 < old['bytes'] <= min(128 << 20, manifest['payload']['bytes']) and
                     time.time() > old['charge_through'], 'original_payload_tail_fault')
             session = payload_session
             permitted_branch = 'payload_tail_and_receipt_auto'

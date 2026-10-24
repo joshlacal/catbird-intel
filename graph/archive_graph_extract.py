@@ -541,6 +541,8 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
     ap.add_argument("--once", action="store_true")
+    ap.add_argument("--static-listing", action="store_true",
+                    help="list segments once and reuse it (a closed range; avoids re-listing Drive every batch)")
     ap.add_argument("--poll", type=int, default=600, help="seconds to wait when no new segments")
     args = ap.parse_args()
 
@@ -558,6 +560,9 @@ def main() -> int:
         source_id = infer_source_id(work, args.segments_folder, args.source_id)
         list_segments = lambda: completed_segments(args.segments_folder)
         fetch_segment = download_segment
+    if args.static_listing:
+        listed = list_segments()
+        list_segments = lambda: listed
     staging = work / "staging" / "segments"
     decoded = work / "decoded_batch"
     events = work / "events"

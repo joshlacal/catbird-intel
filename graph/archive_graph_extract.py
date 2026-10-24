@@ -48,6 +48,32 @@ COLLECTIONS = [
     "app.bsky.actor.contentVisibilityDeclaration",
 ]
 
+# --content all: every app.bsky / chat.bsky record collection (the decoder needs an explicit list).
+ALL_COLLECTIONS = COLLECTIONS + [
+    "app.bsky.feed.post",
+    "app.bsky.feed.like",
+    "app.bsky.feed.repost",
+    "app.bsky.feed.threadgate",
+    "app.bsky.feed.postgate",
+    "app.bsky.graph.listblock",
+    "app.bsky.graph.verification",
+    "app.bsky.actor.status",
+    "app.bsky.labeler.service",
+    "app.bsky.notification.declaration",
+    "chat.bsky.actor.declaration",
+]
+# Collections with no dedicated columns keep their record as compact JSON in `extra`.
+RECORD_JSON_COLLECTIONS = {
+    "app.bsky.feed.threadgate",
+    "app.bsky.feed.postgate",
+    "app.bsky.graph.verification",
+    "app.bsky.actor.status",
+    "app.bsky.labeler.service",
+    "app.bsky.notification.declaration",
+    "chat.bsky.actor.declaration",
+}
+_RECORD_JSON_LIMIT = 4000
+
 _ACTIVE_COLLECTIONS = set(COLLECTIONS)
 
 SOURCE_IDS = (
@@ -372,6 +398,8 @@ def row_from_event(ev: dict, source_id: str | None = None) -> dict:
         extra = "1" if rec.get("hideFromAlgorithmicRecommendations") is True else "0"
     elif collection == "app.bsky.graph.list":
         extra = rec.get("purpose", "") if isinstance(rec.get("purpose"), str) else ""
+    elif collection in RECORD_JSON_COLLECTIONS and rec:
+        extra = json.dumps(rec, separators=(",", ":"), ensure_ascii=False)[:_RECORD_JSON_LIMIT]
 
     account_active = None
     if account and "active" in account and account.get("active") is not None:
@@ -485,7 +513,10 @@ def convert_shards(
     batch_tag: str,
     source_id: str = "public_archive",
     posts: bool = False,
+    split_posts: bool = False,
 ) -> int:
+    """posts: only post rows (POST_SCHEMA). split_posts: post rows to posts-*.parquet
+    and every other kept event to events-*.parquet (SCHEMA)."""
     resolved_source = normalize_source_id(source_id, default="public_archive")
     meta = json.loads((decoded_dir / "checkpoint.json").read_text())
     rows_total = 0
@@ -499,21 +530,27 @@ def convert_shards(
         if not src.exists():
             done.add(sha)
             continue
-        rows = []
+        rows, post_rows = [], []
         with src.open() as fh:
             for line in fh:
                 if line.strip():
                     ev = json.loads(line)
-                    if posts:
+                    if posts or split_posts:
                         row = post_row(ev, resolved_source)
                         if row is not None:
-                            rows.append(row)
-                    elif should_keep_event(ev):
+                            post_rows.append(row)
+                            continue
+                    if not posts and should_keep_event(ev):
                         rows.append(row_from_event(ev, source_id=resolved_source))
-        table = pa.Table.from_pylist(rows, schema=POST_SCHEMA if posts else SCHEMA)
-        dst = out_dir / f"{'posts' if posts else 'events'}-{batch_tag}-{idx:02d}-{sha}.parquet"
-        pq.write_table(table, dst, compression="zstd", compression_level=6)
-        rows_total += len(rows)
+        if posts or split_posts:
+            dst = out_dir / f"posts-{batch_tag}-{idx:02d}-{sha}.parquet"
+            pq.write_table(pa.Table.from_pylist(post_rows, schema=POST_SCHEMA), dst,
+                           compression="zstd", compression_level=6)
+        if not posts:
+            dst = out_dir / f"events-{batch_tag}-{idx:02d}-{sha}.parquet"
+            pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), dst,
+                           compression="zstd", compression_level=6)
+        rows_total += len(rows) + len(post_rows)
         src.unlink()
         done.add(sha)
     return rows_total
@@ -535,8 +572,9 @@ def main() -> int:
     ap.add_argument("--max-index", type=int, default=None, help="skip segments above this index")
     ap.add_argument("--collections", default=",".join(COLLECTIONS),
                     help="comma-separated NSIDs to keep (add app.bsky.feed.like,app.bsky.feed.repost for engagement)")
-    ap.add_argument("--content", choices=("graph", "posts"), default="graph",
-                    help="graph: graph/actor collections in SCHEMA; posts: app.bsky.feed.post rows in POST_SCHEMA")
+    ap.add_argument("--content", choices=("graph", "posts", "all"), default="graph",
+                    help="graph: --collections in SCHEMA; posts: app.bsky.feed.post rows in POST_SCHEMA; "
+                         "all: ALL_COLLECTIONS, posts in POST_SCHEMA and the rest in SCHEMA")
     ap.add_argument("--decoder", default=str(DECODER), help="path to decode_segments.mjs")
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
@@ -548,7 +586,13 @@ def main() -> int:
 
     global _ACTIVE_COLLECTIONS
     posts = args.content == "posts"
-    collections = [POST_COLLECTION] if posts else [c for c in args.collections.split(",") if c]
+    split_posts = args.content == "all"
+    if posts:
+        collections = [POST_COLLECTION]
+    elif split_posts:
+        collections = list(ALL_COLLECTIONS)
+    else:
+        collections = [c for c in args.collections.split(",") if c]
     _ACTIVE_COLLECTIONS = set(collections)
     decoder = pathlib.Path(args.decoder)
     work = pathlib.Path(args.work)
@@ -635,7 +679,8 @@ def main() -> int:
             return 2
         summary = json.loads(r.stdout)
         batch_tag = f"{batch[0][0]:06d}-{batch[-1][0]:06d}"
-        rows = convert_shards(decoded, events, shards_done, batch_tag, source_id=source_id, posts=posts)
+        rows = convert_shards(decoded, events, shards_done, batch_tag, source_id=source_id, posts=posts,
+                              split_posts=split_posts)
         dec_s = time.time() - t1
 
         for i, seg in batch:

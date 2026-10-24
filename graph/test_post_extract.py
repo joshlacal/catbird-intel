@@ -84,6 +84,37 @@ class PostRows(unittest.TestCase):
             self.assertEqual(table.column("operation").to_pylist(), ["create", "delete"])
 
 
+class AllContent(unittest.TestCase):
+    def test_split_writes_posts_and_events_and_keeps_generic_records(self):
+        age._ACTIVE_COLLECTIONS = set(age.ALL_COLLECTIONS)
+        self.addCleanup(setattr, age, "_ACTIVE_COLLECTIONS", set(age.COLLECTIONS))
+        with tempfile.TemporaryDirectory() as tmp:
+            dec, out = pathlib.Path(tmp, "dec"), pathlib.Path(tmp, "out")
+            dec.mkdir()
+            lines = [commit({"text": "hi"}),
+                     commit({"subject": {"uri": "at://did:plc:b/app.bsky.feed.post/1", "cid": "x"}},
+                            collection="app.bsky.feed.like"),
+                     commit({"post": "at://did:plc:a/app.bsky.feed.post/1", "allow": []},
+                            collection="app.bsky.feed.threadgate"),
+                     {"kind": "account", "did": "did:plc:a", "account": {"active": False, "status": "deactivated"}}]
+            (dec / "s.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+            (dec / "checkpoint.json").write_text(json.dumps({"shards": [{"path": "s.jsonl", "sha256": "s"}]}))
+            n = age.convert_shards(dec, out, set(), "000001-000001", source_id="gce_main", split_posts=True)
+            self.assertEqual(n, 4)
+            [pf] = list(out.glob("posts-*.parquet"))
+            [ef] = list(out.glob("events-*.parquet"))
+            self.assertEqual(pq.read_table(pf).column("text").to_pylist(), ["hi"])
+            ev = pq.read_table(ef).to_pylist()
+            by = {r["collection"] or r["kind"]: r for r in ev}
+            self.assertEqual(by["app.bsky.feed.like"]["subject"], "at://did:plc:b/app.bsky.feed.post/1")
+            self.assertEqual(json.loads(by["app.bsky.feed.threadgate"]["extra"])["post"], "at://did:plc:a/app.bsky.feed.post/1")
+            self.assertEqual(by["account"]["account_status"], "deactivated")
+
+    def test_graph_rows_for_existing_collections_are_unchanged(self):
+        row = age.row_from_event(commit({"subject": "did:plc:b"}, collection="app.bsky.graph.follow"), "gce_main")
+        self.assertEqual((row["subject"], row["extra"]), ("did:plc:b", ""))
+
+
 class ReadOnlyShim(unittest.TestCase):
     def test_refuses_anything_but_list_and_get(self):
         for argv in (["drive", "files", "create", "--params", "{}"],

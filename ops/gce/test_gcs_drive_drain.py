@@ -914,6 +914,117 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(status_calls, 3)  # 1 initial + 2 recovery probes
         self.assertEqual(state, before)
 
+    def test_drive_request_retries_once_with_fresh_token_on_401_get_only(self):
+        class FakeAuth:
+            def __init__(self):
+                self._token = "stale-token"
+                self._exp = time.time() + 3600
+                self.refresh_calls = 0
+
+            def invalidate_token(self):
+                self._token = ""
+                self._exp = 0.0
+
+            def token(self, *, force_refresh: bool = False):
+                if force_refresh or not self._token:
+                    self.refresh_calls += 1
+                    self._token = f"fresh-token-{self.refresh_calls}"
+                    self._exp = time.time() + 3600
+                return self._token
+
+        class FakeAuthority:
+            def __init__(self):
+                self.now = 1000.0
+                self.attempts = []
+                self.reconciled = []
+
+            def clock(self):
+                return self.now
+
+            def assert_active(self, timeout_s=0, *, slot_at=None):
+                return None
+
+            def start_request(self, body_bytes, timeout_s, kind, *, method, target_category, target_sha256, operation_key):
+                att_id = f"att-{len(self.attempts) + 1}"
+                self.attempts.append({
+                    "id": att_id,
+                    "bytes": body_bytes,
+                    "kind": kind,
+                    "method": method,
+                    "status": "unresolved",
+                    "http_status": None,
+                })
+                return att_id, self.now
+
+            def seconds_until_dispatch(self, attempt_id):
+                return 0.0
+
+            def mark_dispatch(self, attempt_id):
+                self.now += 0.55
+
+            def finish_request(self, attempt_id, status_code):
+                for item in self.attempts:
+                    if item["id"] == attempt_id:
+                        item["http_status"] = status_code
+                        if status_code is not None and 200 <= status_code < 300:
+                            item["status"] = "settled"
+
+            def reconcile_retried_drive_get(self, failed_attempt_id):
+                self.reconciled.append(failed_attempt_id)
+
+        class Response(io.BytesIO):
+            def __init__(self, body=b"", status=200):
+                super().__init__(body)
+                self.status = status
+                self.headers = {}
+
+        authority = FakeAuthority()
+        drive = object.__new__(SafeDrive)
+        drive.authority = authority
+        drive.auth = FakeAuth()
+
+        seen_auth_headers = []
+
+        def open_401_then_200(req, timeout=60):
+            seen_auth_headers.append(req.get_header("Authorization"))
+            if len(seen_auth_headers) == 1:
+                err = urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+                self.addCleanup(err.close)
+                raise err
+            return Response(b'{"ids":["pinned-id-1"]}', status=200)
+
+        with unittest.mock.patch("gcs_drive_drain._NO_REDIRECT_OPENER.open", side_effect=open_401_then_200):
+            reserved = drive.reserve_id()
+
+        self.assertEqual(reserved, "pinned-id-1")
+        self.assertEqual(seen_auth_headers, ["Bearer stale-token", "Bearer fresh-token-1"])
+        self.assertEqual(drive.auth.refresh_calls, 1)
+        self.assertEqual(len(authority.attempts), 2)
+        self.assertEqual(authority.attempts[0]["http_status"], 401)
+        self.assertEqual(authority.attempts[1]["http_status"], 200)
+        self.assertEqual(authority.reconciled, ["att-1"])
+
+        # A POST or PUT returning 401 must NOT auto-retry in SafeDrive.request.
+        post_headers = []
+
+        def open_always_401(req, timeout=60):
+            post_headers.append(req.get_header("Authorization"))
+            err = urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+            self.addCleanup(err.close)
+            raise err
+
+        with unittest.mock.patch("gcs_drive_drain._NO_REDIRECT_OPENER.open", side_effect=open_always_401):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                drive.request(
+                    "https://www.googleapis.com/drive/v3/files",
+                    method="POST",
+                    data=b'{"name":"folder"}',
+                    headers={"Content-Type": "application/json"},
+                    kind="overflow_folder_create",
+                )
+        self.assertEqual(ctx.exception.code, 401)
+        self.assertEqual(len(post_headers), 1)
+
     def test_two_5xx_initial_status_probes_followed_by_308_and_200_do_not_double_reconcile(self):
         for terminal_probe_code in (308, 200):
             with self.subTest(terminal_probe_code=terminal_probe_code):
@@ -1113,117 +1224,6 @@ class DrainTests(unittest.TestCase):
             small.write_bytes(b"x" * 16)
             with self.assertRaisesRegex(Conflict, "256 KiB multiple in 256 KiB..128 MiB"):
                 bad_drive.ensure_file(small, "parent", digest(small), bad_state, lambda: None)
-
-    def test_drive_request_retries_once_with_fresh_token_on_401_get_only(self):
-        class FakeAuth:
-            def __init__(self):
-                self._token = "stale-token"
-                self._exp = time.time() + 3600
-                self.refresh_calls = 0
-
-            def invalidate_token(self):
-                self._token = ""
-                self._exp = 0.0
-
-            def token(self, *, force_refresh: bool = False):
-                if force_refresh or not self._token:
-                    self.refresh_calls += 1
-                    self._token = f"fresh-token-{self.refresh_calls}"
-                    self._exp = time.time() + 3600
-                return self._token
-
-        class FakeAuthority:
-            def __init__(self):
-                self.now = 1000.0
-                self.attempts = []
-                self.reconciled = []
-
-            def clock(self):
-                return self.now
-
-            def assert_active(self, timeout_s=0, *, slot_at=None):
-                return None
-
-            def start_request(self, body_bytes, timeout_s, kind, *, method, target_category, target_sha256, operation_key):
-                att_id = f"att-{len(self.attempts) + 1}"
-                self.attempts.append({
-                    "id": att_id,
-                    "bytes": body_bytes,
-                    "kind": kind,
-                    "method": method,
-                    "status": "unresolved",
-                    "http_status": None,
-                })
-                return att_id, self.now
-
-            def seconds_until_dispatch(self, attempt_id):
-                return 0.0
-
-            def mark_dispatch(self, attempt_id):
-                self.now += 0.55
-
-            def finish_request(self, attempt_id, status_code):
-                for item in self.attempts:
-                    if item["id"] == attempt_id:
-                        item["http_status"] = status_code
-                        if status_code is not None and 200 <= status_code < 300:
-                            item["status"] = "settled"
-
-            def reconcile_retried_drive_get(self, failed_attempt_id):
-                self.reconciled.append(failed_attempt_id)
-
-        class Response(io.BytesIO):
-            def __init__(self, body=b"", status=200):
-                super().__init__(body)
-                self.status = status
-                self.headers = {}
-
-        authority = FakeAuthority()
-        drive = object.__new__(SafeDrive)
-        drive.authority = authority
-        drive.auth = FakeAuth()
-
-        seen_auth_headers = []
-
-        def open_401_then_200(req, timeout=60):
-            seen_auth_headers.append(req.get_header("Authorization"))
-            if len(seen_auth_headers) == 1:
-                err = urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
-                self.addCleanup(err.close)
-                raise err
-            return Response(b'{"ids":["pinned-id-1"]}', status=200)
-
-        with unittest.mock.patch("gcs_drive_drain._NO_REDIRECT_OPENER.open", side_effect=open_401_then_200):
-            reserved = drive.reserve_id()
-
-        self.assertEqual(reserved, "pinned-id-1")
-        self.assertEqual(seen_auth_headers, ["Bearer stale-token", "Bearer fresh-token-1"])
-        self.assertEqual(drive.auth.refresh_calls, 1)
-        self.assertEqual(len(authority.attempts), 2)
-        self.assertEqual(authority.attempts[0]["http_status"], 401)
-        self.assertEqual(authority.attempts[1]["http_status"], 200)
-        self.assertEqual(authority.reconciled, ["att-1"])
-
-        # A POST or PUT returning 401 must NOT auto-retry in SafeDrive.request.
-        post_headers = []
-
-        def open_always_401(req, timeout=60):
-            post_headers.append(req.get_header("Authorization"))
-            err = urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
-            self.addCleanup(err.close)
-            raise err
-
-        with unittest.mock.patch("gcs_drive_drain._NO_REDIRECT_OPENER.open", side_effect=open_always_401):
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                drive.request(
-                    "https://www.googleapis.com/drive/v3/files",
-                    method="POST",
-                    data=b'{"name":"folder"}',
-                    headers={"Content-Type": "application/json"},
-                    kind="overflow_folder_create",
-                )
-        self.assertEqual(ctx.exception.code, 401)
-        self.assertEqual(len(post_headers), 1)
 
 
 if __name__ == "__main__":

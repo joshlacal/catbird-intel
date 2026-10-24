@@ -1881,192 +1881,6 @@ class RetainedAuthorityTests(unittest.TestCase):
         self.assertLess(t_3700["per_request_cycle_sum_ms"], 20.0)
         self.assertLess(t_3700["per_request_cycle_sum_ms"], max(t_50["per_request_cycle_sum_ms"] * 2.5, 5.0))
 
-    def test_validation_stats_counter_tracks_fallbacks_and_reasons(self) -> None:
-        """Per-pair validation_stats records 2 full validations (open_run + close_pair) and 0 fallbacks normally, and increments exact fallback reasons."""
-        auth, m1, d1 = self.open_run(1)
-        try:
-            self.reserve(auth, m1, d1)
-            for _ in range(3):
-                self.clock.advance(0.6)
-                self.monotonic.advance(0.6)
-                auth.assert_active()
-                att_id, _ = self.request(auth, 1, "media_chunk")
-                auth.seconds_until_dispatch(att_id)
-                auth.mark_dispatch(att_id)
-                auth.finish_request(att_id, 200)
-            self.finish_index(auth, m1, d1)
-            stats = auth.validation_stats()
-            self.assertEqual(stats["open_run_full_validates"], 1)
-            self.assertEqual(stats["close_pair_full_validates"], 1)
-            self.assertEqual(stats["full_validate_calls"], 2)
-            self.assertEqual(stats["fallbacks"], 0)
-            self.assertEqual(stats["total_changes"], 0)
-            self.assertEqual(stats["data_version"], 0)
-            self.assertEqual(stats["cheap_fingerprint"], 0)
-        finally:
-            auth.close()
-
-        self.clock.advance(0.6)
-        self.monotonic.advance(0.6)
-        auth2, m2, d2 = self.open_run(2)
-        try:
-            self.reserve(auth2, m2, d2)
-            # Trigger total_changes fallback
-            auth2._guarded_total_changes -= 1
-            auth2.assert_active()
-            self.assertEqual(auth2.validation_stats()["total_changes"], 1)
-            self.assertEqual(auth2.validation_stats()["fallbacks"], 1)
-
-            # Trigger data_version fallback
-            auth2._guarded_data_version -= 1
-            auth2.assert_active()
-            self.assertEqual(auth2.validation_stats()["data_version"], 1)
-            self.assertEqual(auth2.validation_stats()["fallbacks"], 2)
-
-            # Trigger cheap_fingerprint fallback
-            auth2._closed_fingerprint = dict(
-                auth2._closed_fingerprint,
-                max_attempt_rowid=auth2._closed_fingerprint["max_attempt_rowid"] + 1,
-            )
-            auth2.assert_active()
-            self.assertEqual(auth2.validation_stats()["cheap_fingerprint"], 1)
-            self.assertEqual(auth2.validation_stats()["fallbacks"], 3)
-        finally:
-            auth2.close()
-
-    def test_64mib_and_128mib_chunks_and_8mib_reviewed_manifest_compatibility(self) -> None:
-        """Verify 64 MiB and 128 MiB media_chunk attempts, status-probe reconciliation, crash adoption, and mixed 8 MiB -> 64 MiB closure on an unchanged reviewed manifest."""
-        payload_size = 269 * (1 << 20)
-        receipt_size = 1093
-        m = self.manifest(1)
-        m["payload"] = dict(m["payload"], bytes=payload_size)
-        m["receipt"] = dict(m["receipt"], bytes=receipt_size)
-        m["control_allowance_bytes"] = 1 << 20
-        m["max_charged_bytes"] = payload_size + receipt_size + (1 << 20)
-        raw, d = self.raw_and_digest(m)
-        ev = self.evidence(m, d)
-
-        auth = TransferAuthority.open_retained_run(
-            self.db_path, run_id=m["release_id"], writer_id=self.writer_id,
-            account_id=self.account_id, manifest_bytes=raw, evidence=ev,
-            deadline_at=self.clock() + 1200.0, clock=self.clock,
-            monotonic_clock=self.monotonic, boot_id="boot-1",
-        )
-        try:
-            self.reserve(auth, m, d)
-            session_sha = hashlib.sha256(b"https://www.googleapis.com/upload/session-1").hexdigest()
-
-            # 1. Start with two legacy 8 MiB chunks (as if manifest was reviewed and started at 8 MiB)
-            for idx in range(2):
-                self.clock.advance(0.6)
-                self.monotonic.advance(0.6)
-                att_id, _ = auth.start_request(
-                    8 << 20, 300, "media_chunk", method="PUT",
-                    target_category="media_chunk", target_sha256=session_sha,
-                    operation_key=f"{(idx + 100):064x}",
-                )
-                auth.mark_dispatch(att_id)
-                auth.finish_request(att_id, 308)
-
-            # 2. Switch to 64 MiB chunk that hits transient HTTP 503 after committing 16 MiB of the 64 MiB chunk
-            self.clock.advance(0.6)
-            self.monotonic.advance(0.6)
-            failed_64m, _ = auth.start_request(
-                64 << 20, 300, "media_chunk", method="PUT",
-                target_category="media_chunk", target_sha256=session_sha,
-                operation_key=f"{200:064x}",
-            )
-            auth.mark_dispatch(failed_64m)
-            auth.finish_request(failed_64m, 503)
-
-            # inspect_open_run must recognize the 64 MiB unresolved media_chunk as recoverable
-            open_info = TransferAuthority.inspect_open_retained_run(
-                self.db_path, writer_id=self.writer_id, account_id=self.account_id,
-                run_id=m["release_id"],
-            )
-            self.assertEqual(open_info["recoverable_unresolved_attempts"], 1)
-
-            # Status probe returns 308 acknowledging 32 MiB total (16 MiB prior + 16 MiB committed from the 64 MiB chunk)
-            self.clock.advance(0.6)
-            self.monotonic.advance(0.6)
-            probe_64m, _ = auth.start_request(
-                0, 60, "resumable_status", method="PUT",
-                target_category="resumable_status", target_sha256=session_sha,
-                operation_key=f"{201:064x}",
-            )
-            auth.mark_dispatch(probe_64m)
-            auth.finish_request(probe_64m, 308)
-            auth.reconcile_attempt_by_status_probe(
-                failed_attempt_id=failed_64m,
-                probe_attempt_id=probe_64m,
-                acknowledged_bytes=32 << 20,
-                committed_bytes=16 << 20,
-            )
-
-            # 3. Also test a 128 MiB chunk that is interrupted mid-flight (http_status=None),
-            # then reconciled via status probe (0 bytes committed) and retried + completed
-            self.clock.advance(0.6)
-            self.monotonic.advance(0.6)
-            interrupted_128m, _ = auth.start_request(
-                128 << 20, 300, "media_chunk", method="PUT",
-                target_category="media_chunk", target_sha256=session_sha,
-                operation_key=f"{300:064x}",
-            )
-            auth.mark_dispatch(interrupted_128m)
-            open_info_128 = TransferAuthority.inspect_open_retained_run(
-                self.db_path, writer_id=self.writer_id, account_id=self.account_id,
-                run_id=m["release_id"],
-            )
-            self.assertEqual(open_info_128["recoverable_unresolved_attempts"], 1)
-
-            self.clock.advance(0.6)
-            self.monotonic.advance(0.6)
-            probe_128m, _ = auth.start_request(
-                0, 60, "resumable_status", method="PUT",
-                target_category="resumable_status", target_sha256=session_sha,
-                operation_key=f"{301:064x}",
-            )
-            auth.mark_dispatch(probe_128m)
-            auth.finish_request(probe_128m, 308)
-            auth.reconcile_attempt_by_status_probe(
-                failed_attempt_id=interrupted_128m,
-                probe_attempt_id=probe_128m,
-                acknowledged_bytes=32 << 20,
-                committed_bytes=0,
-            )
-
-            # Finish remaining 237 MiB (128 MiB + 64 MiB + 45 MiB) + receipt and close the pair under the original manifest
-            for rem_idx, chunk_sz in enumerate((128 << 20, 64 << 20, 45 << 20, receipt_size)):
-                self.clock.advance(0.6)
-                self.monotonic.advance(0.6)
-                c_id, _ = auth.start_request(
-                    chunk_sz, 300, "media_chunk", method="PUT",
-                    target_category="media_chunk", target_sha256=session_sha,
-                    operation_key=f"{(400 + rem_idx):064x}",
-                )
-                auth.mark_dispatch(c_id)
-                auth.finish_request(c_id, 200 if rem_idx >= 2 else 308)
-
-            self.finish_index(auth, m, d)
-
-            # Verify _known_usage conservatively counts the wire bytes of both failed/interrupted
-            # chunks (48 MiB uncommitted + 128 MiB uncommitted) in addition to the 269 MiB + receipt committed bytes
-            acct = TransferAuthority.inspect_retained_account(
-                self.db_path, writer_id=self.writer_id, account_id=self.account_id,
-                clock=self.clock,
-            )
-            expected_wire = (
-                retained_module.LEGACY_DIAGNOSTIC_CHARGED_BYTES
-                + payload_size
-                + receipt_size
-                + (48 << 20)
-                + (128 << 20)
-            )
-            self.assertEqual(acct["known_local_rolling_bytes"], expected_wire)
-            self.assertEqual(acct["unresolved_attempts"], 0)
-        finally:
-            auth.close()
-
     def test_crash_adoption_adopts_zero_byte_drive_api_get_401_and_5xx(self):
         dead_pid = 999981
         m1 = self.manifest(1)
@@ -2308,6 +2122,192 @@ class RetainedAuthorityTests(unittest.TestCase):
         self.assertEqual(acct_done["active_run_count"], 0)
         self.assertEqual(acct_done["unresolved_attempts"], 0)
         self.assertEqual(acct_done["forensic_raw_unresolved_attempts"], 1)
+
+    def test_validation_stats_counter_tracks_fallbacks_and_reasons(self) -> None:
+        """Per-pair validation_stats records 2 full validations (open_run + close_pair) and 0 fallbacks normally, and increments exact fallback reasons."""
+        auth, m1, d1 = self.open_run(1)
+        try:
+            self.reserve(auth, m1, d1)
+            for _ in range(3):
+                self.clock.advance(0.6)
+                self.monotonic.advance(0.6)
+                auth.assert_active()
+                att_id, _ = self.request(auth, 1, "media_chunk")
+                auth.seconds_until_dispatch(att_id)
+                auth.mark_dispatch(att_id)
+                auth.finish_request(att_id, 200)
+            self.finish_index(auth, m1, d1)
+            stats = auth.validation_stats()
+            self.assertEqual(stats["open_run_full_validates"], 1)
+            self.assertEqual(stats["close_pair_full_validates"], 1)
+            self.assertEqual(stats["full_validate_calls"], 2)
+            self.assertEqual(stats["fallbacks"], 0)
+            self.assertEqual(stats["total_changes"], 0)
+            self.assertEqual(stats["data_version"], 0)
+            self.assertEqual(stats["cheap_fingerprint"], 0)
+        finally:
+            auth.close()
+
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        auth2, m2, d2 = self.open_run(2)
+        try:
+            self.reserve(auth2, m2, d2)
+            # Trigger total_changes fallback
+            auth2._guarded_total_changes -= 1
+            auth2.assert_active()
+            self.assertEqual(auth2.validation_stats()["total_changes"], 1)
+            self.assertEqual(auth2.validation_stats()["fallbacks"], 1)
+
+            # Trigger data_version fallback
+            auth2._guarded_data_version -= 1
+            auth2.assert_active()
+            self.assertEqual(auth2.validation_stats()["data_version"], 1)
+            self.assertEqual(auth2.validation_stats()["fallbacks"], 2)
+
+            # Trigger cheap_fingerprint fallback
+            auth2._closed_fingerprint = dict(
+                auth2._closed_fingerprint,
+                max_attempt_rowid=auth2._closed_fingerprint["max_attempt_rowid"] + 1,
+            )
+            auth2.assert_active()
+            self.assertEqual(auth2.validation_stats()["cheap_fingerprint"], 1)
+            self.assertEqual(auth2.validation_stats()["fallbacks"], 3)
+        finally:
+            auth2.close()
+
+    def test_64mib_and_128mib_chunks_and_8mib_reviewed_manifest_compatibility(self) -> None:
+        """Verify 64 MiB and 128 MiB media_chunk attempts, status-probe reconciliation, crash adoption, and mixed 8 MiB -> 64 MiB closure on an unchanged reviewed manifest."""
+        payload_size = 269 * (1 << 20)
+        receipt_size = 1093
+        m = self.manifest(1)
+        m["payload"] = dict(m["payload"], bytes=payload_size)
+        m["receipt"] = dict(m["receipt"], bytes=receipt_size)
+        m["control_allowance_bytes"] = 1 << 20
+        m["max_charged_bytes"] = payload_size + receipt_size + (1 << 20)
+        raw, d = self.raw_and_digest(m)
+        ev = self.evidence(m, d)
+
+        auth = TransferAuthority.open_retained_run(
+            self.db_path, run_id=m["release_id"], writer_id=self.writer_id,
+            account_id=self.account_id, manifest_bytes=raw, evidence=ev,
+            deadline_at=self.clock() + 1200.0, clock=self.clock,
+            monotonic_clock=self.monotonic, boot_id="boot-1",
+        )
+        try:
+            self.reserve(auth, m, d)
+            session_sha = hashlib.sha256(b"https://www.googleapis.com/upload/session-1").hexdigest()
+
+            # 1. Start with two legacy 8 MiB chunks (as if manifest was reviewed and started at 8 MiB)
+            for idx in range(2):
+                self.clock.advance(0.6)
+                self.monotonic.advance(0.6)
+                att_id, _ = auth.start_request(
+                    8 << 20, 300, "media_chunk", method="PUT",
+                    target_category="media_chunk", target_sha256=session_sha,
+                    operation_key=f"{(idx + 100):064x}",
+                )
+                auth.mark_dispatch(att_id)
+                auth.finish_request(att_id, 308)
+
+            # 2. Switch to 64 MiB chunk that hits transient HTTP 503 after committing 16 MiB of the 64 MiB chunk
+            self.clock.advance(0.6)
+            self.monotonic.advance(0.6)
+            failed_64m, _ = auth.start_request(
+                64 << 20, 300, "media_chunk", method="PUT",
+                target_category="media_chunk", target_sha256=session_sha,
+                operation_key=f"{200:064x}",
+            )
+            auth.mark_dispatch(failed_64m)
+            auth.finish_request(failed_64m, 503)
+
+            # inspect_open_run must recognize the 64 MiB unresolved media_chunk as recoverable
+            open_info = TransferAuthority.inspect_open_retained_run(
+                self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+                run_id=m["release_id"],
+            )
+            self.assertEqual(open_info["recoverable_unresolved_attempts"], 1)
+
+            # Status probe returns 308 acknowledging 32 MiB total (16 MiB prior + 16 MiB committed from the 64 MiB chunk)
+            self.clock.advance(0.6)
+            self.monotonic.advance(0.6)
+            probe_64m, _ = auth.start_request(
+                0, 60, "resumable_status", method="PUT",
+                target_category="resumable_status", target_sha256=session_sha,
+                operation_key=f"{201:064x}",
+            )
+            auth.mark_dispatch(probe_64m)
+            auth.finish_request(probe_64m, 308)
+            auth.reconcile_attempt_by_status_probe(
+                failed_attempt_id=failed_64m,
+                probe_attempt_id=probe_64m,
+                acknowledged_bytes=32 << 20,
+                committed_bytes=16 << 20,
+            )
+
+            # 3. Also test a 128 MiB chunk that is interrupted mid-flight (http_status=None),
+            # then reconciled via status probe (0 bytes committed) and retried + completed
+            self.clock.advance(0.6)
+            self.monotonic.advance(0.6)
+            interrupted_128m, _ = auth.start_request(
+                128 << 20, 300, "media_chunk", method="PUT",
+                target_category="media_chunk", target_sha256=session_sha,
+                operation_key=f"{300:064x}",
+            )
+            auth.mark_dispatch(interrupted_128m)
+            open_info_128 = TransferAuthority.inspect_open_retained_run(
+                self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+                run_id=m["release_id"],
+            )
+            self.assertEqual(open_info_128["recoverable_unresolved_attempts"], 1)
+
+            self.clock.advance(0.6)
+            self.monotonic.advance(0.6)
+            probe_128m, _ = auth.start_request(
+                0, 60, "resumable_status", method="PUT",
+                target_category="resumable_status", target_sha256=session_sha,
+                operation_key=f"{301:064x}",
+            )
+            auth.mark_dispatch(probe_128m)
+            auth.finish_request(probe_128m, 308)
+            auth.reconcile_attempt_by_status_probe(
+                failed_attempt_id=interrupted_128m,
+                probe_attempt_id=probe_128m,
+                acknowledged_bytes=32 << 20,
+                committed_bytes=0,
+            )
+
+            # Finish remaining 237 MiB (128 MiB + 64 MiB + 45 MiB) + receipt and close the pair under the original manifest
+            for rem_idx, chunk_sz in enumerate((128 << 20, 64 << 20, 45 << 20, receipt_size)):
+                self.clock.advance(0.6)
+                self.monotonic.advance(0.6)
+                c_id, _ = auth.start_request(
+                    chunk_sz, 300, "media_chunk", method="PUT",
+                    target_category="media_chunk", target_sha256=session_sha,
+                    operation_key=f"{(400 + rem_idx):064x}",
+                )
+                auth.mark_dispatch(c_id)
+                auth.finish_request(c_id, 200 if rem_idx >= 2 else 308)
+
+            self.finish_index(auth, m, d)
+
+            # Verify _known_usage conservatively counts the wire bytes of both failed/interrupted
+            # chunks (48 MiB uncommitted + 128 MiB uncommitted) in addition to the 269 MiB + receipt committed bytes
+            acct = TransferAuthority.inspect_retained_account(
+                self.db_path, writer_id=self.writer_id, account_id=self.account_id,
+                clock=self.clock,
+            )
+            expected_wire = (
+                retained_module.LEGACY_DIAGNOSTIC_CHARGED_BYTES
+                + payload_size
+                + receipt_size
+                + (48 << 20)
+                + (128 << 20)
+            )
+            self.assertEqual(acct["known_local_rolling_bytes"], expected_wire)
+            self.assertEqual(acct["unresolved_attempts"], 0)
+        finally:
+            auth.close()
 
 
 if __name__ == "__main__":

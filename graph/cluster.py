@@ -129,24 +129,30 @@ def build_hierarchy(
     strength = np.bincount(np.concatenate([cu, cv]), weights=np.concatenate([ew, ew]), minlength=n_comm)
     norm_w = ew / np.maximum(np.sqrt(strength[cu] * strength[cv]), 1e-9)
 
-    # Keep top-20 strongest neighbors per community so meta-graph has <= 20k edges
-    keep_mask = norm_w >= 0.005
-    cu, cv, norm_w, ew = cu[keep_mask], cv[keep_mask], norm_w[keep_mask], ew[keep_mask]
+    # Keep each community's 20 strongest neighbours, counted from both endpoints and with no
+    # weight floor. With a 0.005 floor and one-sided ranking, 9k communities only coarsened to
+    # ~1,600 scenes even at the lowest resolution; this keeps every community linked (6 pieces).
     if len(norm_w) > 0:
-        order_c = np.lexsort((-norm_w, cu))
-        cu_s, cv_s, nw_s, ew_s = cu[order_c], cv[order_c], norm_w[order_c], ew[order_c]
-        first_c = np.r_[0, np.flatnonzero(np.diff(cu_s)) + 1]
-        rank_c = np.arange(len(cu_s)) - np.repeat(first_c, np.diff(np.r_[first_c, len(cu_s)]))
-        top_c = rank_c < 20
-        cu, cv, norm_w, ew = cu_s[top_c], cv_s[top_c], nw_s[top_c], ew_s[top_c]
+        eid = np.arange(len(norm_w))
+        ends = np.concatenate([cu, cv])
+        both = np.concatenate([eid, eid])
+        bw = np.concatenate([norm_w, norm_w])
+        order_c = np.lexsort((-bw, ends))
+        ends_s, both_s = ends[order_c], both[order_c]
+        first_c = np.r_[0, np.flatnonzero(np.diff(ends_s)) + 1]
+        rank_c = np.arange(len(ends_s)) - np.repeat(first_c, np.diff(np.r_[first_c, len(ends_s)]))
+        keep = np.unique(both_s[rank_c < 20])
+        cu, cv, norm_w, ew = cu[keep], cv[keep], norm_w[keep], ew[keep]
 
     cg = ig.Graph(n=n_comm, edges=list(zip(cu.tolist(), cv.tolist())), directed=False)
     cg.es["weight"] = norm_w.tolist()
+    print(f"community graph: {n_comm} communities, {cg.ecount()} edges, "
+          f"{len(cg.connected_components())} connected pieces", flush=True)
 
     def tune_rb(graph: ig.Graph, target_k: int, lo: float = 0.05, hi: float = 20.0) -> np.ndarray:
         best_m = np.zeros(graph.vcount(), dtype=np.int32)
         best_diff = 10**9
-        for _ in range(7):
+        for _ in range(12):
             mid = (lo * hi) ** 0.5
             part = leidenalg.find_partition(
                 graph,
@@ -177,7 +183,7 @@ def build_hierarchy(
         _, dense = np.unique(best_m, return_inverse=True)
         return dense.astype(np.int32)
 
-    scene_of_comm = tune_rb(cg, target_scenes, lo=0.2, hi=25.0)
+    scene_of_comm = tune_rb(cg, target_scenes, lo=0.001, hi=25.0)
     n_scenes = int(scene_of_comm.max()) + 1 if len(scene_of_comm) else 1
 
     # Build scene-to-scene graph for macro-domains (~15) cleanly nested over scenes
@@ -196,10 +202,10 @@ def build_hierarchy(
         s_norm = s_ew / np.maximum(np.sqrt(s_str[s_cu] * s_str[s_cv]), 1e-9)
         sg = ig.Graph(n=n_scenes, edges=list(zip(s_cu.tolist(), s_cv.tolist())), directed=False)
         sg.es["weight"] = s_norm.tolist()
-        domain_of_scene = tune_rb(sg, target_domains, lo=0.05, hi=10.0)
+        domain_of_scene = tune_rb(sg, target_domains, lo=0.001, hi=10.0)
         domain_of_comm = domain_of_scene[scene_of_comm]
     else:
-        domain_of_comm = tune_rb(cg, target_domains, lo=0.05, hi=5.0)
+        domain_of_comm = tune_rb(cg, target_domains, lo=0.001, hi=5.0)
 
     return scene_of_comm, domain_of_comm
 
@@ -218,41 +224,51 @@ def main() -> None:
     ap.add_argument("--resolution", type=float, default=0, help="CPM resolution (0 to bisect)")
     ap.add_argument("--search-steps", type=int, default=4)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--membership", default=None, help="saved membership.npy to reuse instead of running Leiden")
     args = ap.parse_args()
     d = pathlib.Path(args.dir)
 
     dids, followers, raw = load(d)
     n = len(dids)
-    backbone = prune_for_backbone(raw, top_k=args.cluster_top_k, min_cos=args.cluster_min_cos)
-    if not len(backbone):
-        raise SystemExit("No similarity edges meet the backbone threshold; clustering failed")
-    b_src, b_dst, b_w = symmetric_edges(backbone)
-    g = ig.Graph(n=n, edges=list(zip(b_src.tolist(), b_dst.tolist())), directed=False)
-    g.es["weight"] = b_w.tolist()
-
-    if args.resolution is not None and args.resolution > 0:
-        res = args.resolution
+    if args.membership:
+        # Reuse a finished partition (Leiden on ~2M producers takes over an hour) and redo only
+        # the memberships, hierarchy and outputs.
+        memb = np.load(args.membership)
+        prior = json.loads((d / "cluster_stats.json").read_text())
+        res, backbone_edges = prior["resolution"], prior["backbone_edges_undirected"]
     else:
-        lo, hi = 0.0001, 0.08
-        res = (lo * hi) ** 0.5
-        best_res, best_error = res, float("inf")
-        for step in range(args.search_steps):
+        backbone = prune_for_backbone(raw, top_k=args.cluster_top_k, min_cos=args.cluster_min_cos)
+        if not len(backbone):
+            raise SystemExit("No similarity edges meet the backbone threshold; clustering failed")
+        b_src, b_dst, b_w = symmetric_edges(backbone)
+        g = ig.Graph(n=n, edges=list(zip(b_src.tolist(), b_dst.tolist())), directed=False)
+        g.es["weight"] = b_w.tolist()
+
+        if args.resolution is not None and args.resolution > 0:
+            res = args.resolution
+        else:
+            lo, hi = 0.0001, 0.08
             res = (lo * hi) ** 0.5
-            trial = run_leiden(g, res, args.seed, iterations=1)
-            objective = community_median_size if args.size_objective == "community" else median_size
-            ms = objective(trial, args.min_size)
-            error = abs(ms - args.target_size)
-            print(f"resolution trial {step + 1}: resolution={res:.8f}, {args.size_objective}_median={ms}", flush=True)
-            if error < best_error:
-                best_res, best_error = res, error
-            if abs(ms - args.target_size) / args.target_size < 0.10:
-                break
-            if ms > args.target_size:
-                lo = res
-            else:
-                hi = res
-        res = best_res
-    memb = run_leiden(g, res, args.seed, iterations=2)
+            best_res, best_error = res, float("inf")
+            for step in range(args.search_steps):
+                res = (lo * hi) ** 0.5
+                trial = run_leiden(g, res, args.seed, iterations=1)
+                objective = community_median_size if args.size_objective == "community" else median_size
+                ms = objective(trial, args.min_size)
+                error = abs(ms - args.target_size)
+                print(f"resolution trial {step + 1}: resolution={res:.8f}, {args.size_objective}_median={ms}", flush=True)
+                if error < best_error:
+                    best_res, best_error = res, error
+                if abs(ms - args.target_size) / args.target_size < 0.10:
+                    break
+                if ms > args.target_size:
+                    lo = res
+                else:
+                    hi = res
+            res = best_res
+        memb = run_leiden(g, res, args.seed, iterations=2)
+        backbone_edges = int(len(b_w))
+        np.save(d / "membership.npy", memb)
 
     sizes = np.bincount(memb)
     order = np.argsort(-sizes)
@@ -303,6 +319,9 @@ def main() -> None:
     rank = np.arange(len(kp)) - np.repeat(first, np.diff(np.r_[first, len(kp)]))
     top = rank < 3
     top_kc = kc[top].astype(np.uint32)
+    # numpy narrowing casts wrap silently; the netcup schema is UInt16 scenes and UInt8 domains.
+    if scene_of_comm.max(initial=0) > np.iinfo(np.uint16).max or domain_of_comm.max(initial=0) > np.iinfo(np.uint8).max:
+        raise SystemExit(f"hierarchy too wide for the schema: {scene_of_comm.max() + 1} scenes, {domain_of_comm.max() + 1} domains")
     kf = pa.table({
         "pid": kp[top].astype(np.uint32),
         "did": pa.array([dids[p] for p in kp[top]]),
@@ -331,7 +350,7 @@ def main() -> None:
     sz = [len(v) for v in members.values()]
     stats = {
         "producers": n,
-        "backbone_edges_undirected": int(len(b_w)),
+        "backbone_edges_undirected": backbone_edges,
         "sim_edges_undirected": int(len(w)),
         "resolution": res,
         "algorithm": "Leiden CPM with similarity-share overlapping memberships; not twitter/sbf Metropolis-Hastings",

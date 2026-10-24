@@ -2252,6 +2252,63 @@ class RetainedAuthorityTests(unittest.TestCase):
                         account_id=self.account_id, clock=self.clock,
                     )
 
+    def test_reconcile_retried_drive_get_on_real_authority_allows_pair_completion(self):
+        authority, manifest, digest = self.open_run(1)
+        self.reserve(authority, manifest, digest)
+
+        failed_get, _ = authority.start_request(
+            0, 60, "drive_api", method="GET",
+            target_category="drive_api", target_sha256="1" * 64,
+            operation_key="2" * 64,
+        )
+        authority.mark_dispatch(failed_get)
+        authority.finish_request(failed_get, 401)
+
+        acct_before = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id,
+            account_id=self.account_id, clock=self.clock,
+        )
+        self.assertEqual(acct_before["unresolved_attempts"], 1)
+
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        retried_get, _ = authority.start_request(
+            0, 60, "drive_api", method="GET",
+            target_category="drive_api", target_sha256="1" * 64,
+            operation_key="2" * 64,
+        )
+        authority.mark_dispatch(retried_get)
+        authority.finish_request(retried_get, 200)
+        authority.reconcile_retried_drive_get(failed_get)
+
+        acct_after = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id,
+            account_id=self.account_id, clock=self.clock,
+        )
+        self.assertEqual(acct_after["unresolved_attempts"], 0)
+        self.assertEqual(acct_after["forensic_raw_unresolved_attempts"], 1)
+
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        p_att, _ = self.request(authority, manifest["payload"]["bytes"], "media_chunk")
+        authority.mark_dispatch(p_att)
+        authority.finish_request(p_att, 200)
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        r_att, _ = self.request(authority, manifest["receipt"]["bytes"], "media_chunk")
+        authority.mark_dispatch(r_att)
+        authority.finish_request(r_att, 200)
+
+        self.finish_index(authority, manifest, digest)
+
+        acct_done = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id,
+            account_id=self.account_id, clock=self.clock,
+        )
+        self.assertEqual(acct_done["active_run_count"], 0)
+        self.assertEqual(acct_done["unresolved_attempts"], 0)
+        self.assertEqual(acct_done["forensic_raw_unresolved_attempts"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

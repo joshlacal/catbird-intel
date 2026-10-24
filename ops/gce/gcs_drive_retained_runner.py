@@ -665,6 +665,19 @@ def _child_stop_reason(code: int, log_path: Path) -> str:
     return reason
 
 
+def _child_validation_stats(log_path: Path) -> dict | None:
+    with contextlib.suppress(OSError, ValueError, Conflict):
+        if log_path.is_file() and log_path.stat().st_size <= 64 * 1024:
+            for line in reversed(log_path.read_text().splitlines()[-8:]):
+                record = json.loads(line, object_pairs_hook=_strict_object,
+                                    parse_constant=_bad_constant)
+                if (isinstance(record, dict) and
+                        record.get("event") == "overflow_retained" and
+                        isinstance(record.get("validation_stats"), dict)):
+                    return record["validation_stats"]
+    return None
+
+
 def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Path,
                  authority_db: Path, evidence_dir: Path, account_id: str,
                  writer_id: str, oauth_file: Path, status_file: Path,
@@ -892,11 +905,18 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                     release_closed_pair_stage(
                         candidate["run_id"], candidate["pair_key"], row["mapping_sha256"],
                         data_root=data_root)
-                    status.update(state="pair_closed", pairs_closed=status.base["pairs_closed"] + 1,
-                                  last_pair=candidate["pair_key"],
-                                  last_mapping_sha256=row["mapping_sha256"],
-                                  charged_bytes_observed=account_after["known_local_rolling_bytes"],
-                                  cooldown_until=account_after["cooldown_until"])
+                    vstats = _child_validation_stats(task["log_path"])
+                    status_kw = {
+                        "state": "pair_closed",
+                        "pairs_closed": status.base["pairs_closed"] + 1,
+                        "last_pair": candidate["pair_key"],
+                        "last_mapping_sha256": row["mapping_sha256"],
+                        "charged_bytes_observed": account_after["known_local_rolling_bytes"],
+                        "cooldown_until": account_after["cooldown_until"],
+                    }
+                    if vstats is not None:
+                        status_kw["last_validation_stats"] = vstats
+                    status.update(**status_kw)
                 for task, code in zip(wave_tasks, codes):
                     if code != 0:
                         reason = _child_stop_reason(code, task["log_path"])

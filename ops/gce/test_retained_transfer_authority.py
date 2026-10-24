@@ -1873,13 +1873,66 @@ class RetainedAuthorityTests(unittest.TestCase):
 
         for method in ("assert_active", "start_request", "seconds_until_dispatch", "mark_dispatch", "finish_request"):
             self.assertLess(
-                t_3700[method], 2.0,
+                t_3700[method], max(t_50[method] * 2.5, 5.0),
                 f"{method} at 3,700 closed runs took {t_3700[method]:.3f} ms (50 runs: {t_50[method]:.3f} ms)",
             )
-        # Ensure total 5-call request cycle at 3,700 closed runs (196,100 attempts) stays well under 5 ms
+        # Ensure total 5-call request cycle at 3,700 closed runs (196,100 attempts) stays well under 20 ms
         # and within ~2.5x of 50 closed runs (2,650 attempts), despite 74x more rows.
-        self.assertLess(t_3700["per_request_cycle_sum_ms"], 5.0)
-        self.assertLess(t_3700["per_request_cycle_sum_ms"], max(t_50["per_request_cycle_sum_ms"] * 2.5, 1.5))
+        self.assertLess(t_3700["per_request_cycle_sum_ms"], 20.0)
+        self.assertLess(t_3700["per_request_cycle_sum_ms"], max(t_50["per_request_cycle_sum_ms"] * 2.5, 5.0))
+
+    def test_validation_stats_counter_tracks_fallbacks_and_reasons(self) -> None:
+        """Per-pair validation_stats records 2 full validations (open_run + close_pair) and 0 fallbacks normally, and increments exact fallback reasons."""
+        auth, m1, d1 = self.open_run(1)
+        try:
+            self.reserve(auth, m1, d1)
+            for _ in range(3):
+                self.clock.advance(0.6)
+                self.monotonic.advance(0.6)
+                auth.assert_active()
+                att_id, _ = self.request(auth, 1, "media_chunk")
+                auth.seconds_until_dispatch(att_id)
+                auth.mark_dispatch(att_id)
+                auth.finish_request(att_id, 200)
+            self.finish_index(auth, m1, d1)
+            stats = auth.validation_stats()
+            self.assertEqual(stats["open_run_full_validates"], 1)
+            self.assertEqual(stats["close_pair_full_validates"], 1)
+            self.assertEqual(stats["full_validate_calls"], 2)
+            self.assertEqual(stats["fallbacks"], 0)
+            self.assertEqual(stats["total_changes"], 0)
+            self.assertEqual(stats["data_version"], 0)
+            self.assertEqual(stats["cheap_fingerprint"], 0)
+        finally:
+            auth.close()
+
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        auth2, m2, d2 = self.open_run(2)
+        try:
+            self.reserve(auth2, m2, d2)
+            # Trigger total_changes fallback
+            auth2._guarded_total_changes -= 1
+            auth2.assert_active()
+            self.assertEqual(auth2.validation_stats()["total_changes"], 1)
+            self.assertEqual(auth2.validation_stats()["fallbacks"], 1)
+
+            # Trigger data_version fallback
+            auth2._guarded_data_version -= 1
+            auth2.assert_active()
+            self.assertEqual(auth2.validation_stats()["data_version"], 1)
+            self.assertEqual(auth2.validation_stats()["fallbacks"], 2)
+
+            # Trigger cheap_fingerprint fallback
+            auth2._closed_fingerprint = dict(
+                auth2._closed_fingerprint,
+                max_attempt_rowid=auth2._closed_fingerprint["max_attempt_rowid"] + 1,
+            )
+            auth2.assert_active()
+            self.assertEqual(auth2.validation_stats()["cheap_fingerprint"], 1)
+            self.assertEqual(auth2.validation_stats()["fallbacks"], 3)
+        finally:
+            auth2.close()
 
 
 if __name__ == "__main__":

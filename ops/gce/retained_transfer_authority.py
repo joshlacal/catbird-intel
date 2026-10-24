@@ -254,6 +254,21 @@ class RetainedObservationAuthority:
         self._guarded_total_changes: int | None = None
         self._guarded_data_version: int | None = None
         self._last_validated_payload_identities: set[tuple[str, str, int]] = set()
+        self._validation_stats: dict[str, int] = {
+            "fast_checks": 0,
+            "fast_hits": 0,
+            "fallbacks": 0,
+            "total_changes": 0,
+            "data_version": 0,
+            "cheap_fingerprint": 0,
+            "uninitialized": 0,
+            "full_validate_calls": 0,
+            "open_run_full_validates": 0,
+            "close_pair_full_validates": 0,
+        }
+
+    def validation_stats(self) -> dict[str, int]:
+        return dict(self._validation_stats)
 
     def _db_data_version(self) -> int:
         return int(self.db.execute("PRAGMA data_version").fetchone()[0])
@@ -775,6 +790,7 @@ class RetainedObservationAuthority:
                 if max_concurrent_runs > 1:
                     authority._ensure_run_claim_table()
                 authority._ensure_validation_indexes()
+                authority._validation_stats["open_run_full_validates"] += 1
                 authority._validate_all(allow_boot_change=True)
                 if db.execute("SELECT COUNT(*) FROM retained_import").fetchone()[0] != 1:
                     raise AuthorityBlocked("Reviewed legacy diagnostic charge is not imported")
@@ -1629,6 +1645,7 @@ class RetainedObservationAuthority:
         refresh_closed_fingerprint: bool = False,
     ) -> None:
         """Semantic check beyond SQLite integrity before every admission."""
+        self._validation_stats["full_validate_calls"] += 1
         account = self._account(
             require_process=False, allow_boot_change=allow_boot_change
         )
@@ -1921,6 +1938,7 @@ class RetainedObservationAuthority:
         self, *, allow_boot_change: bool = False
     ) -> None:
         """Per-request O(1) validation of open runs, their attempts, and the closed-history fingerprint."""
+        self._validation_stats["fast_checks"] += 1
         fp = self._closed_fingerprint
         if (
             fp is None or
@@ -1928,13 +1946,20 @@ class RetainedObservationAuthority:
             self._guarded_data_version is None or
             not _valid_digest(fp.get("sha256"))
         ):
+            self._validation_stats["fallbacks"] += 1
+            self._validation_stats["uninitialized"] += 1
             self._validate_all(allow_boot_change=allow_boot_change)
             return
 
-        if (
-            self.db.total_changes != self._guarded_total_changes or
-            self._db_data_version() != self._guarded_data_version
-        ):
+        if self.db.total_changes != self._guarded_total_changes:
+            self._validation_stats["fallbacks"] += 1
+            self._validation_stats["total_changes"] += 1
+            self._validate_all(allow_boot_change=allow_boot_change)
+            return
+
+        if self._db_data_version() != self._guarded_data_version:
+            self._validation_stats["fallbacks"] += 1
+            self._validation_stats["data_version"] += 1
             self._validate_all(allow_boot_change=allow_boot_change)
             return
 
@@ -1950,6 +1975,8 @@ class RetainedObservationAuthority:
             int(cheap_row[1]) != fp["max_closed_run_rowid"] or
             int(cheap_row[2]) != fp["max_attempt_rowid"]
         ):
+            self._validation_stats["fallbacks"] += 1
+            self._validation_stats["cheap_fingerprint"] += 1
             self._validate_all(allow_boot_change=allow_boot_change)
             return
 
@@ -2171,6 +2198,7 @@ class RetainedObservationAuthority:
                 b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9
             ):
                 raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+        self._validation_stats["fast_hits"] += 1
 
     @staticmethod
     def _validate_attempt(attempt: sqlite3.Row, run: sqlite3.Row, *,
@@ -2683,6 +2711,7 @@ class RetainedObservationAuthority:
     def close_pair(self, pair_key: str) -> None:
         """Move verified pair to index_pending; next pair stays blocked."""
         with self._transaction():
+            self._validation_stats["close_pair_full_validates"] += 1
             account, run = self._run(allow_recovery=True)
             now = self._now(account)
             if pair_key != self.expected_pair_key or run["status"] != "verified":
@@ -2783,7 +2812,7 @@ class RetainedObservationAuthority:
             else:
                 self.db.execute("UPDATE retained_account SET process_host=NULL,process_pid=NULL,"
                                 "process_nonce=NULL,last_clock=? WHERE id=1", (now,))
-            self._validate_all(refresh_closed_fingerprint=True)
+            self._closed_fingerprint = None
 
     def pair_status(self, pair_key: str, manifest_sha256: str) -> str:
         self._validate_all()

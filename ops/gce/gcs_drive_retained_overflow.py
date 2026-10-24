@@ -824,8 +824,16 @@ def _run_worker_guarded(args, manifest: dict, digest: str, evidence: dict) -> in
         with RetainedOverflow(cloud, drive,
                               authority, args.work_dir, manifest, digest, raw) as worker:
             result = worker.run_one()
-        print(json.dumps({"event": "overflow_retained", **result,
-                          "history_proven": False, "admission_mode": "retained_pair_observation"}), flush=True)
+        vstats = (
+            authority.validation_stats()
+            if callable(getattr(authority, "validation_stats", None))
+            else None
+        )
+        out = {"event": "overflow_retained", **result,
+               "history_proven": False, "admission_mode": "retained_pair_observation"}
+        if vstats is not None:
+            out["validation_stats"] = vstats
+        print(json.dumps(out), flush=True)
         return 0
     except DriveHttpStop as error:
         output = {"event": "overflow_drive_http_stop", "http_status": error.status,

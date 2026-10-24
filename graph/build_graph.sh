@@ -17,9 +17,15 @@ OUT="${OUT:-$WORK/out}"
 MIN_FOLLOWERS="${1:-100}"
 MAX_FOLLOWS="${2:-20000}"
 mkdir -p "$OUT" "$WORK/ch"
-sed -e "s#__EVENTS__#${EVENTS}#g" -e "s#__SNAPSHOTS__#${SNAPSHOTS}#g" -e "s#__NETCUP__#${NETCUP}#g" \
-    -e "s#__OUT__#${OUT}#g" \
-    -e "s#__MIN_FOLLOWERS__#${MIN_FOLLOWERS}#g" -e "s#__MAX_FOLLOWS__#${MAX_FOLLOWS}#g" \
-    "$HERE/fold_follows.sql" > "$WORK/fold.sql"
+# Comment lines keep their placeholders: ClickHouse 26.9's client chokes on paths
+# like ".../*.parquet" inside "--" comments ("Could not parse the number of retries").
+sed -e "/^[[:space:]]*--/!{
+s#__EVENTS__#${EVENTS}#g
+s#__SNAPSHOTS__#${SNAPSHOTS}#g
+s#__NETCUP__#${NETCUP}#g
+s#__OUT__#${OUT}#g
+s#__MIN_FOLLOWERS__#${MIN_FOLLOWERS}#g
+s#__MAX_FOLLOWS__#${MAX_FOLLOWS}#g
+}" "$HERE/fold_follows.sql" > "$WORK/fold.sql"
 clickhouse local --path "$WORK/ch" --queries-file "$WORK/fold.sql" -- --user_files_path="$LAKE"
 cat "$OUT/stats.tsv" "$OUT/coverage_stats.tsv"

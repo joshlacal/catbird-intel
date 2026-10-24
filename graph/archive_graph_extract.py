@@ -578,6 +578,9 @@ def main() -> int:
     ap.add_argument("--decoder", default=str(DECODER), help="path to decode_segments.mjs")
     ap.add_argument("--batch", type=int, default=12, help="segments per decode round")
     ap.add_argument("--parallel", type=int, default=4, help="parallel downloads")
+    ap.add_argument("--scratch", default=None,
+                    help="directory for downloaded segments and decoder output (fast local disk); "
+                         "the ledger and Parquet stay under --work")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--static-listing", action="store_true",
                     help="list segments once and reuse it (a closed range; avoids re-listing Drive every batch)")
@@ -607,11 +610,14 @@ def main() -> int:
     if args.static_listing:
         listed = list_segments()
         list_segments = lambda: listed
-    staging = work / "staging" / "segments"
-    decoded = work / "decoded_batch"
+    scratch = pathlib.Path(args.scratch) if args.scratch else work
+    staging_root = scratch / "staging"
+    staging = staging_root / "segments"
+    decoded = scratch / "decoded_batch"
     events = work / "events"
     ledger_path = work / "ledger.json"
     work.mkdir(parents=True, exist_ok=True)
+    scratch.mkdir(parents=True, exist_ok=True)
     ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else {"next_index": 0, "segments": {}, "shards_done": []}
     shards_done = set(ledger["shards_done"])
 
@@ -665,7 +671,7 @@ def main() -> int:
         t1 = time.time()
         cmd = [
             "node", str(decoder),
-            "--archive", str(work / "staging"),
+            "--archive", str(staging_root),
             "--out", str(decoded),
             "--collections", ",".join(collections),
             "--max-events", "1000000000",

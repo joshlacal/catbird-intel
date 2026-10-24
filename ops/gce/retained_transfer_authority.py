@@ -11,6 +11,7 @@ may be reopened solely to publish or confirm its immutable mapping.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import bisect
 import hashlib
 import json
 import os
@@ -249,6 +250,43 @@ class RetainedObservationAuthority:
         self.process_host = socket.gethostname()
         self.process_pid = os.getpid()
         self.process_nonce = _PROCESS_NONCE
+        self._closed_fingerprint: dict | None = None
+        self._guarded_total_changes: int | None = None
+        self._guarded_data_version: int | None = None
+        self._last_validated_payload_identities: set[tuple[str, str, int]] = set()
+
+    def _db_data_version(self) -> int:
+        return int(self.db.execute("PRAGMA data_version").fetchone()[0])
+
+    def _sync_db_guards(self) -> None:
+        self._guarded_total_changes = self.db.total_changes
+        self._guarded_data_version = self._db_data_version()
+
+    def _ensure_validation_indexes(self) -> None:
+        existing = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name IN ('idx_retained_run_status',"
+                "'idx_retained_attempt_run_id',"
+                "'idx_retained_reconciliation_run_id')"
+            ).fetchall()
+        }
+        if "idx_retained_run_status" not in existing:
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_retained_run_status "
+                "ON retained_run(status)"
+            )
+        if "idx_retained_attempt_run_id" not in existing:
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_retained_attempt_run_id "
+                "ON retained_attempt(run_id)"
+            )
+        if "idx_retained_reconciliation_run_id" not in existing:
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_retained_reconciliation_run_id "
+                "ON retained_reconciliation(run_id)"
+            )
 
     @classmethod
     def initialize(cls, db_path: Path, *, writer_id: str, account_id: str,
@@ -320,6 +358,9 @@ class RetainedObservationAuthority:
                     process_nonce TEXT NOT NULL,
                     max_concurrent_runs INTEGER NOT NULL CHECK(max_concurrent_runs BETWEEN 1 AND 4)
                 );
+                CREATE INDEX idx_retained_run_status ON retained_run(status);
+                CREATE INDEX idx_retained_attempt_run_id ON retained_attempt(run_id);
+                CREATE INDEX idx_retained_reconciliation_run_id ON retained_reconciliation(run_id);
             """)
             db.execute("INSERT INTO retained_account VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)", (
                 writer_id, account_id, str(path.resolve()), None, None, None, None,
@@ -733,6 +774,7 @@ class RetainedObservationAuthority:
                         )
                 if max_concurrent_runs > 1:
                     authority._ensure_run_claim_table()
+                authority._ensure_validation_indexes()
                 authority._validate_all(allow_boot_change=True)
                 if db.execute("SELECT COUNT(*) FROM retained_import").fetchone()[0] != 1:
                     raise AuthorityBlocked("Reviewed legacy diagnostic charge is not imported")
@@ -849,7 +891,7 @@ class RetainedObservationAuthority:
                         "UPDATE retained_run SET deadline_at=? WHERE id=?",
                         (deadline, run_id),
                     )
-                    reconciled_ids = authority._reconciled_attempt_ids()
+                    reconciled_ids = authority._reconciled_attempt_ids(run_id)
                     for att in db.execute(
                         "SELECT * FROM retained_attempt WHERE run_id=? AND status='unresolved'",
                         (run_id,),
@@ -890,15 +932,10 @@ class RetainedObservationAuthority:
                 else:
                     if same is not None or any(r["pair_key"] == key for r in prior):
                         raise AuthorityBlocked("Retained run or source pair replay")
-                    if any(
-                        (old_manifest["bucket"], old_manifest["payload"]["object"],
-                         old_manifest["payload"]["generation"]) ==
-                        (manifest["bucket"], manifest["payload"]["object"],
-                         manifest["payload"]["generation"])
-                        for old_manifest, _, _ in (
-                            _reviewed_manifest(r["manifest_raw"], r["id"], account_id)
-                            for r in prior)
-                    ):
+                    if (
+                        manifest["bucket"], manifest["payload"]["object"],
+                        manifest["payload"]["generation"],
+                    ) in authority._last_validated_payload_identities:
                         raise AuthorityBlocked("Retained payload generation already has a run")
                     nonterminal_runs = [r for r in prior if r["status"] != "closed"]
                     if max_concurrent_runs == 1:
@@ -966,7 +1003,7 @@ class RetainedObservationAuthority:
                      1 if boot_changed else 0,
                      1 if boot_changed else 0),
                 )
-            authority._run(allow_recovery=True)
+            authority._run(allow_recovery=True, fast_per_request=True)
             return authority
         except Exception:
             db.close()
@@ -978,6 +1015,7 @@ class RetainedObservationAuthority:
             self.db.execute("BEGIN IMMEDIATE")
             yield
             self.db.execute("COMMIT")
+            self._sync_db_guards()
         except Exception as error:
             if self.db.in_transaction:
                 self.db.execute("ROLLBACK")
@@ -1015,7 +1053,9 @@ class RetainedObservationAuthority:
             raise AuthorityBlocked("Retained account clock state is malformed")
         return account
 
-    def _reconciled_state(self) -> tuple[set[str], dict[str, int]]:
+    def _reconciled_state(
+        self, *, run_ids: set[str] | None = None
+    ) -> tuple[set[str], dict[str, int]]:
         """Validate append-only proof rows without altering the original HTTP result.
 
         Older ledgers have no table until a reviewed administrator performs the
@@ -1033,7 +1073,18 @@ class RetainedObservationAuthority:
             raise AuthorityBlocked("Retained reconciliation table differs")
         resolved: set[str] = set()
         credits_by_run: dict[str, int] = {}
-        for row in self.db.execute("SELECT * FROM retained_reconciliation"):
+        if run_ids is not None:
+            if not run_ids:
+                return resolved, credits_by_run
+            ordered_ids = tuple(sorted(run_ids))
+            placeholders = ",".join("?" for _ in ordered_ids)
+            rows = self.db.execute(
+                f"SELECT * FROM retained_reconciliation WHERE run_id IN ({placeholders})",
+                ordered_ids,
+            )
+        else:
+            rows = self.db.execute("SELECT * FROM retained_reconciliation")
+        for row in rows:
             try:
                 proof = json.loads(row["proof_json"], object_pairs_hook=_unique_object)
             except (ValueError, TypeError, UnicodeError) as error:
@@ -1248,14 +1299,16 @@ class RetainedObservationAuthority:
             resolved.add(row["attempt_id"])
         return resolved, credits_by_run
 
-    def _reconciled_attempt_ids(self) -> set[str]:
-        return self._reconciled_state()[0]
+    def _reconciled_attempt_ids(self, run_id: str | None = None) -> set[str]:
+        return self._reconciled_state(
+            run_ids={run_id} if run_id is not None else None
+        )[0]
 
     def _status_probe_reconciled_credits(self, run_id: str) -> int:
-        return self._reconciled_state()[1].get(run_id, 0)
+        return self._reconciled_state(run_ids={run_id})[1].get(run_id, 0)
 
     def _effective_unresolved_count(self, run_id: str | None = None) -> int:
-        resolved = self._reconciled_attempt_ids()
+        resolved = self._reconciled_attempt_ids(run_id)
         if run_id is None:
             attempts = self.db.execute(
                 "SELECT id FROM retained_attempt WHERE status='unresolved'")
@@ -1397,12 +1450,148 @@ class RetainedObservationAuthority:
                 if proof is None or run["status"] == "active":
                     raise AuthorityBlocked("Closed receipt recovery lacks accepted proof")
 
-    def _validate_all(self, *, allow_boot_change: bool = False) -> None:
-        """Semantic check beyond SQLite integrity before every admission."""
-        account = self._account(
-            require_process=False, allow_boot_change=allow_boot_change
+    def _build_closed_fingerprint(
+        self,
+        *,
+        imported: list[sqlite3.Row],
+        runs: list[sqlite3.Row],
+        all_attempts: list[sqlite3.Row],
+        mappings: list[sqlite3.Row],
+        adoptions_by_rowid: list[sqlite3.Row],
+        reconciliations_by_rowid: list[sqlite3.Row],
+        recoveries_by_rowid: list[sqlite3.Row],
+        recovery_attempts_by_rowid: list[sqlite3.Row],
+        reviewed_by_run: dict[str, dict],
+        only_closed_run_rowids: frozenset[int] | None = None,
+    ) -> dict:
+        closed_runs = [
+            r for r in runs
+            if r["status"] == "closed" and (
+                only_closed_run_rowids is None or
+                int(r["rowid"]) in only_closed_run_rowids
+            )
+        ]
+        closed_run_rowids = frozenset(int(r["rowid"]) for r in closed_runs)
+        closed_run_ids = {r["id"] for r in closed_runs}
+        closed_attempts = [
+            a for a in all_attempts if a["run_id"] in closed_run_ids
+        ]
+        closed_mappings = [
+            m for m in mappings if m["run_id"] in closed_run_ids
+        ]
+        closed_adoptions = [
+            ad for ad in adoptions_by_rowid if ad["run_id"] in closed_run_ids
+        ]
+        closed_reconciliations = [
+            rec for rec in reconciliations_by_rowid
+            if rec["run_id"] in closed_run_ids
+        ]
+        closed_recoveries = [
+            rec for rec in recoveries_by_rowid
+            if rec["original_run_id"] in closed_run_ids
+        ]
+        closed_recovery_ids = {rec["id"] for rec in closed_recoveries}
+        closed_recovery_attempts = [
+            ra for ra in recovery_attempts_by_rowid
+            if ra["recovery_id"] in closed_recovery_ids
+        ]
+
+        hasher = hashlib.sha256()
+        hasher.update(b"retained_import\n")
+        for item in imported:
+            hasher.update(repr(tuple(item)).encode("utf-8"))
+            hasher.update(b"\n")
+        hasher.update(b"retained_run\n")
+        for r in closed_runs:
+            hasher.update(repr((
+                r["rowid"], r["id"], r["manifest_sha256"],
+                len(r["manifest_raw"]), r["pair_key"], r["media_bytes"],
+                r["control_allowance"], r["budget_bytes"], r["metadata_json"],
+                r["reserved"], r["reserved_remaining"], r["status"],
+                r["mapping_sha256"], r["evidence_json"], r["started_at"],
+                r["deadline_at"],
+            )).encode("utf-8"))
+            hasher.update(bytes(r["manifest_raw"]))
+            hasher.update(b"\n")
+        hasher.update(b"retained_attempt\n")
+        for a in closed_attempts:
+            hasher.update(repr(tuple(a)).encode("utf-8"))
+            hasher.update(b"\n")
+        hasher.update(b"retained_mapping_reservation\n")
+        for m in closed_mappings:
+            hasher.update(repr(tuple(m)).encode("utf-8"))
+            hasher.update(b"\n")
+        hasher.update(b"retained_run_adoption\n")
+        for ad in closed_adoptions:
+            hasher.update(repr(tuple(ad)).encode("utf-8"))
+            hasher.update(b"\n")
+        hasher.update(b"retained_reconciliation\n")
+        for rec in closed_reconciliations:
+            hasher.update(repr(tuple(rec)).encode("utf-8"))
+            hasher.update(b"\n")
+        hasher.update(b"retained_receipt_recovery\n")
+        for rec in closed_recoveries:
+            hasher.update(repr(tuple(rec)).encode("utf-8"))
+            hasher.update(b"\n")
+        hasher.update(b"retained_receipt_recovery_attempt\n")
+        for ra in closed_recovery_attempts:
+            hasher.update(repr(tuple(ra)).encode("utf-8"))
+            hasher.update(b"\n")
+
+        closed_payload_identities = frozenset(
+            (
+                reviewed_by_run[r["id"]]["bucket"],
+                reviewed_by_run[r["id"]]["payload"]["object"],
+                reviewed_by_run[r["id"]]["payload"]["generation"],
+            )
+            for r in closed_runs
         )
-        imported = self.db.execute("SELECT * FROM retained_import").fetchall()
+        closed_pair_keys = frozenset(r["pair_key"] for r in closed_runs)
+        closed_mapping_bytes = sum(int(m["bytes"]) for m in closed_mappings)
+
+        closed_dispatched_ats = tuple(sorted(
+            float(a["dispatched_at"])
+            for a in (closed_attempts + closed_recovery_attempts)
+            if a["dispatch_monotonic"] is not None
+        ))
+
+        closed_unresolved_attempt_bytes = sum(
+            int(a["bytes"]) for a in closed_attempts if a["status"] == "unresolved"
+        ) + sum(
+            int(ra["bytes"]) for ra in closed_recovery_attempts
+            if ra["status"] == "unresolved"
+        )
+        settled_pairs = sorted(
+            (float(a["charge_through"]), int(a["bytes"]))
+            for a in (closed_attempts + closed_recovery_attempts)
+            if a["status"] == "settled" and int(a["bytes"]) > 0
+        )
+        charge_throughs = [pt[0] for pt in settled_pairs]
+        prefix_bytes = [0]
+        running = 0
+        for _, b_val in settled_pairs:
+            running += b_val
+            prefix_bytes.append(running)
+
+        return {
+            "closed_run_count": len(closed_runs),
+            "closed_run_rowids": closed_run_rowids,
+            "max_closed_run_rowid": int(closed_runs[-1]["rowid"]) if closed_runs else 0,
+            "closed_attempt_count": len(closed_attempts),
+            "max_closed_attempt_rowid": int(closed_attempts[-1]["rowid"]) if closed_attempts else 0,
+            "max_attempt_rowid": int(all_attempts[-1]["rowid"]) if all_attempts else 0,
+            "sha256": hasher.hexdigest(),
+            "closed_payload_identities": closed_payload_identities,
+            "closed_pair_keys": closed_pair_keys,
+            "closed_mapping_bytes": closed_mapping_bytes,
+            "closed_dispatched_ats": closed_dispatched_ats,
+            "closed_unresolved_attempt_bytes": closed_unresolved_attempt_bytes,
+            "closed_settled_charge_throughs": charge_throughs,
+            "closed_settled_prefix_bytes": prefix_bytes,
+        }
+
+    def _validate_account_and_import(self, account: sqlite3.Row) -> None:
+        imported = self.db.execute("SELECT rowid, * FROM retained_import ORDER BY rowid").fetchall()
         if len(imported) > 1:
             raise AuthorityBlocked("Multiple legacy diagnostic imports")
         for item in imported:
@@ -1432,7 +1621,20 @@ class RetainedObservationAuthority:
             if (wall > account["last_clock"] or
                 account["next_slot"] < wall + PACING_SECONDS - 1e-9):
                 raise AuthorityBlocked("Retained persisted next slot is before last dispatch")
-        runs = self.db.execute("SELECT * FROM retained_run").fetchall()
+
+    def _validate_all(
+        self,
+        *,
+        allow_boot_change: bool = False,
+        refresh_closed_fingerprint: bool = False,
+    ) -> None:
+        """Semantic check beyond SQLite integrity before every admission."""
+        account = self._account(
+            require_process=False, allow_boot_change=allow_boot_change
+        )
+        imported = self.db.execute("SELECT rowid, * FROM retained_import ORDER BY rowid").fetchall()
+        self._validate_account_and_import(account)
+        runs = self.db.execute("SELECT rowid, * FROM retained_run ORDER BY rowid").fetchall()
         nonterminal_runs = [run for run in runs if run["status"] != "closed"]
         if self._has_run_claim_table():
             claims = {
@@ -1461,19 +1663,22 @@ class RetainedObservationAuthority:
                     len(nonterminal_runs) > claim["max_concurrent_runs"]):
                     raise AuthorityBlocked("Multiple retained runs are nonterminal")
         adoptions_by_run: dict[str, list[sqlite3.Row]] = {}
+        adoptions_by_rowid: list[sqlite3.Row] = []
         if self._has_run_adoption_table():
             for ad_row in self.db.execute(
-                "SELECT * FROM retained_run_adoption ORDER BY adopted_at, rowid"
+                "SELECT rowid, * FROM retained_run_adoption ORDER BY adopted_at, rowid"
             ).fetchall():
                 adoptions_by_run.setdefault(ad_row["run_id"], []).append(ad_row)
-        all_attempts = self.db.execute("SELECT * FROM retained_attempt").fetchall()
+                adoptions_by_rowid.append(ad_row)
+            adoptions_by_rowid.sort(key=lambda r: r["rowid"])
+        all_attempts = self.db.execute("SELECT rowid, * FROM retained_attempt ORDER BY rowid").fetchall()
         attempts_by_run: dict[str, list[sqlite3.Row]] = {}
         for attempt_row in all_attempts:
             attempts_by_run.setdefault(attempt_row["run_id"], []).append(attempt_row)
         reconciled_state: tuple[set[str], dict[str, int]] | None = None
         unresolved_recovery_by_run: dict[str, int] | None = None
         reviewed_by_run: dict[str, dict] = {}
-        payload_identities = set()
+        payload_identities: set[tuple[str, str, int]] = set()
         for run in runs:
             manifest, digest, key = _reviewed_manifest(run["manifest_raw"], run["id"], self.account_id)
             reviewed_by_run[run["id"]] = manifest
@@ -1566,7 +1771,9 @@ class RetainedObservationAuthority:
                 raise AuthorityBlocked("Unreserved retained pair has attempts")
             if run["status"] in ("verified", "index_pending", "closed") and not _valid_digest(run["mapping_sha256"]):
                 raise AuthorityBlocked("Verified retained mapping digest missing")
-        mappings = self.db.execute("SELECT * FROM retained_mapping_reservation").fetchall()
+        mappings = self.db.execute(
+            "SELECT rowid, * FROM retained_mapping_reservation ORDER BY rowid"
+        ).fetchall()
         if sum(item["bytes"] for item in mappings) > MAPPING_PARTITION_BYTES:
             raise AuthorityBlocked("Retained mapping partition exceeded")
         by_run = {run["id"]: run for run in runs}
@@ -1590,14 +1797,22 @@ class RetainedObservationAuthority:
         self._validate_recovery_rows()
         if len(all_attempts) != sum(len(attempts_by_run.get(run["id"], ())) for run in runs):
             raise AuthorityBlocked("Orphan retained attempt")
+        recoveries_by_rowid: list[sqlite3.Row] = []
+        recovery_attempts_by_rowid: list[sqlite3.Row] = []
         if self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND "
             "name='retained_receipt_recovery_attempt'").fetchone():
-            recovery_attempts = self.db.execute(
-                "SELECT * FROM retained_receipt_recovery_attempt").fetchall()
-            all_attempts += recovery_attempts
+            recoveries_by_rowid = self.db.execute(
+                "SELECT rowid, * FROM retained_receipt_recovery ORDER BY rowid"
+            ).fetchall()
+            recovery_attempts_by_rowid = self.db.execute(
+                "SELECT rowid, * FROM retained_receipt_recovery_attempt ORDER BY rowid"
+            ).fetchall()
         dispatched = sorted(
-            (a for a in all_attempts if a["dispatch_monotonic"] is not None),
+            (
+                a for a in (all_attempts + recovery_attempts_by_rowid)
+                if a["dispatch_monotonic"] is not None
+            ),
             key=lambda a: (a["dispatched_at"], a["dispatch_monotonic"]),
         )
         for a, b in zip(dispatched, dispatched[1:]):
@@ -1622,6 +1837,336 @@ class RetainedObservationAuthority:
                     same_adoption_epoch = False
             if (
                 owner_a == owner_b and
+                same_adoption_epoch and
+                b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9
+            ):
+                raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+
+        reconciliations_by_rowid: list[sqlite3.Row] = []
+        if self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_reconciliation'"
+        ).fetchone():
+            reconciliations_by_rowid = self.db.execute(
+                "SELECT rowid, * FROM retained_reconciliation ORDER BY rowid"
+            ).fetchall()
+
+        current_fp = self._build_closed_fingerprint(
+            imported=imported,
+            runs=runs,
+            all_attempts=all_attempts,
+            mappings=mappings,
+            adoptions_by_rowid=adoptions_by_rowid,
+            reconciliations_by_rowid=reconciliations_by_rowid,
+            recoveries_by_rowid=recoveries_by_rowid,
+            recovery_attempts_by_rowid=recovery_attempts_by_rowid,
+            reviewed_by_run=reviewed_by_run,
+        )
+        prev_fp = self._closed_fingerprint
+        if prev_fp is not None:
+            prev_rowids = prev_fp.get("closed_run_rowids", frozenset())
+            curr_rowids = current_fp["closed_run_rowids"]
+            if (
+                current_fp["closed_run_count"] < prev_fp["closed_run_count"] or
+                not prev_rowids.issubset(curr_rowids)
+            ):
+                raise AuthorityBlocked("Closed retained history fingerprint changed")
+            if curr_rowids == prev_rowids:
+                if (
+                    current_fp["closed_run_count"],
+                    current_fp["max_closed_run_rowid"],
+                    current_fp["closed_attempt_count"],
+                    current_fp["max_closed_attempt_rowid"],
+                    current_fp["sha256"],
+                ) != (
+                    prev_fp["closed_run_count"],
+                    prev_fp["max_closed_run_rowid"],
+                    prev_fp["closed_attempt_count"],
+                    prev_fp["max_closed_attempt_rowid"],
+                    prev_fp["sha256"],
+                ):
+                    raise AuthorityBlocked("Closed retained history fingerprint changed")
+            elif prev_fp["closed_run_count"] > 0:
+                prefix_fp = self._build_closed_fingerprint(
+                    imported=imported,
+                    runs=runs,
+                    all_attempts=all_attempts,
+                    mappings=mappings,
+                    adoptions_by_rowid=adoptions_by_rowid,
+                    reconciliations_by_rowid=reconciliations_by_rowid,
+                    recoveries_by_rowid=recoveries_by_rowid,
+                    recovery_attempts_by_rowid=recovery_attempts_by_rowid,
+                    reviewed_by_run=reviewed_by_run,
+                    only_closed_run_rowids=prev_rowids,
+                )
+                if (
+                    prefix_fp["closed_run_count"],
+                    prefix_fp["max_closed_run_rowid"],
+                    prefix_fp["closed_attempt_count"],
+                    prefix_fp["max_closed_attempt_rowid"],
+                    prefix_fp["sha256"],
+                ) != (
+                    prev_fp["closed_run_count"],
+                    prev_fp["max_closed_run_rowid"],
+                    prev_fp["closed_attempt_count"],
+                    prev_fp["max_closed_attempt_rowid"],
+                    prev_fp["sha256"],
+                ):
+                    raise AuthorityBlocked("Closed retained history fingerprint changed")
+
+        self._closed_fingerprint = current_fp
+        self._last_validated_payload_identities = payload_identities
+        self._sync_db_guards()
+
+    def _validate_open_and_fingerprint(
+        self, *, allow_boot_change: bool = False
+    ) -> None:
+        """Per-request O(1) validation of open runs, their attempts, and the closed-history fingerprint."""
+        fp = self._closed_fingerprint
+        if (
+            fp is None or
+            self._guarded_total_changes is None or
+            self._guarded_data_version is None or
+            not _valid_digest(fp.get("sha256"))
+        ):
+            self._validate_all(allow_boot_change=allow_boot_change)
+            return
+
+        if (
+            self.db.total_changes != self._guarded_total_changes or
+            self._db_data_version() != self._guarded_data_version
+        ):
+            self._validate_all(allow_boot_change=allow_boot_change)
+            return
+
+        cheap_row = self.db.execute(
+            "SELECT "
+            "(SELECT COUNT(*) FROM retained_run WHERE status='closed'), "
+            "(SELECT COALESCE(MAX(rowid), 0) FROM retained_run WHERE status='closed'), "
+            "(SELECT COALESCE(MAX(rowid), 0) FROM retained_attempt)"
+        ).fetchone()
+        if (
+            cheap_row is None or
+            int(cheap_row[0]) != fp["closed_run_count"] or
+            int(cheap_row[1]) != fp["max_closed_run_rowid"] or
+            int(cheap_row[2]) != fp["max_attempt_rowid"]
+        ):
+            self._validate_all(allow_boot_change=allow_boot_change)
+            return
+
+        account = self._account(
+            require_process=False, allow_boot_change=allow_boot_change
+        )
+        self._validate_account_and_import(account)
+
+        nonterminal_runs = self.db.execute(
+            "SELECT rowid, * FROM retained_run "
+            "WHERE status IN ('active','verified','index_pending') "
+            "ORDER BY rowid"
+        ).fetchall()
+        nonterminal_by_id = {run["id"]: run for run in nonterminal_runs}
+
+        if self._has_run_claim_table():
+            claims = {
+                row["run_id"]: row
+                for row in self.db.execute("SELECT * FROM retained_run_claim").fetchall()
+            }
+            for claimed_id, claim in claims.items():
+                claimed_run = nonterminal_by_id.get(claimed_id)
+                if (
+                    claimed_run is None or
+                    type(claim["max_concurrent_runs"]) is not int or
+                    not 1 <= claim["max_concurrent_runs"] <= MAX_CONCURRENT_RUNS or
+                    not isinstance(claim["process_host"], str) or not claim["process_host"] or
+                    type(claim["process_pid"]) is not int or claim["process_pid"] <= 0 or
+                    not isinstance(claim["process_nonce"], str) or not claim["process_nonce"]
+                ):
+                    raise AuthorityBlocked("Retained run claim is orphaned or malformed")
+        else:
+            claims = {}
+
+        if len(nonterminal_runs) > 1:
+            if len(nonterminal_runs) > MAX_CONCURRENT_RUNS:
+                raise AuthorityBlocked("Multiple retained runs are nonterminal")
+            for open_run in nonterminal_runs:
+                claim = claims.get(open_run["id"])
+                if (
+                    claim is None or
+                    claim["max_concurrent_runs"] < 2 or
+                    len(nonterminal_runs) > claim["max_concurrent_runs"]
+                ):
+                    raise AuthorityBlocked("Multiple retained runs are nonterminal")
+
+        reconciled_ids, reconciled_credits_by_run = self._reconciled_state(
+            run_ids=set(nonterminal_by_id.keys())
+        )
+        open_payload_identities: set[tuple[str, str, int]] = set()
+        open_pair_keys: set[str] = set()
+        adoptions_by_run: dict[str, list[sqlite3.Row]] = {}
+        open_attempts_all: list[sqlite3.Row] = []
+        open_mapping_bytes = 0
+
+        for run in nonterminal_runs:
+            manifest, digest, key = _reviewed_manifest(
+                run["manifest_raw"], run["id"], self.account_id
+            )
+            source = (
+                manifest["bucket"],
+                manifest["payload"]["object"],
+                manifest["payload"]["generation"],
+            )
+            if (
+                source in open_payload_identities or
+                source in fp["closed_payload_identities"] or
+                key in open_pair_keys or
+                key in fp["closed_pair_keys"]
+            ):
+                raise AuthorityBlocked("Retained ledger repeats a payload generation")
+            open_payload_identities.add(source)
+            open_pair_keys.add(key)
+
+            adoptions = self._run_adoptions(run["id"])
+            adoptions_by_run[run["id"]] = adoptions
+            initial_deadline = (
+                adoptions[0]["prior_deadline_at"] if adoptions else run["deadline_at"]
+            )
+            if (
+                run["manifest_sha256"] != digest or
+                run["pair_key"] != key or
+                run["media_bytes"] != manifest["payload"]["bytes"] + manifest["receipt"]["bytes"] or
+                run["control_allowance"] != manifest["control_allowance_bytes"] or
+                run["budget_bytes"] != manifest["max_charged_bytes"] or
+                not 0 < initial_deadline - run["started_at"] <= manifest["max_duration_seconds"]
+            ):
+                raise AuthorityBlocked("Retained run manifest or limits changed")
+            evidence = json.loads(run["evidence_json"])
+            _review_evidence(
+                evidence,
+                run_id=run["id"],
+                writer_id=self.writer_id,
+                account_id=self.account_id,
+                manifest_sha256=digest,
+                now=run["started_at"],
+                deadline_at=initial_deadline,
+            )
+            prev_deadline = initial_deadline
+            for ad in adoptions:
+                if (
+                    ad["run_id"] != run["id"] or
+                    ad["prior_deadline_at"] != prev_deadline or
+                    ad["adopted_at"] < run["started_at"] or
+                    not 0 < ad["deadline_at"] - ad["adopted_at"] <= manifest["max_duration_seconds"]
+                ):
+                    raise AuthorityBlocked("Retained run adoption window is malformed")
+                ad_evidence = json.loads(ad["evidence_json"])
+                _review_evidence(
+                    ad_evidence,
+                    run_id=run["id"],
+                    writer_id=self.writer_id,
+                    account_id=self.account_id,
+                    manifest_sha256=digest,
+                    now=ad["adopted_at"],
+                    deadline_at=ad["deadline_at"],
+                )
+                prev_deadline = ad["deadline_at"]
+            if adoptions and prev_deadline != run["deadline_at"]:
+                raise AuthorityBlocked("Retained run deadline differs from latest adoption")
+            if (
+                run["reserved"] not in (0, 1) or
+                not 0 <= run["reserved_remaining"] <= run["budget_bytes"]
+            ):
+                raise AuthorityBlocked("Retained reservation is malformed")
+            if run["reserved"]:
+                if json.loads(run["metadata_json"]) != _expected_metadata(manifest, digest):
+                    raise AuthorityBlocked("Retained pair metadata changed")
+            elif run["metadata_json"] is not None or run["reserved_remaining"] != 0:
+                raise AuthorityBlocked("Unreserved retained pair has a charge")
+
+            max_deadline = max(
+                [run["deadline_at"]] +
+                [ad["prior_deadline_at"] for ad in adoptions] +
+                [ad["deadline_at"] for ad in adoptions]
+            )
+            attempts = self.db.execute(
+                "SELECT rowid, * FROM retained_attempt WHERE run_id=? ORDER BY rowid",
+                (run["id"],),
+            ).fetchall()
+            open_attempts_all.extend(attempts)
+            spent = 0
+            for attempt in attempts:
+                spent += self._validate_attempt(attempt, run, max_deadline=max_deadline)
+            net_spent = spent - reconciled_credits_by_run.get(run["id"], 0)
+            if net_spent < 0:
+                raise AuthorityBlocked("Retained pair status-probe credit exceeds spend")
+            if run["status"] in ("active", "verified") and run["reserved"]:
+                if net_spent + run["reserved_remaining"] != run["budget_bytes"]:
+                    raise AuthorityBlocked("Retained pair charges do not reconcile")
+            elif run["status"] == "index_pending":
+                if (
+                    not run["reserved"] or
+                    run["reserved_remaining"] != 0 or
+                    not _valid_digest(run["mapping_sha256"]) or
+                    net_spent > run["budget_bytes"]
+                ):
+                    raise AuthorityBlocked("Retained index state or charge is malformed")
+                unresolved_for_run = sum(
+                    att["status"] == "unresolved" and att["id"] not in reconciled_ids
+                    for att in attempts
+                )
+                if unresolved_for_run:
+                    raise AuthorityBlocked("Index pending with uncertain Drive attempt")
+            elif spent:
+                raise AuthorityBlocked("Unreserved retained pair has attempts")
+            if run["status"] in ("verified", "index_pending") and not _valid_digest(run["mapping_sha256"]):
+                raise AuthorityBlocked("Verified retained mapping digest missing")
+
+            mapping_row = self.db.execute(
+                "SELECT * FROM retained_mapping_reservation WHERE run_id=?",
+                (run["id"],),
+            ).fetchone()
+            if mapping_row is not None:
+                if (
+                    run["status"] != "index_pending" or
+                    mapping_row["pair_key"] != run["pair_key"] or
+                    mapping_row["mapping_sha256"] != run["mapping_sha256"] or
+                    mapping_row["object_name"] != manifest["index_object"] or
+                    not isinstance(mapping_row["object_name"], str) or
+                    not mapping_row["object_name"] or
+                    len(mapping_row["object_name"]) > 1024 or
+                    any(ord(c) < 32 for c in mapping_row["object_name"]) or
+                    type(mapping_row["bytes"]) is not int or
+                    not 0 < mapping_row["bytes"] <= MAPPING_MAX_BODY_BYTES or
+                    not _valid_digest(mapping_row["reservation_id"])
+                ):
+                    raise AuthorityBlocked("Retained mapping reservation is malformed")
+                open_mapping_bytes += int(mapping_row["bytes"])
+
+        if fp["closed_mapping_bytes"] + open_mapping_bytes > MAPPING_PARTITION_BYTES:
+            raise AuthorityBlocked("Retained mapping partition exceeded")
+
+        dispatched = sorted(
+            (a for a in open_attempts_all if a["dispatch_monotonic"] is not None),
+            key=lambda a: (a["dispatched_at"], a["dispatch_monotonic"]),
+        )
+        closed_dispatched_ats = fp["closed_dispatched_ats"]
+        for a in dispatched:
+            d_at = float(a["dispatched_at"])
+            idx = bisect.bisect_left(closed_dispatched_ats, d_at)
+            if idx > 0 and d_at - closed_dispatched_ats[idx - 1] < PACING_SECONDS - 1e-6:
+                raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+            if idx < len(closed_dispatched_ats) and closed_dispatched_ats[idx] - d_at < PACING_SECONDS - 1e-6:
+                raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+        for a, b in zip(dispatched, dispatched[1:]):
+            if b["dispatched_at"] - a["dispatched_at"] < PACING_SECONDS - 1e-6:
+                raise AuthorityBlocked("Retained actual starts violate monotonic pacing")
+            same_adoption_epoch = True
+            if a["run_id"] == b["run_id"]:
+                if any(
+                    a["dispatched_at"] <= ad["adopted_at"] <= b["dispatched_at"]
+                    for ad in adoptions_by_run.get(a["run_id"], ())
+                ):
+                    same_adoption_epoch = False
+            if (
+                a["run_id"] == b["run_id"] and
                 same_adoption_epoch and
                 b["dispatch_monotonic"] - a["dispatch_monotonic"] < PACING_SECONDS - 1e-9
             ):
@@ -1671,9 +2216,17 @@ class RetainedObservationAuthority:
             raise AuthorityBlocked("Retained attempt settlement is inconsistent")
         return amount
 
-    def _run(self, *, allow_recovery: bool = False) -> tuple[sqlite3.Row, sqlite3.Row]:
+    def _run(
+        self,
+        *,
+        allow_recovery: bool = False,
+        fast_per_request: bool = False,
+    ) -> tuple[sqlite3.Row, sqlite3.Row]:
         account = self._account()
-        self._validate_all()
+        if fast_per_request:
+            self._validate_open_and_fingerprint()
+        else:
+            self._validate_all()
         run = self.db.execute("SELECT * FROM retained_run WHERE id=?", (self.release_id,)).fetchone()
         if (run is None or run["manifest_sha256"] != self.manifest_sha256 or
             run["pair_key"] != self.expected_pair_key):
@@ -1699,14 +2252,14 @@ class RetainedObservationAuthority:
             raise AuthorityBlocked("Retained request could exceed run deadline")
 
     def assert_active(self, timeout_s: float = 0, *, slot_at: float | None = None) -> None:
-        account, run = self._run()
+        account, run = self._run(fast_per_request=True)
         now = self._now(account)
         if slot_at is not None and now < _finite_nonnegative(slot_at, "request slot"):
             raise AuthorityBlocked("Retained request slot has not arrived")
         self._active(account, run, now, timeout_s, slot_at)
 
     def validate_manifest_limits(self, max_charged_bytes: int, max_duration_seconds: int) -> None:
-        account, run = self._run()
+        account, run = self._run(fast_per_request=True)
         adoptions = self._run_adoptions(run["id"])
         window_start = adoptions[-1]["adopted_at"] if adoptions else run["started_at"]
         if (_positive_int(max_charged_bytes, "manifest byte limit") != run["budget_bytes"] or
@@ -1716,38 +2269,80 @@ class RetainedObservationAuthority:
         self._active(account, run, self._now(account))
 
     def _known_usage(self, now: float) -> int:
-        charges = self.db.execute(
-            "SELECT COALESCE(SUM(bytes),0) FROM retained_attempt "
-            "WHERE status='unresolved' OR charge_through>?", (now - WINDOW_SECONDS,),
-        ).fetchone()[0]
+        cutoff = now - WINDOW_SECONDS
+        fp = self._closed_fingerprint
+        if (
+            fp is not None and
+            self._guarded_total_changes is not None and
+            self._guarded_data_version is not None and
+            self.db.total_changes == self._guarded_total_changes and
+            self._db_data_version() == self._guarded_data_version and
+            _valid_digest(fp.get("sha256"))
+        ):
+            cts = fp["closed_settled_charge_throughs"]
+            pbytes = fp["closed_settled_prefix_bytes"]
+            idx = bisect.bisect_right(cts, cutoff)
+            closed_settled_within_window = pbytes[-1] - pbytes[idx]
+            open_charges = self.db.execute(
+                "SELECT COALESCE(SUM(a.bytes),0) "
+                "FROM retained_attempt a "
+                "JOIN retained_run r ON r.id=a.run_id "
+                "WHERE r.status IN ('active','verified','index_pending') "
+                "AND (a.status='unresolved' OR a.charge_through>?)",
+                (cutoff,),
+            ).fetchone()[0]
+            open_recovery = (self.db.execute(
+                "SELECT COALESCE(SUM(a.bytes),0) "
+                "FROM retained_receipt_recovery_attempt a "
+                "JOIN retained_receipt_recovery r ON r.id=a.recovery_id "
+                "JOIN retained_run rr ON rr.id=r.original_run_id "
+                "WHERE rr.status IN ('active','verified','index_pending') "
+                "AND (a.status='unresolved' OR a.charge_through>?)",
+                (cutoff,),
+            ).fetchone()[0] if self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='retained_receipt_recovery_attempt'").fetchone() else 0)
+            charges_and_recovery = (
+                int(fp["closed_unresolved_attempt_bytes"]) +
+                int(closed_settled_within_window) +
+                int(open_charges) +
+                int(open_recovery)
+            )
+        else:
+            charges = self.db.execute(
+                "SELECT COALESCE(SUM(bytes),0) FROM retained_attempt "
+                "WHERE status='unresolved' OR charge_through>?", (cutoff,),
+            ).fetchone()[0]
+            recovery = (self.db.execute(
+                "SELECT COALESCE(SUM(bytes),0) FROM retained_receipt_recovery_attempt "
+                "WHERE status='unresolved' OR charge_through>?",
+                (cutoff,),
+            ).fetchone()[0] if self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                "name='retained_receipt_recovery_attempt'").fetchone() else 0)
+            charges_and_recovery = int(charges) + int(recovery)
+
         reserved = self.db.execute(
             "SELECT COALESCE(SUM(reserved_remaining),0) FROM retained_run "
-            "WHERE status IN ('active','verified')", 
+            "WHERE status IN ('active','verified')",
         ).fetchone()[0]
         imported = self.db.execute(
             "SELECT COALESCE(SUM(bytes),0) FROM retained_import WHERE charge_through>?",
-            (now - WINDOW_SECONDS,),
+            (cutoff,),
         ).fetchone()[0]
-        recovery = (self.db.execute(
-            "SELECT COALESCE(SUM(bytes),0) FROM retained_receipt_recovery_attempt "
-            "WHERE status='unresolved' OR charge_through>?",
-            (now - WINDOW_SECONDS,),
-        ).fetchone()[0] if self.db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND "
-            "name='retained_receipt_recovery_attempt'").fetchone() else 0)
         recovery_reserved = (self.db.execute(
             "SELECT COALESCE(SUM(reserved_remaining),0) "
             "FROM retained_receipt_recovery WHERE status='open'",
         ).fetchone()[0] if self.db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND "
             "name='retained_receipt_recovery'").fetchone() else 0)
-        return (int(charges) + int(reserved) + int(imported) +
-                int(recovery) + int(recovery_reserved))
+        return (charges_and_recovery + int(reserved) + int(imported) +
+                int(recovery_reserved))
 
     def reserve_pair(self, pair_key: str, media_bytes: int, control_allowance: int,
                      metadata: dict) -> None:
         with self._transaction():
-            account, run = self._run()
+            account, run = self._run(fast_per_request=True)
             now = self._now(account)
             self._active(account, run, now)
             if (pair_key != self.expected_pair_key or
@@ -1781,7 +2376,7 @@ class RetainedObservationAuthority:
             _finite_nonnegative(timeout_s, "request timeout") <= 0):
             raise AuthorityBlocked("Retained request identity or timeout invalid")
         with self._transaction():
-            account, run = self._run()
+            account, run = self._run(fast_per_request=True)
             now = self._now(account)
             slot = max(now, account["next_slot"])
             self._active(account, run, now, timeout_s, slot)
@@ -1792,11 +2387,16 @@ class RetainedObservationAuthority:
             attempt_id = uuid.uuid4().hex
             self.db.execute("UPDATE retained_run SET reserved_remaining=reserved_remaining-? WHERE id=?",
                             (body_bytes, self.release_id))
-            self.db.execute("INSERT INTO retained_attempt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            cursor = self.db.execute("INSERT INTO retained_attempt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                 attempt_id, self.release_id, now, slot, slot + timeout_s,
                 timeout_s, None, None, body_bytes, kind, method, target_category,
                 target_sha256, operation_key, "unresolved", None,
             ))
+            if self._closed_fingerprint is not None and cursor.lastrowid is not None:
+                self._closed_fingerprint["max_attempt_rowid"] = max(
+                    int(self._closed_fingerprint["max_attempt_rowid"]),
+                    int(cursor.lastrowid),
+                )
             self.db.execute("UPDATE retained_account SET last_clock=?,next_slot=? WHERE id=1",
                             (now, slot + PACING_SECONDS))
             return attempt_id, slot
@@ -1809,7 +2409,7 @@ class RetainedObservationAuthority:
         this same ID immediately before its one network send.
         """
         _required_identity(attempt_id, "attempt ID")
-        account, run = self._run()
+        account, run = self._run(fast_per_request=True)
         now = self._now(account)
         mono = _finite_nonnegative(self.monotonic_clock(), "monotonic clock")
         attempt = self.db.execute(
@@ -1838,7 +2438,7 @@ class RetainedObservationAuthority:
     def mark_dispatch(self, attempt_id: str) -> None:
         _required_identity(attempt_id, "attempt ID")
         with self._transaction():
-            account, run = self._run()
+            account, run = self._run(fast_per_request=True)
             now = self._now(account)
             mono = _finite_nonnegative(self.monotonic_clock(), "monotonic clock")
             attempt = self.db.execute(
@@ -1867,7 +2467,7 @@ class RetainedObservationAuthority:
         if status_code is not None and (type(status_code) is not int or not 100 <= status_code <= 599):
             raise AuthorityBlocked("Invalid retained HTTP result")
         with self._transaction():
-            account, _ = self._run()
+            account, _ = self._run(fast_per_request=True)
             now = self._now(account)
             attempt = self.db.execute(
                 "SELECT * FROM retained_attempt WHERE id=? AND run_id=?",
@@ -1897,9 +2497,9 @@ class RetainedObservationAuthority:
         if (not isinstance(session_url, str) or not session_url or
                 len(session_url) > 4096 or any(c.isspace() for c in session_url)):
             raise AuthorityBlocked("Invalid resumable session URL")
-        self._run()
+        self._run(fast_per_request=True)
         target_sha256 = hashlib.sha256(session_url.encode("utf-8")).hexdigest()
-        resolved = self._reconciled_attempt_ids()
+        resolved = self._reconciled_attempt_ids(self.release_id)
         rows = self.db.execute(
             "SELECT * FROM retained_attempt WHERE run_id=? AND target_sha256=? "
             "AND kind='media_chunk' ORDER BY at, rowid",
@@ -1937,7 +2537,7 @@ class RetainedObservationAuthority:
         if failed_attempt_id == probe_attempt_id:
             raise AuthorityBlocked("Status probe reconciliation requires distinct attempts")
         with self._transaction():
-            account, run = self._run()
+            account, run = self._run(fast_per_request=True)
             now = self._now(account)
             if not run["reserved"]:
                 raise AuthorityBlocked("Status probe reconciliation requires reserved pair")
@@ -2063,14 +2663,14 @@ class RetainedObservationAuthority:
             self.db.execute(
                 "UPDATE retained_account SET last_clock=? WHERE id=1", (now,),
             )
-            self._validate_all()
+            self._validate_open_and_fingerprint()
             return digest
 
     def mark_pair_verified(self, pair_key: str, mapping_sha256: str) -> None:
         if not _valid_digest(mapping_sha256):
             raise AuthorityBlocked("Verified mapping digest missing")
         with self._transaction():
-            account, run = self._run()
+            account, run = self._run(fast_per_request=True)
             now = self._now(account)
             if pair_key != self.expected_pair_key or not run["reserved"]:
                 raise AuthorityBlocked("Verified retained pair differs from reservation")
@@ -2108,7 +2708,7 @@ class RetainedObservationAuthority:
             not 0 < body_bytes <= MAPPING_MAX_BODY_BYTES):
             raise AuthorityBlocked("Invalid mapping create identity or size")
         with self._transaction():
-            account, run = self._run(allow_recovery=True)
+            account, run = self._run(allow_recovery=True, fast_per_request=True)
             now = self._now(account)
             if (run["status"] != "index_pending" or pair_key != self.expected_pair_key or
                 mapping_sha256 != run["mapping_sha256"]):
@@ -2123,9 +2723,23 @@ class RetainedObservationAuthority:
                     pair_key, mapping_sha256, object_name, body_bytes):
                     raise AuthorityBlocked("Mapping create replay differs from reservation")
                 return prior["reservation_id"]
-            used = self.db.execute(
-                "SELECT COALESCE(SUM(bytes),0) FROM retained_mapping_reservation",
-            ).fetchone()[0]
+            used = (
+                int(self._closed_fingerprint["closed_mapping_bytes"])
+                + int(
+                    self.db.execute(
+                        "SELECT COALESCE(SUM(m.bytes),0) "
+                        "FROM retained_mapping_reservation m "
+                        "JOIN retained_run r ON r.id=m.run_id "
+                        "WHERE r.status!='closed'"
+                    ).fetchone()[0]
+                )
+                if self._closed_fingerprint is not None
+                else int(
+                    self.db.execute(
+                        "SELECT COALESCE(SUM(bytes),0) FROM retained_mapping_reservation"
+                    ).fetchone()[0]
+                )
+            )
             if used + body_bytes > MAPPING_PARTITION_BYTES:
                 raise AuthorityBlocked("Fixed GCS mapping partition is full")
             reservation_id = uuid.uuid4().hex + uuid.uuid4().hex
@@ -2140,7 +2754,7 @@ class RetainedObservationAuthority:
     def mark_index_committed(self, pair_key: str, mapping_sha256: str) -> None:
         """Called only after a create-only shared index commit is durably verified."""
         with self._transaction():
-            account, run = self._run(allow_recovery=True)
+            account, run = self._run(allow_recovery=True, fast_per_request=True)
             now = self._now(account)
             reservation = self.db.execute(
                 "SELECT * FROM retained_mapping_reservation WHERE run_id=?",
@@ -2169,6 +2783,7 @@ class RetainedObservationAuthority:
             else:
                 self.db.execute("UPDATE retained_account SET process_host=NULL,process_pid=NULL,"
                                 "process_nonce=NULL,last_clock=? WHERE id=1", (now,))
+            self._validate_all(refresh_closed_fingerprint=True)
 
     def pair_status(self, pair_key: str, manifest_sha256: str) -> str:
         self._validate_all()

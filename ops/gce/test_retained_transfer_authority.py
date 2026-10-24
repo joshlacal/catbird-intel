@@ -1583,9 +1583,308 @@ class RetainedAuthorityTests(unittest.TestCase):
                 max_concurrent_runs=2,
             )
 
+    def test_mid_run_closed_attempt_tampering_detected_at_next_request_or_close(self) -> None:
+        auth1, m1, d1 = self.open_run(1)
+        self.reserve(auth1, m1, d1)
+        a1, _ = self.request(auth1, 5, "media_chunk")
+        auth1.mark_dispatch(a1)
+        auth1.finish_request(a1, 200)
+        self.finish_index(auth1, m1, d1)
+
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        auth2, m2, d2 = self.open_run(2)
+        self.reserve(auth2, m2, d2)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            closed_attempt = conn.execute(
+                "SELECT rowid, id, operation_key, http_status, bytes FROM retained_attempt WHERE run_id = ? ORDER BY rowid ASC LIMIT 1",
+                (m1["release_id"],),
+            ).fetchone()
+            self.assertIsNotNone(closed_attempt)
+            closed_rowid, _closed_attempt_id, orig_op_key, orig_http, orig_bytes = closed_attempt
+        finally:
+            conn.close()
+
+        def exec_outside(sql: str, params: tuple) -> None:
+            c = sqlite3.connect(self.db_path)
+            try:
+                c.execute(sql, params)
+                c.commit()
+            finally:
+                c.close()
+
+        def restore_closed_attempt(*, assert_still_active: bool = True) -> None:
+            exec_outside(
+                "UPDATE retained_attempt SET status = 'settled', http_status = ?, bytes = ?, operation_key = ? WHERE rowid = ?",
+                (orig_http, orig_bytes, orig_op_key, closed_rowid),
+            )
+            if assert_still_active:
+                auth2.assert_active()
+
+        # 1. Semantic edit to a closed run's attempt row mid-run (e.g. status='unresolved')
+        # must be detected at assert_active and start_request.
+        exec_outside(
+            "UPDATE retained_attempt SET status = 'unresolved', http_status = 500 WHERE rowid = ?",
+            (closed_rowid,),
+        )
+        with self.assertRaisesRegex(AuthorityBlocked, "Index pending with uncertain Drive attempt"):
+            auth2.assert_active()
+        with self.assertRaisesRegex(AuthorityBlocked, "Index pending with uncertain Drive attempt"):
+            self.request(auth2, 5, "media_chunk")
+        restore_closed_attempt()
+
+        # 2. Subtle edit to a closed run's attempt row mid-run that keeps status='settled'
+        # and valid http_status (200 -> 201) or valid hex operation_key, testing that the
+        # SHA-256 closed-history fingerprint catches tampering on every per-request call
+        # and on close_pair.
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        p_attempt, _ = self.request(auth2, 5, "media_chunk")
+
+        # 2a. Detected at seconds_until_dispatch
+        exec_outside("UPDATE retained_attempt SET http_status = 201 WHERE rowid = ?", (closed_rowid,))
+        with self.assertRaisesRegex(AuthorityBlocked, "Closed retained history fingerprint changed"):
+            auth2.seconds_until_dispatch(p_attempt)
+        restore_closed_attempt()
+
+        # 2b. Detected at mark_dispatch (also test same-connection mutation via auth2.db)
+        auth2.db.execute("UPDATE retained_attempt SET operation_key = ? WHERE rowid = ?", ("c" * 64, closed_rowid))
+        auth2.db.commit()
+        with self.assertRaisesRegex(AuthorityBlocked, "Closed retained history fingerprint changed"):
+            auth2.mark_dispatch(p_attempt)
+        restore_closed_attempt()
+
+        auth2.mark_dispatch(p_attempt)
+
+        # 2c. Detected at finish_request
+        exec_outside("UPDATE retained_attempt SET http_status = 201 WHERE rowid = ?", (closed_rowid,))
+        with self.assertRaisesRegex(AuthorityBlocked, "Closed retained history fingerprint changed"):
+            auth2.finish_request(p_attempt, 200)
+        restore_closed_attempt()
+        auth2.finish_request(p_attempt, 200)
+
+        # Mark verified so we can test detection at close_pair
+        key2 = pair_key(m2)
+        mapping_digest2 = hashlib.sha256((key2 + d2).encode()).hexdigest()
+        auth2.mark_pair_verified(key2, mapping_digest2)
+
+        # 2d. Detected at close_pair
+        exec_outside("UPDATE retained_attempt SET http_status = 201 WHERE rowid = ?", (closed_rowid,))
+        with self.assertRaisesRegex(AuthorityBlocked, "Closed retained history fingerprint changed"):
+            auth2.close_pair(key2)
+        restore_closed_attempt(assert_still_active=False)
+
+        auth2.close_pair(key2)
+        auth2.reserve_index_create(key2, mapping_digest2, INDEX_PREFIX + key2 + ".json", 64)
+        auth2.mark_index_committed(key2, mapping_digest2)
+
+    def test_per_request_validation_cost_is_constant_at_50_vs_3700_closed_runs(self) -> None:
+        import time as wall_time
+
+        def seed_closed_runs(db_path: Path, count: int, attempts_per_run: int = 53) -> tuple[FakeClock, FakeClock]:
+            clk = FakeClock(self.clock())
+            mono = FakeClock(self.monotonic())
+            TransferAuthority.initialize_retained_observation(
+                db_path, writer_id=self.writer_id, account_id=self.account_id, clock=clk
+            )
+            clk.advance(1.0)
+            mono.advance(1.0)
+            retained_module.RetainedObservationAuthority.import_legacy_result(
+                db_path, result_bytes=self.legacy_raw, writer_id=self.writer_id,
+                account_id=self.account_id, clock=clk
+            )
+
+            base_m = self.manifest(1)
+            payload_obj = base_m["payload"]["object"]
+            payload_sha = base_m["payload"]["sha256"]
+            receipt_sha = base_m["receipt"]["sha256"]
+            payload_bytes = int(base_m["payload"]["bytes"])
+            receipt_bytes = int(base_m["receipt"]["bytes"])
+            media_bytes = payload_bytes + receipt_bytes
+            control_allowance = int(base_m["control_allowance_bytes"])
+            budget_bytes = int(base_m["max_charged_bytes"])
+
+            t_cursor = clk() + 10.0
+            m_cursor = mono() + 10.0
+            conn = sqlite3.connect(db_path)
+            try:
+                run_rows = []
+                att_rows = []
+                map_rows = []
+                for idx in range(1, count + 1):
+                    run_id = f"{idx:032x}"
+                    gen = idx + 10
+                    m = dict(base_m)
+                    m["release_id"] = run_id
+                    m["payload"] = dict(base_m["payload"], generation=gen)
+                    m["receipt"] = dict(
+                        base_m["receipt"],
+                        object=payload_obj + f".g{gen}.receipt.json",
+                        generation=idx + 100000,
+                    )
+                    pkey = hashlib.sha256(
+                        f"{m['bucket']}:{payload_obj}:{gen}".encode()
+                    ).hexdigest()
+                    m["folder_name"] = "catbird-overflow-" + pkey[:32]
+                    m["index_object"] = INDEX_PREFIX + pkey + ".json"
+                    raw_m = json.dumps(m, sort_keys=True, separators=(",", ":")).encode()
+                    digest_m = hashlib.sha256(raw_m).hexdigest()
+
+                    started_at = t_cursor
+                    deadline_at = started_at + 1200.0
+                    ev_json = json.dumps({
+                        "run_id": run_id,
+                        "writer_id": self.writer_id,
+                        "account_id": self.account_id,
+                        "reviewed_manifest_sha256": digest_m,
+                        "account_identity_verified": True,
+                        "all_writers_excluded": True,
+                        "exclusion_valid_until": deadline_at,
+                        "observed_at": started_at,
+                        "evidence_sha256": "e" * 64,
+                        "history_basis": "unproven",
+                        "quota_rejection_accepted": True,
+                    }, sort_keys=True)
+                    meta_json = json.dumps(
+                        retained_module._expected_metadata(m, digest_m),
+                        sort_keys=True,
+                    )
+                    mapping_sha = f"{idx:064x}"
+                    run_rows.append((
+                        run_id, digest_m, raw_m, pkey,
+                        media_bytes, control_allowance, budget_bytes, meta_json,
+                        1, 0, "closed", mapping_sha, ev_json,
+                        started_at, deadline_at,
+                    ))
+                    map_rows.append((
+                        run_id, pkey, mapping_sha, m["index_object"],
+                        64, f"{(idx + 500000):064x}",
+                    ))
+                    for a_i in range(attempts_per_run):
+                        at_val = started_at + (a_i + 1) * 0.6
+                        m_val = m_cursor + (a_i + 1) * 0.6
+                        att_rows.append((
+                            f"att-{idx}-{a_i}", run_id,
+                            at_val, at_val, at_val + 20.0, 20.0,
+                            at_val, m_val,
+                            1, "media_chunk", "PUT",
+                            "media_chunk", payload_sha if a_i == 0 else receipt_sha,
+                            "b" * 64, "settled", 200,
+                        ))
+                    t_cursor = started_at + (attempts_per_run + 2) * 0.6
+                    m_cursor = m_cursor + (attempts_per_run + 2) * 0.6
+
+                conn.executemany(
+                    "INSERT INTO retained_run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    run_rows,
+                )
+                conn.executemany(
+                    "INSERT INTO retained_attempt VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    att_rows,
+                )
+                conn.executemany(
+                    "INSERT INTO retained_mapping_reservation VALUES (?,?,?,?,?,?)",
+                    map_rows,
+                )
+                last_wall = att_rows[-1][6]
+                last_mono = att_rows[-1][7]
+                conn.execute(
+                    "UPDATE retained_account SET boot_id=?, last_clock=?, next_slot=?, "
+                    "last_dispatch_wall=?, last_dispatch_monotonic=? WHERE id=1",
+                    ("boot-bench", t_cursor, last_wall + 0.55, last_wall, last_mono),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            clk.value = t_cursor + 1.0
+            mono.value = m_cursor + 1.0
+            return clk, mono
+
+        def measure_active_run_per_request_calls(n_closed: int, n_requests: int = 20) -> dict[str, float]:
+            db_p = Path(self.temp.name) / f"authority_{n_closed}.sqlite"
+            clk, mono = seed_closed_runs(db_p, n_closed, attempts_per_run=53)
+            open_idx = 2
+            m = self.manifest(open_idx, release_id=f"{(n_closed + 9999):032x}")
+            m["payload"]["generation"] = n_closed + 9999
+            m["receipt"]["object"] = m["payload"]["object"] + f".g{m['payload']['generation']}.receipt.json"
+            m["receipt"]["generation"] = n_closed + 200000
+            m["folder_name"] = "catbird-overflow-" + pair_key(m)[:32]
+            m["index_object"] = INDEX_PREFIX + pair_key(m) + ".json"
+            raw, digest = self.raw_and_digest(m)
+            ev = self.evidence(
+                m, digest, observed_at=clk(),
+                exclusion_valid_until=clk() + 1200.0,
+            )
+
+            t_open0 = wall_time.perf_counter()
+            auth = TransferAuthority.open_retained_run(
+                db_p, run_id=m["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw, evidence=ev,
+                deadline_at=clk() + 1200.0, clock=clk,
+                monotonic_clock=mono, boot_id="boot-bench",
+            )
+            open_ms = (wall_time.perf_counter() - t_open0) * 1000.0
+            try:
+                self.reserve(auth, m, digest)
+                timings: dict[str, list[float]] = {
+                    "assert_active": [],
+                    "start_request": [],
+                    "seconds_until_dispatch": [],
+                    "mark_dispatch": [],
+                    "finish_request": [],
+                }
+                for _i in range(n_requests):
+                    clk.advance(0.6)
+                    mono.advance(0.6)
+
+                    t0 = wall_time.perf_counter()
+                    auth.assert_active()
+                    timings["assert_active"].append((wall_time.perf_counter() - t0) * 1000.0)
+
+                    t0 = wall_time.perf_counter()
+                    att_id, _ = self.request(auth, 1, "media_chunk")
+                    timings["start_request"].append((wall_time.perf_counter() - t0) * 1000.0)
+
+                    t0 = wall_time.perf_counter()
+                    auth.seconds_until_dispatch(att_id)
+                    timings["seconds_until_dispatch"].append((wall_time.perf_counter() - t0) * 1000.0)
+
+                    t0 = wall_time.perf_counter()
+                    auth.mark_dispatch(att_id)
+                    timings["mark_dispatch"].append((wall_time.perf_counter() - t0) * 1000.0)
+
+                    t0 = wall_time.perf_counter()
+                    auth.finish_request(att_id, 200)
+                    timings["finish_request"].append((wall_time.perf_counter() - t0) * 1000.0)
+
+                summary = {k: sum(v) / len(v) for k, v in timings.items()}
+                summary["open_run_full_validate_ms"] = open_ms
+                summary["per_request_cycle_sum_ms"] = sum(
+                    summary[k] for k in ("assert_active", "start_request", "seconds_until_dispatch", "mark_dispatch", "finish_request")
+                )
+                return summary
+            finally:
+                auth.close()
+
+        t_50 = measure_active_run_per_request_calls(50)
+        t_3700 = measure_active_run_per_request_calls(3700)
+
+        for method in ("assert_active", "start_request", "seconds_until_dispatch", "mark_dispatch", "finish_request"):
+            self.assertLess(
+                t_3700[method], 2.0,
+                f"{method} at 3,700 closed runs took {t_3700[method]:.3f} ms (50 runs: {t_50[method]:.3f} ms)",
+            )
+        # Ensure total 5-call request cycle at 3,700 closed runs (196,100 attempts) stays well under 5 ms
+        # and within ~2.5x of 50 closed runs (2,650 attempts), despite 74x more rows.
+        self.assertLess(t_3700["per_request_cycle_sum_ms"], 5.0)
+        self.assertLess(t_3700["per_request_cycle_sum_ms"], max(t_50["per_request_cycle_sum_ms"] * 2.5, 1.5))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

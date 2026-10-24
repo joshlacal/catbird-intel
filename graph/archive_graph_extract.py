@@ -29,6 +29,11 @@ import time
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+try:  # decoder JSONL is parsed line by line; orjson is several times faster than json
+    from orjson import loads as _loads_line
+except ImportError:
+    _loads_line = json.loads
+
 import gcs_segments
 from post_extract import POST_COLLECTION, POST_SCHEMA, post_row_from_event
 
@@ -531,10 +536,10 @@ def convert_shards(
             done.add(sha)
             continue
         rows, post_rows = [], []
-        with src.open() as fh:
+        with src.open("rb") as fh:
             for line in fh:
                 if line.strip():
-                    ev = json.loads(line)
+                    ev = _loads_line(line)
                     if posts or split_posts:
                         row = post_row(ev, resolved_source)
                         if row is not None:

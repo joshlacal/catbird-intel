@@ -270,6 +270,8 @@ fn compute_similarities(
                     out.truncate(a.top_k);
                 }
                 out.sort_unstable_by(|x, y| y.1.total_cmp(&x.1).then_with(|| x.0.cmp(&y.0)));
+                // truncate keeps the pre-cut capacity; over ~2M producers that held ~180 GB.
+                out.shrink_to_fit();
                 let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                 if done.is_multiple_of(10_000) {
                     eprintln!(

@@ -54,6 +54,7 @@ MAPPING_RESERVATION_BYTES = 16 * 1024
 CONTROL_STAGING_BYTES = 16 * (1 << 20)
 STOP_MARGIN_SECONDS = 60
 MIN_LAUNCH_SECONDS = 390
+RUNNER_EVIDENCE_MAX_AGE_SECONDS = 275
 HEARTBEAT_SECONDS = 10
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -226,7 +227,8 @@ def _candidate_gate(candidate: dict, rows: tuple[dict, ...]) -> None:
 
 
 def _evidence(path: Path, candidate: dict, account_id: str, writer_id: str,
-              deadline: float, now: float) -> dict:
+              deadline: float, now: float, *,
+              max_age_seconds: float = RUNNER_EVIDENCE_MAX_AGE_SECONDS) -> dict:
     evidence, _ = _read_json(path, 32 * 1024)
     expected = {"run_id": candidate["run_id"], "writer_id": writer_id,
                 "account_id": account_id,
@@ -239,7 +241,7 @@ def _evidence(path: Path, candidate: dict, account_id: str, writer_id: str,
             or type(evidence.get("exclusion_valid_until")) not in (int, float)
             or not math.isfinite(evidence["observed_at"])
             or not math.isfinite(evidence["exclusion_valid_until"])
-            or not 0 <= now - evidence["observed_at"] <= 300
+            or not 0 <= now - evidence["observed_at"] <= max_age_seconds
             or evidence["exclusion_valid_until"] < deadline):
         raise Conflict("Fresh owner evidence does not cover this exact pair and deadline")
     return evidence
@@ -837,6 +839,7 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                 reclaim_closed_stages(rows, data_root=data_root)
                 disk = check_disk_wave(wave, data_root=data_root, capture_dir=capture_dir,
                                        max_staged_bytes=max_staged_bytes)
+                now = time.time()
                 deadline = min(now + duration, effective_stop - STOP_MARGIN_SECONDS,
                                now + monotonic_stop - time.monotonic() - STOP_MARGIN_SECONDS)
                 if deadline - now <= 330:
@@ -848,7 +851,7 @@ def run_snapshot(*, snapshot_json: Path, snapshot_sha256: str, snapshot_dir: Pat
                     if not _under(review_path, evidence_dir):
                         raise Conflict("Fresh evidence path differs")
                     try:
-                        _evidence(review_path, candidate, account_id, writer_id, deadline, now)
+                        _evidence(review_path, candidate, account_id, writer_id, deadline, time.time())
                     except Conflict:
                         missing_evidence_pair = candidate["pair_key"]
                         break

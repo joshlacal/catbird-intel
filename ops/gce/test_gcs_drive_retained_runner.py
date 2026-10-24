@@ -168,6 +168,12 @@ class RunnerTests(unittest.TestCase):
         result = self._run(lambda *_args, **_kwargs: self.fail("child must not start"))
         self.assertEqual(result["state"], "awaiting_fresh_evidence")
 
+    def test_evidence_near_300s_boundary_stops_at_275s_spawn_guard(self):
+        self._save_evidence(observed_at=time.time() - 276)
+        result = self._run(lambda *_args, **_kwargs: self.fail("child must not start"))
+        self.assertEqual(result["state"], "awaiting_fresh_evidence")
+        self.assertEqual(self._latest_status()["stop_reason"], "fresh_pair_evidence_missing")
+
     def test_uncertain_account_or_partition_stops_before_child(self):
         for name, value in (("unresolved", 1), ("cooldown", time.time() + 500),
                             ("mapping_remaining", 1)):

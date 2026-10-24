@@ -47,6 +47,25 @@ STATUS_PROBE_RECONCILIATION_SCHEMA = (
 CRASH_ADOPTION_RECONCILIATION_SCHEMA = (
     "catbird.drive.retained-crash-adoption-reconciliation.v1"
 )
+CRASH_ADOPTABLE_DRIVE_GET_HTTP_STATUSES = (None, 401, 500, 502, 503, 504)
+
+
+def _is_crash_adoptable_control_attempt(attempt: sqlite3.Row) -> bool:
+    if attempt["dispatched_at"] is None:
+        return False
+    if (
+        attempt["kind"] != "media_chunk" and
+        attempt["http_status"] is None and
+        attempt["bytes"] <= 4096
+    ):
+        return True
+    return (
+        attempt["kind"] == "drive_api" and
+        attempt["target_category"] == "drive_api" and
+        attempt["method"] == "GET" and
+        attempt["bytes"] == 0 and
+        attempt["http_status"] in CRASH_ADOPTABLE_DRIVE_GET_HTTP_STATUSES
+    )
 
 
 def _boot_id() -> str:
@@ -705,7 +724,7 @@ class RetainedObservationAuthority:
                         continue
                     if (
                         att["dispatched_at"] is None or
-                        (att["kind"] != "media_chunk" and att["http_status"] is None and att["bytes"] <= 4096) or
+                        _is_crash_adoptable_control_attempt(att) or
                         (att["kind"] == "media_chunk" and att["target_category"] == "media_chunk" and
                          att["method"] == "PUT" and 0 < att["bytes"] <= MAX_MEDIA_CHUNK_BYTES and
                          att["dispatched_at"] is not None and
@@ -917,7 +936,7 @@ class RetainedObservationAuthority:
                             continue
                         if att["dispatched_at"] is None:
                             credit = int(att["bytes"])
-                        elif att["kind"] != "media_chunk" and att["http_status"] is None and att["bytes"] <= 4096:
+                        elif _is_crash_adoptable_control_attempt(att):
                             credit = 0
                         else:
                             continue
@@ -1134,25 +1153,22 @@ class RetainedObservationAuthority:
                 credit = proof.get("uncommitted_retry_bytes")
                 undispatched = (
                     attempt["dispatched_at"] is None and
+                    attempt["http_status"] is None and
                     proof.get("dispatched") is False and
                     credit == attempt["bytes"]
                 )
                 control_interrupted = (
-                    attempt["dispatched_at"] is not None and
+                    _is_crash_adoptable_control_attempt(attempt) and
                     proof.get("dispatched") is True and
-                    attempt["http_status"] is None and
-                    attempt["kind"] != "media_chunk" and
-                    attempt["bytes"] <= 4096 and
                     credit == 0
                 )
                 if (attempt["run_id"] != run["id"] or run["pair_key"] != key or
                     row["pair_key"] != key or attempt["status"] != "unresolved" or
-                    attempt["http_status"] is not None or
                     not (undispatched or control_interrupted) or
                     proof.get("manifest_sha256") != digest or
                     proof.get("account_id") != self.account_id or
                     proof.get("writer_id") != self.writer_id or
-                    proof.get("original_http_status") is not None or
+                    proof.get("original_http_status") != attempt["http_status"] or
                     proof.get("original_charge_bytes") != attempt["bytes"] or
                     type(credit) is not int):
                     raise AuthorityBlocked(
@@ -2688,6 +2704,63 @@ class RetainedObservationAuthority:
                 "UPDATE retained_run SET reserved_remaining=reserved_remaining+? "
                 "WHERE id=?",
                 (uncommitted_retry_bytes, self.release_id),
+            )
+            self.db.execute(
+                "UPDATE retained_account SET last_clock=? WHERE id=1", (now,),
+            )
+            self._validate_open_and_fingerprint()
+            return digest
+
+    def reconcile_retried_drive_get(self, failed_attempt_id: str) -> str:
+        """Reconcile an unresolved 0-byte Drive API GET attempt after a 401/5xx."""
+        _required_identity(failed_attempt_id, "failed attempt ID")
+        with self._transaction():
+            account, run = self._run(fast_per_request=True)
+            now = self._now(account)
+            if not run["reserved"]:
+                raise AuthorityBlocked("Drive GET reconciliation requires reserved pair")
+            failed = self.db.execute(
+                "SELECT * FROM retained_attempt WHERE id=? AND run_id=?",
+                (failed_attempt_id, self.release_id),
+            ).fetchone()
+            prior = self.db.execute(
+                "SELECT 1 FROM retained_reconciliation WHERE attempt_id=?",
+                (failed_attempt_id,),
+            ).fetchone()
+            if (
+                prior is not None or
+                failed is None or
+                failed["status"] != "unresolved" or
+                not _is_crash_adoptable_control_attempt(failed) or
+                failed["kind"] != "drive_api" or
+                failed["target_category"] != "drive_api" or
+                failed["method"] != "GET" or
+                failed["bytes"] != 0 or
+                failed["http_status"] not in (401, 500, 502, 503, 504)
+            ):
+                raise AuthorityBlocked(
+                    "Attempt is not an unresolved 0-byte Drive API GET with 401/5xx"
+                )
+            proof = {
+                "schema": CRASH_ADOPTION_RECONCILIATION_SCHEMA,
+                "attempt_id": failed_attempt_id,
+                "run_id": self.release_id,
+                "pair_key": self.expected_pair_key,
+                "manifest_sha256": self.manifest_sha256,
+                "account_id": self.account_id,
+                "writer_id": self.writer_id,
+                "original_http_status": failed["http_status"],
+                "original_charge_bytes": 0,
+                "dispatched": True,
+                "uncommitted_retry_bytes": 0,
+                "applied_at": now,
+            }
+            raw = _canonical(proof)
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+            self.db.execute(
+                "INSERT INTO retained_reconciliation VALUES (?,?,?,?,?,?)",
+                (failed_attempt_id, self.release_id, self.expected_pair_key,
+                 raw, digest, now),
             )
             self.db.execute(
                 "UPDATE retained_account SET last_clock=? WHERE id=1", (now,),

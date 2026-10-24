@@ -43,10 +43,15 @@ class DriveClient:
         self._lock = threading.Lock()
         self._group_cache: dict[str, str] = {}
 
-    def token(self) -> str:
+    def invalidate_token(self) -> None:
+        with self._lock:
+            self._token = ""
+            self._exp = 0.0
+
+    def token(self, *, force_refresh: bool = False) -> str:
         with self._lock:
             now = time.time()
-            if self._token and now < self._exp - 60:
+            if not force_refresh and self._token and now < self._exp - 60:
                 return self._token
             body = urllib.parse.urlencode(
                 {

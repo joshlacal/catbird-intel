@@ -2067,6 +2067,191 @@ class RetainedAuthorityTests(unittest.TestCase):
         finally:
             auth.close()
 
+    def test_crash_adoption_adopts_zero_byte_drive_api_get_401_and_5xx(self):
+        dead_pid = 999981
+        m1 = self.manifest(1)
+        raw1, d1 = self.raw_and_digest(m1)
+        ev1 = self.evidence(m1, d1)
+        with patch.object(retained_module.os, "getpid", return_value=dead_pid):
+            run1 = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw1, evidence=ev1,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="boot-1",
+            )
+            self.addCleanup(run1.close)
+            self.reserve(run1, m1, d1)
+            get_401, _ = run1.start_request(
+                0, 60, "drive_api", method="GET",
+                target_category="drive_api", target_sha256="1" * 64,
+                operation_key="2" * 64,
+            )
+            run1.mark_dispatch(get_401)
+            run1.finish_request(get_401, 401)
+            self.clock.advance(0.6)
+            self.monotonic.advance(0.6)
+            get_503, _ = run1.start_request(
+                0, 60, "drive_api", method="GET",
+                target_category="drive_api", target_sha256="3" * 64,
+                operation_key="4" * 64,
+            )
+            run1.mark_dispatch(get_503)
+            run1.finish_request(get_503, 503)
+            run1.close()
+
+        with patch.object(retained_module.os, "kill", side_effect=ProcessLookupError):
+            open_info = TransferAuthority.inspect_open_retained_run(
+                self.db_path, writer_id=self.writer_id,
+                account_id=self.account_id, run_id=m1["release_id"],
+            )
+            self.assertEqual(open_info["status"], "active")
+            self.assertTrue(open_info["owner_host_matches"])
+            self.assertFalse(open_info["owner_alive"])
+            self.assertEqual(open_info["recoverable_unresolved_attempts"], 2)
+
+            self.clock.advance(10.0)
+            self.monotonic.advance(10.0)
+            ev1_resumed = self.evidence(m1, d1, observed_at=self.clock())
+            adopted = TransferAuthority.open_retained_run(
+                self.db_path, run_id=m1["release_id"], writer_id=self.writer_id,
+                account_id=self.account_id, manifest_bytes=raw1, evidence=ev1_resumed,
+                deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                monotonic_clock=self.monotonic, boot_id="boot-1",
+                resume_open=True,
+            )
+            self.addCleanup(adopted.close)
+
+        acct_mid = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id,
+            account_id=self.account_id, clock=self.clock,
+        )
+        self.assertEqual(acct_mid["unresolved_attempts"], 0)
+        self.assertEqual(acct_mid["forensic_raw_unresolved_attempts"], 2)
+
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        p1, _ = self.request(adopted, m1["payload"]["bytes"], "media_chunk")
+        adopted.mark_dispatch(p1)
+        adopted.finish_request(p1, 200)
+        self.clock.advance(0.6)
+        self.monotonic.advance(0.6)
+        r1, _ = self.request(adopted, m1["receipt"]["bytes"], "media_chunk")
+        adopted.mark_dispatch(r1)
+        adopted.finish_request(r1, 200)
+        self.finish_index(adopted, m1, d1)
+
+        acct_done = TransferAuthority.inspect_retained_account(
+            self.db_path, writer_id=self.writer_id,
+            account_id=self.account_id, clock=self.clock,
+        )
+        self.assertEqual(acct_done["active_run_count"], 0)
+        self.assertEqual(acct_done["unresolved_attempts"], 0)
+        self.assertEqual(acct_done["forensic_raw_unresolved_attempts"], 2)
+
+    def test_crash_adoption_refuses_post_and_put_401(self):
+        for idx, (kind, method, body_bytes) in enumerate((
+            ("overflow_folder_create", "POST", 128),
+            ("drive_api", "POST", 0),
+            ("media_chunk", "PUT", 1024),
+            ("resumable_status", "PUT", 0),
+            ("drive_api", "GET", 16),
+        ), start=1):
+            with self.subTest(kind=kind, method=method, body_bytes=body_bytes):
+                sub_db = self.db_path.parent / f"refuse-{idx}.sqlite"
+                TransferAuthority.initialize_retained_observation(
+                    sub_db, writer_id=self.writer_id, account_id=self.account_id,
+                )
+                TransferAuthority.import_retained_legacy_diagnostic(
+                    sub_db, result_bytes=self.legacy_raw,
+                    writer_id=self.writer_id, account_id=self.account_id,
+                    clock=self.clock,
+                )
+                dead_pid = 999900 + idx
+                m = self.manifest(idx)
+                raw, d = self.raw_and_digest(m)
+                ev = self.evidence(m, d)
+                with patch.object(retained_module.os, "getpid", return_value=dead_pid):
+                    run = TransferAuthority.open_retained_run(
+                        sub_db, run_id=m["release_id"], writer_id=self.writer_id,
+                        account_id=self.account_id, manifest_bytes=raw, evidence=ev,
+                        deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                        monotonic_clock=self.monotonic, boot_id="boot-1",
+                    )
+                    self.reserve(run, m, d)
+                    att_id, _ = run.start_request(
+                        body_bytes, 60, kind, method=method,
+                        target_category=kind, target_sha256="a" * 64,
+                        operation_key="b" * 64,
+                    )
+                    run.mark_dispatch(att_id)
+                    run.finish_request(att_id, 401)
+                    run.close()
+
+                with patch.object(retained_module.os, "kill", side_effect=ProcessLookupError):
+                    open_info = TransferAuthority.inspect_open_retained_run(
+                        sub_db, writer_id=self.writer_id,
+                        account_id=self.account_id, run_id=m["release_id"],
+                    )
+                    self.assertEqual(open_info["recoverable_unresolved_attempts"], 0)
+
+                    self.clock.advance(10.0)
+                    self.monotonic.advance(10.0)
+                    ev_resumed = self.evidence(m, d, observed_at=self.clock())
+                    adopted = TransferAuthority.open_retained_run(
+                        sub_db, run_id=m["release_id"], writer_id=self.writer_id,
+                        account_id=self.account_id, manifest_bytes=raw, evidence=ev_resumed,
+                        deadline_at=self.clock() + 20 * 60, clock=self.clock,
+                        monotonic_clock=self.monotonic, boot_id="boot-1",
+                        resume_open=True,
+                    )
+                    try:
+                        acct = TransferAuthority.inspect_retained_account(
+                            sub_db, writer_id=self.writer_id,
+                            account_id=self.account_id, clock=self.clock,
+                        )
+                        self.assertEqual(acct["unresolved_attempts"], 1)
+                        with self.assertRaisesRegex(AuthorityBlocked, "Unresolved sends block"):
+                            adopted.mark_pair_verified(
+                                retained_module._reviewed_manifest(raw, m["release_id"], self.account_id)[2],
+                                "c" * 64,
+                            )
+                        with self.assertRaisesRegex(AuthorityBlocked, "not an unresolved 0-byte Drive API GET"):
+                            adopted.reconcile_retried_drive_get(att_id)
+                    finally:
+                        adopted.close()
+
+                # Forging a crash-adoption reconciliation proof row for POST/PUT/non-0-byte GET must fail validation.
+                key = retained_module._reviewed_manifest(raw, m["release_id"], self.account_id)[2]
+                forged = {
+                    "schema": retained_module.CRASH_ADOPTION_RECONCILIATION_SCHEMA,
+                    "attempt_id": att_id,
+                    "run_id": m["release_id"],
+                    "pair_key": key,
+                    "manifest_sha256": d,
+                    "account_id": self.account_id,
+                    "writer_id": self.writer_id,
+                    "original_http_status": 401,
+                    "original_charge_bytes": body_bytes,
+                    "dispatched": True,
+                    "uncommitted_retry_bytes": 0,
+                    "applied_at": self.clock(),
+                }
+                forged_raw = retained_module._canonical(forged)
+                forged_sha = hashlib.sha256(forged_raw.encode()).hexdigest()
+                with sqlite3.connect(sub_db) as db:
+                    db.execute(
+                        "INSERT INTO retained_reconciliation VALUES (?,?,?,?,?,?)",
+                        (att_id, m["release_id"], key, forged_raw, forged_sha, self.clock()),
+                    )
+                with self.assertRaisesRegex(
+                    AuthorityBlocked,
+                    "Retained crash-adoption reconciliation attempt identity differs",
+                ):
+                    TransferAuthority.inspect_retained_account(
+                        sub_db, writer_id=self.writer_id,
+                        account_id=self.account_id, clock=self.clock,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

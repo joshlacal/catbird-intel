@@ -667,6 +667,7 @@ def enrich_and_label_communities(
     graph_dir: pathlib.Path,
     by_did: dict[str, list[tuple[int, int, int, float]]],
     comm_tbl: pa.Table,
+    kf: pa.Table | None = None,
 ) -> pa.Table:
     """Create heuristic profile-term labels and prompts for 500 communities.
 
@@ -674,6 +675,15 @@ def enrich_and_label_communities(
     The archive projection does not provide profile handles or starter-pack titles
     here, so no claim of either enrichment is made.
     """
+    hide_dids: set[str] = set()
+    hide_path = graph_dir / "hide_from_recs.tsv"
+    if hide_path.is_file():
+        hide_dids.update(line.strip() for line in hide_path.read_text().splitlines() if line.strip())
+    if kf is not None and "hide_from_recs" in kf.column_names:
+        for d_val, h_val in zip(kf["did"].to_pylist(), kf["hide_from_recs"].to_pylist()):
+            if h_val:
+                hide_dids.add(d_val)
+
     profiles: dict[str, tuple[str, str, str]] = {}  # did -> (name, description, handle)
     latest_profile: dict[str, tuple[str, bool]] = {}
     for pf in event_files:
@@ -736,8 +746,14 @@ def enrich_and_label_communities(
     s_ids = comm_tbl["scene_id"].to_pylist()
     d_ids = comm_tbl["domain_id"].to_pylist()
     sizes = comm_tbl["size"].to_pylist()
-    top_dids_col = comm_tbl["top_dids"].to_pylist()
-    top_foll_col = comm_tbl["top_followers"].to_pylist()
+    raw_top_dids_col = comm_tbl["top_dids"].to_pylist()
+    raw_top_foll_col = comm_tbl["top_followers"].to_pylist()
+    top_dids_col = []
+    top_foll_col = []
+    for tdids, tfoll in zip(raw_top_dids_col, raw_top_foll_col):
+        filtered_pairs = [(d, f) for d, f in zip(tdids, tfoll) if d not in hide_dids]
+        top_dids_col.append([d for d, _ in filtered_pairs])
+        top_foll_col.append([f for _, f in filtered_pairs])
 
     labels = []
     keywords_col = []
@@ -819,7 +835,8 @@ def ship_to_netcup(graph_dir: pathlib.Path, version: str) -> dict[str, Any]:
         scene_id  UInt16,
         domain_id UInt8,
         score     Float32,
-        rank      UInt8
+        rank      UInt8,
+        hide_from_recs Bool DEFAULT false
     )
     ENGINE = ReplacingMergeTree
     ORDER BY (version, did, rank);
@@ -845,7 +862,7 @@ def ship_to_netcup(graph_dir: pathlib.Path, version: str) -> dict[str, Any]:
     """
     cmd = (
         f"clickhouse-client --multiquery <<'EOSQL'\n{ddl}\nEOSQL\n"
-        f"clickhouse-client -q \"INSERT INTO catbird.known_for (pid, did, community, scene_id, domain_id, score, rank) FORMAT Parquet\" < /tmp/known_for.parquet\n"
+        f"clickhouse-client -q \"INSERT INTO catbird.known_for (pid, did, community, scene_id, domain_id, score, rank, hide_from_recs) FORMAT Parquet\" < /tmp/known_for.parquet\n"
         f"clickhouse-client -q \"INSERT INTO catbird.communities (community, scene_id, domain_id, size, label, seed_subculture, keywords, top_dids, top_followers) FORMAT Parquet\" < /tmp/communities_labeled.parquet\n"
         f"clickhouse-client -q \"OPTIMIZE TABLE catbird.known_for FINAL\"\n"
         f"clickhouse-client -q \"OPTIMIZE TABLE catbird.communities FINAL\"\n"
@@ -924,7 +941,7 @@ def main() -> None:
         hub_min_pack_count=args.hub_min_pack_count,
     )
     follow_capture = eval_follow_edge_capture(graph_dir)
-    enrich_and_label_communities(event_files, graph_dir, by_did, comm_tbl)
+    enriched_comm = enrich_and_label_communities(event_files, graph_dir, by_did, comm_tbl, kf=kf)
     for item in inventory:
         current = pathlib.Path(item["path"]).stat()
         if current.st_size != item["size"] or current.st_mtime_ns != item["mtime_ns"]:
@@ -936,9 +953,28 @@ def main() -> None:
     if args.ship_netcup:
         ship_res = ship_to_netcup(graph_dir, args.version)
 
+    hide_col_present = "hide_from_recs" in kf.column_names
+    hide_flagged_dids = (
+        {d_val for d_val, h_val in zip(kf["did"].to_pylist(), kf["hide_from_recs"].to_pylist()) if h_val}
+        if hide_col_present else set()
+    )
+    hide_flagged_rows = int(sum(1 for h_val in kf["hide_from_recs"].to_pylist() if h_val)) if hide_col_present else 0
+    remaining_in_top_dids = sum(
+        1 for tdids in enriched_comm["top_dids"].to_pylist() for d_val in tdids if d_val in hide_flagged_dids
+    )
+
     report = {
         "graph_version": "phase1-v1",
         "known_for_sha256": sha256_file(graph_dir / "known_for.parquet"),
+        "known_for_bytes": (graph_dir / "known_for.parquet").stat().st_size,
+        "known_for_mb": round((graph_dir / "known_for.parquet").stat().st_size / 1e6, 3),
+        "known_for_under_50mb": (graph_dir / "known_for.parquet").stat().st_size <= 50_000_000,
+        "hide_from_recs": {
+            "column_present": hide_col_present,
+            "known_for_flagged_rows": hide_flagged_rows,
+            "known_for_flagged_accounts": len(hide_flagged_dids),
+            "communities_top_dids_flagged_remaining": remaining_in_top_dids,
+        },
         "evaluation_input_manifest_sha256": sha256_file(graph_dir / "evaluation_input_manifest.json"),
         "evaluator_source_observation": source_observation,
         "seed_manifest_sha256": sha256_file(pathlib.Path(args.manifest)),

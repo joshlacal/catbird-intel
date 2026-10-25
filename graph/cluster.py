@@ -51,21 +51,181 @@ def prune_for_backbone(raw: np.ndarray, top_k: int = 35, min_cos: float = 0.035)
     sub = raw[mask]
     if len(sub) == 0:
         return sub
-    # simgraph groups edges by p but does not promise weight order within p.
-    # Always sort before selecting the strongest neighbors.
-    order = np.lexsort((sub["q"], -sub["w"], sub["p"]))
-    sub = sub[order]
+    # simgraph emits edges grouped by p and descending w; verify before skipping lexsort.
+    if len(sub) > 1:
+        p_arr, w_arr, q_arr = sub["p"], sub["w"], sub["q"]
+        same_p = p_arr[1:] == p_arr[:-1]
+        is_sorted = bool(
+            np.all((p_arr[1:] > p_arr[:-1]) | (same_p & ((w_arr[1:] < w_arr[:-1]) | ((w_arr[1:] == w_arr[:-1]) & (q_arr[1:] >= q_arr[:-1])))))
+        )
+        if not is_sorted:
+            order = np.lexsort((sub["q"], -sub["w"], sub["p"]))
+            sub = sub[order]
     first_p = np.r_[0, np.flatnonzero(np.diff(sub["p"])) + 1]
     rank_p = np.arange(len(sub)) - np.repeat(first_p, np.diff(np.r_[first_p, len(sub)]))
     sub = sub[rank_p < top_k]
     if len(sub) == 0:
         return sub
     # Cap incoming degree per target q at top_k * 2 (highest cosine first)
-    order_q = np.lexsort((-sub["w"], sub["q"]))
+    key_q = (sub["q"].astype(np.uint64) << 32) | (~sub["w"].view(np.uint32)).astype(np.uint64)
+    order_q = np.argsort(key_q, kind="stable")
     sub_q = sub[order_q]
     first_q = np.r_[0, np.flatnonzero(np.diff(sub_q["q"])) + 1]
     rank_q = np.arange(len(sub_q)) - np.repeat(first_q, np.diff(np.r_[first_q, len(sub_q)]))
     return sub_q[rank_q < (top_k * 2)]
+
+
+def detect_and_demote_hubs(
+    n: int,
+    n_comm: int,
+    comm: np.ndarray,
+    followers: np.ndarray,
+    raw: np.ndarray,
+    kp: np.ndarray,
+    kc: np.ndarray,
+    share: np.ndarray,
+    *,
+    hub_med_followers: float = 50000.0,
+    hub_mean_followers: float = 100000.0,
+    degree_alpha: float = 0.35,
+    size_gamma: float = 0.15,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+    """Detect generic default-follow hub communities structurally (by median and mean
+    follower count) and rank each producer's topical non-hub memberships ahead of
+    hub memberships. If a producer in a hub community has no non-hub membership with
+    share >= 0.10, fall back to its strongest degree/size-normalized neighbor community
+    in sim.bin with a sub-threshold score (0.09) ahead of the demoted hub (0.05)."""
+    if n_comm <= 1 or len(kp) == 0:
+        return kp, kc, share, []
+
+    # Sort and slice top-3 candidate memberships per producer first
+    order = np.lexsort((-share, kp))
+    kp, kc, share = kp[order], kc[order], share[order]
+    first = np.r_[0, np.flatnonzero(np.diff(kp)) + 1]
+    rank = np.arange(len(kp)) - np.repeat(first, np.diff(np.r_[first, len(kp)]))
+    top = rank < 3
+    kp, kc, share = kp[top], kc[top], share[top]
+
+    comm_sz = np.bincount(comm[comm >= 0], minlength=n_comm)
+    comm_med = np.array([np.median(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
+    comm_mean = np.array([np.mean(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
+    hub_comms = set(np.flatnonzero((comm_med > hub_med_followers) & (comm_mean > hub_mean_followers)).tolist())
+    if not hub_comms:
+        return kp, kc, share, []
+
+    has_hub_mask = np.isin(kc, list(hub_comms))
+    affected_pids = np.unique(kp[has_hub_mask])
+    if len(affected_pids) == 0:
+        return kp, kc, share, sorted(hub_comms)
+
+    affected_set = set(affected_pids.tolist())
+    p_arr, q_arr, w_arr = raw["p"], raw["q"], raw["w"]
+    m_out = np.isin(p_arr, affected_pids) & (comm[q_arr] >= 0) & (~np.isin(comm[q_arr], list(hub_comms)))
+    m_in = np.isin(q_arr, affected_pids) & (comm[p_arr] >= 0) & (~np.isin(comm[p_arr], list(hub_comms)))
+    uh = np.concatenate([p_arr[m_out], q_arr[m_in]])
+    vn = np.concatenate([q_arr[m_out], p_arr[m_in]])
+    wi = np.concatenate([w_arr[m_out], w_arr[m_in]])
+    cn = comm[vn]
+
+    best_topical: dict[int, int] = {}
+    if len(uh) > 0:
+        w_score = (
+            wi
+            / np.power(500.0 + followers[vn].astype(np.float64), degree_alpha)
+            / np.power(50.0 + comm_sz[cn].astype(np.float64), size_gamma)
+        )
+        uc_key = uh.astype(np.int64) * n_comm + cn.astype(np.int64)
+        uk, inv = np.unique(uc_key, return_inverse=True)
+        uc_sum = np.bincount(inv, weights=w_score)
+        u_id = (uk // n_comm).astype(np.int64)
+        c_id = (uk % n_comm).astype(np.int64)
+        order_u = np.lexsort((-uc_sum, u_id))
+        u_id, c_id = u_id[order_u], c_id[order_u]
+        first_u = np.r_[0, np.flatnonzero(np.diff(u_id)) + 1]
+        for idx_u in first_u.tolist():
+            best_topical[int(u_id[idx_u])] = int(c_id[idx_u])
+
+    first = np.r_[0, np.flatnonzero(np.diff(kp)) + 1]
+    counts = np.diff(np.r_[first, len(kp)])
+
+    out_kp: list[int] = []
+    out_kc: list[int] = []
+    out_sh: list[float] = []
+    for start, cnt in zip(first.tolist(), counts.tolist()):
+        p = int(kp[start])
+        if p not in affected_set:
+            for i in range(min(cnt, 3)):
+                out_kp.append(p)
+                out_kc.append(int(kc[start + i]))
+                out_sh.append(float(share[start + i]))
+            continue
+        c_list = kc[start : start + cnt].tolist()
+        s_list = share[start : start + cnt].tolist()
+        non_hub_pairs = [(int(c), float(s)) for c, s in zip(c_list, s_list) if int(c) not in hub_comms]
+        hub_pairs = [(int(c), 0.05) for c, _s in zip(c_list, s_list) if int(c) in hub_comms]
+        if non_hub_pairs:
+            c0_nh, s0_nh = non_hub_pairs[0]
+            non_hub_pairs[0] = (c0_nh, max(s0_nh, 0.50))
+        elif p in best_topical:
+            non_hub_pairs = [(best_topical[p], 0.09)]
+        merged = (non_hub_pairs + hub_pairs)[:3]
+        for c_val, s_val in merged:
+            out_kp.append(p)
+            out_kc.append(c_val)
+            out_sh.append(s_val)
+
+    return (
+        np.array(out_kp, dtype=np.int64),
+        np.array(out_kc, dtype=np.int64),
+        np.array(out_sh, dtype=np.float64),
+        sorted(hub_comms),
+    )
+
+
+def write_compact_known_for(kf: pa.Table, path: pathlib.Path) -> None:
+    """Sort KnownFor by producer primary hierarchy + (did, rank) and write with
+    DELTA_BYTE_ARRAY on did + float16-quantized float32 scores so the full table
+    fits under 50 MB without dropping secondary memberships."""
+    pid = kf["pid"].to_numpy()
+    rank = kf["rank"].to_numpy()
+    comm = kf["community"].to_numpy()
+    scene = kf["scene_id"].to_numpy()
+    dom = kf["domain_id"].to_numpy()
+    s_f16 = pa.array(kf["score"].to_numpy().astype(np.float16).astype(np.float32), type=pa.float32())
+    kf = kf.set_column(kf.schema.get_field_index("score"), "score", s_f16)
+
+    if len(pid) > 0:
+        n_prod = int(pid.max()) + 1
+        p_comm = np.zeros(n_prod, dtype=np.uint32)
+        p_scene = np.zeros(n_prod, dtype=np.uint16)
+        p_dom = np.zeros(n_prod, dtype=np.uint8)
+        r0 = rank == 0
+        p_comm[pid[r0]] = comm[r0]
+        p_scene[pid[r0]] = scene[r0]
+        p_dom[pid[r0]] = dom[r0]
+        tmp = (
+            kf.append_column("_p_dom", pa.array(p_dom[pid]))
+            .append_column("_p_scene", pa.array(p_scene[pid]))
+            .append_column("_p_comm", pa.array(p_comm[pid]))
+        )
+        kf = tmp.sort_by([
+            ("_p_dom", "ascending"),
+            ("_p_scene", "ascending"),
+            ("_p_comm", "ascending"),
+            ("did", "ascending"),
+            ("rank", "ascending"),
+        ]).drop(["_p_dom", "_p_scene", "_p_comm"])
+
+    dict_cols = [c for c in ["community", "scene_id", "domain_id", "rank", "score", "hide_from_recs"] if c in kf.column_names]
+    pq.write_table(
+        kf,
+        path,
+        compression="zstd",
+        compression_level=9,
+        column_encoding={"did": "DELTA_BYTE_ARRAY"},
+        use_dictionary=dict_cols,
+        row_group_size=4_000_000,
+    )
 
 
 def symmetric_edges(raw: np.ndarray):
@@ -225,16 +385,26 @@ def main() -> None:
     ap.add_argument("--search-steps", type=int, default=4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--membership", default=None, help="saved membership.npy to reuse instead of running Leiden")
+    ap.add_argument("--hide-from-recs", default=None, help="optional TSV of DIDs with hideFromAlgorithmicRecommendations=true")
     args = ap.parse_args()
     d = pathlib.Path(args.dir)
+
+    hide_path = pathlib.Path(args.hide_from_recs) if args.hide_from_recs else (d / "hide_from_recs.tsv")
+    hide_set: set[str] = set()
+    if hide_path.is_file():
+        hide_set = {line.strip() for line in hide_path.read_text().splitlines() if line.strip()}
 
     dids, followers, raw = load(d)
     n = len(dids)
     if args.membership:
         # Reuse a finished partition (Leiden on ~2M producers takes over an hour) and redo only
         # the memberships, hierarchy and outputs.
-        memb = np.load(args.membership)
-        prior = json.loads((d / "cluster_stats.json").read_text())
+        memb_path = pathlib.Path(args.membership)
+        memb = np.load(memb_path)
+        stats_path = d / "cluster_stats.json"
+        if not stats_path.is_file():
+            stats_path = memb_path.resolve().parent / "cluster_stats.json"
+        prior = json.loads(stats_path.read_text())
         res, backbone_edges = prior["resolution"], prior["backbone_edges_undirected"]
     else:
         backbone = prune_for_backbone(raw, top_k=args.cluster_top_k, min_cos=args.cluster_min_cos)
@@ -313,58 +483,72 @@ def main() -> None:
     # Top 3 per producer, keeping shares >= 0.1 (or the own community).
     sel = (share >= 0.1) | own
     kp, kc, share = kp[sel], kc[sel], share[sel]
+    kp, kc, share, demoted_hubs = detect_and_demote_hubs(n, n_comm, comm, followers, raw, kp, kc, share)
     order = np.lexsort((-share, kp))
     kp, kc, share = kp[order], kc[order], share[order]
     first = np.r_[0, np.flatnonzero(np.diff(kp)) + 1]
     rank = np.arange(len(kp)) - np.repeat(first, np.diff(np.r_[first, len(kp)]))
     top = rank < 3
+    top_kp = kp[top]
     top_kc = kc[top].astype(np.uint32)
     # numpy narrowing casts wrap silently; the netcup schema is UInt16 scenes and UInt8 domains.
     if scene_of_comm.max(initial=0) > np.iinfo(np.uint16).max or domain_of_comm.max(initial=0) > np.iinfo(np.uint8).max:
         raise SystemExit(f"hierarchy too wide for the schema: {scene_of_comm.max() + 1} scenes, {domain_of_comm.max() + 1} domains")
+    top_dids = [dids[p] for p in top_kp]
     kf = pa.table({
-        "pid": kp[top].astype(np.uint32),
-        "did": pa.array([dids[p] for p in kp[top]]),
+        "pid": top_kp.astype(np.uint32),
+        "did": pa.array(top_dids, type=pa.string()),
         "community": top_kc,
         "scene_id": scene_of_comm[top_kc].astype(np.uint16),
         "domain_id": domain_of_comm[top_kc].astype(np.uint8),
         "score": np.round(share[top], 4).astype(np.float32),
         "rank": rank[top].astype(np.uint8),
+        "hide_from_recs": pa.array([d_str in hide_set for d_str in top_dids], type=pa.bool_()),
     })
-    pq.write_table(kf, d / "known_for.parquet", compression="zstd")
+    write_compact_known_for(kf, d / "known_for.parquet")
+
+    # Update primary community mapping from rank-0 KnownFor for demoted hub members
+    primary_comm = comm.copy()
+    r0_mask = (rank[top] == 0) & np.isin(comm[top_kp], demoted_hubs)
+    primary_comm[top_kp[r0_mask]] = top_kc[r0_mask].astype(np.int64)
 
     members: dict[int, list[int]] = {}
-    for p in np.flatnonzero(comm >= 0):
-        members.setdefault(int(comm[p]), []).append(int(p))
+    for p in np.flatnonzero(primary_comm >= 0):
+        members.setdefault(int(primary_comm[p]), []).append(int(p))
     c_rows = {"community": [], "scene_id": [], "domain_id": [], "size": [], "top_dids": [], "top_followers": []}
-    for c in sorted(members):
-        ps = sorted(members[c], key=lambda p: -followers[p])
+    for c in range(n_comm):
+        if c not in members and c not in demoted_hubs:
+            continue
+        ps = sorted(members.get(c, []), key=lambda p: -followers[p])
+        ps_visible = [p for p in ps if dids[p] not in hide_set]
         c_rows["community"].append(c)
         c_rows["scene_id"].append(int(scene_of_comm[c]))
         c_rows["domain_id"].append(int(domain_of_comm[c]))
         c_rows["size"].append(len(ps))
-        c_rows["top_dids"].append([dids[p] for p in ps[:20]])
-        c_rows["top_followers"].append([int(followers[p]) for p in ps[:20]])
+        c_rows["top_dids"].append([dids[p] for p in ps_visible[:20]])
+        c_rows["top_followers"].append([int(followers[p]) for p in ps_visible[:20]])
     pq.write_table(pa.table(c_rows), d / "communities.parquet", compression="zstd")
 
-    sz = [len(v) for v in members.values()]
+    sz = [len(v) for v in members.values() if len(v) > 0]
     stats = {
         "producers": n,
         "backbone_edges_undirected": backbone_edges,
         "sim_edges_undirected": int(len(w)),
         "resolution": res,
-        "algorithm": "Leiden CPM with similarity-share overlapping memberships; not twitter/sbf Metropolis-Hastings",
+        "algorithm": "Leiden CPM with similarity-share overlapping memberships and structural hub demotion; not twitter/sbf Metropolis-Hastings",
         "seed": args.seed,
         "target_size": args.target_size,
         "size_objective": args.size_objective,
         "max_communities": args.max_communities,
         "communities_before_cap": int((sizes >= args.min_size).sum()),
         "communities_discarded_by_cap": max(0, int((sizes >= args.min_size).sum()) - args.max_communities),
-        "size_producer_weighted_median": median_size(memb, args.min_size),
-        "communities": len(members),
+        "size_producer_weighted_median": median_size(primary_comm[primary_comm >= 0], args.min_size) if np.any(primary_comm >= 0) else 0.0,
+        "communities": len(sz),
+        "demoted_hub_communities": demoted_hubs,
+        "hide_from_recs_producers": sum(1 for d_str in dids if d_str in hide_set),
         "scenes": int(len(np.unique(scene_of_comm))) if len(scene_of_comm) else 0,
         "domains": int(len(np.unique(domain_of_comm))) if len(domain_of_comm) else 0,
-        "assigned_producers": int((comm >= 0).sum()),
+        "assigned_producers": int((primary_comm >= 0).sum()),
         "size_median": statistics.median(sz) if sz else 0,
         "size_p90": float(np.quantile(sz, 0.9)) if sz else 0,
         "size_max": max(sz) if sz else 0,

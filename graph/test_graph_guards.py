@@ -270,6 +270,168 @@ class GraphGuards(unittest.TestCase):
         self.assertEqual(nc_rows[1]["account_active"], False)
         self.assertEqual(nc_rows[1]["account_status"], "deleted")
 
+    def test_structural_hub_demotion_promotes_topical_and_retains_hub_secondary(self):
+        from cluster import detect_and_demote_hubs
+
+        # Community 0: structural mega-hub (median > 50k, mean > 100k)
+        # Community 1 & 2: normal topical communities
+        comm = np.array([0] * 10 + [1] * 10 + [2] * 10, dtype=np.int64)
+        followers = np.array([120_000] * 10 + [800] * 10 + [900] * 10, dtype=np.uint64)
+        # Producer 0 has both hub 0 and non-hub 1 in KnownFor; Producer 1 only has hub 0 in KnownFor
+        raw = np.array(
+            [(0, 10, 0.25), (1, 20, 0.20), (1, 21, 0.15), (10, 11, 0.50)],
+            dtype=[("p", "<u4"), ("q", "<u4"), ("w", "<f4")],
+        )
+        kp = np.array([0, 0, 1, 10], dtype=np.int64)
+        kc = np.array([0, 1, 0, 1], dtype=np.int64)
+        share = np.array([0.70, 0.20, 0.80, 0.90], dtype=np.float64)
+
+        out_kp, out_kc, out_sh, demoted = detect_and_demote_hubs(
+            n=30, n_comm=3, comm=comm, followers=followers, raw=raw, kp=kp, kc=kc, share=share
+        )
+        self.assertEqual(demoted, [0])
+        p0_mask = out_kp == 0
+        self.assertEqual(out_kc[p0_mask].tolist(), [1, 0])
+        self.assertAlmostEqual(out_sh[p0_mask].tolist()[0], 0.50)
+        self.assertAlmostEqual(out_sh[p0_mask].tolist()[1], 0.05)
+
+        p1_mask = out_kp == 1
+        self.assertEqual(out_kc[p1_mask].tolist(), [2, 0])
+        self.assertAlmostEqual(out_sh[p1_mask].tolist()[0], 0.09)
+        self.assertAlmostEqual(out_sh[p1_mask].tolist()[1], 0.05)
+
+    def test_compact_known_for_preserves_schema_and_hide_from_recs_filter(self):
+        import json
+        from cluster import write_compact_known_for
+        from eval_phase1 import enrich_and_label_communities, load_known_for
+
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="catbird-kf-compact-"))
+        kf_in = pa.table(
+            {
+                "pid": pa.array([0, 0, 1], type=pa.uint32()),
+                "did": pa.array(["did:plc:hidden1", "did:plc:hidden1", "did:plc:visible2"], type=pa.string()),
+                "community": pa.array([10, 20, 10], type=pa.uint32()),
+                "scene_id": pa.array([300, 400, 300], type=pa.uint16()),
+                "domain_id": pa.array([5, 6, 5], type=pa.uint8()),
+                "score": pa.array([0.85, 0.15, 0.90], type=pa.float32()),
+                "rank": pa.array([0, 1, 0], type=pa.uint8()),
+                "hide_from_recs": pa.array([True, True, False], type=pa.bool_()),
+            }
+        )
+        write_compact_known_for(kf_in, tmp / "known_for.parquet")
+        comm_in = pa.table(
+            {
+                "community": pa.array([10], type=pa.uint32()),
+                "scene_id": pa.array([300], type=pa.uint16()),
+                "domain_id": pa.array([5], type=pa.uint8()),
+                "size": pa.array([2], type=pa.uint32()),
+                "top_dids": pa.array([["did:plc:hidden1", "did:plc:visible2"]], type=pa.list_(pa.string())),
+                "top_followers": pa.array([[5000, 1000]], type=pa.list_(pa.uint64())),
+            }
+        )
+        pq.write_table(comm_in, tmp / "communities.parquet")
+
+        by_did, kf_read, comm_read = load_known_for(tmp)
+        self.assertEqual(kf_read.num_rows, 3)
+        self.assertEqual(kf_read.schema.field("scene_id").type, pa.uint16())
+        self.assertEqual(kf_read.schema.field("domain_id").type, pa.uint8())
+        self.assertEqual(kf_read.schema.field("hide_from_recs").type, pa.bool_())
+
+        events_path = tmp / "events-1.parquet"
+        pq.write_table(
+            pa.Table.from_pylist(
+                [
+                    {
+                        "collection": "app.bsky.actor.profile",
+                        "operation": "create",
+                        "did": "did:plc:hidden1",
+                        "rev": "1",
+                        "name": "Hidden User",
+                        "description": "Astronomy galaxy telescope",
+                        "extra": "hidden.bsky.social",
+                    },
+                    {
+                        "collection": "app.bsky.actor.profile",
+                        "operation": "create",
+                        "did": "did:plc:visible2",
+                        "rev": "1",
+                        "name": "Visible User",
+                        "description": "Astronomy galaxy telescope",
+                        "extra": "visible.bsky.social",
+                    },
+                ]
+            ),
+            events_path,
+        )
+        enriched = enrich_and_label_communities([events_path], tmp, by_did, comm_read, kf=kf_read)
+        self.assertEqual(enriched["top_dids"].to_pylist(), [["did:plc:visible2"]])
+        self.assertEqual(enriched["top_followers"].to_pylist(), [[1000]])
+        prompt_obj = json.loads((tmp / "colab_community_labeling_prompts.jsonl").read_text().splitlines()[0])
+        self.assertEqual([p["did"] for p in prompt_obj["top_producers"]], ["did:plc:visible2"])
+
+    def test_colab_community_labeling_gate_checkpoint_and_receipt(self):
+        import json
+        from colab_label_communities import (
+            benchmark_one_shard,
+            prepare_shards,
+            run_all_shards,
+            verify_and_write_receipt,
+        )
+
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="catbird-colab-label-"))
+        prompts_path = tmp / "prompts.jsonl"
+        hide_path = tmp / "hide_from_recs.tsv"
+        hide_path.write_text("did:plc:hidden\n")
+        prompts_path.write_text(
+            "\n".join(
+                json.dumps(
+                    {
+                        "community": i,
+                        "scene_id": 1,
+                        "domain_id": 0,
+                        "size": 100 - i,
+                        "heuristic_label": f"Term{i}",
+                        "top_terms": [f"term{i}", "shared"],
+                        "enriched_tlds": [".dev"],
+                        "top_producers": [
+                            {"did": "did:plc:hidden", "handle": "hidden.dev", "name": "H", "bio": "hidden"},
+                            {"did": f"did:plc:vis{i}", "handle": f"vis{i}.dev", "name": f"V{i}", "bio": "visible"},
+                        ],
+                    }
+                )
+                for i in range(5)
+            )
+            + "\n"
+        )
+        out_dir = tmp / "colab-out"
+        manifest = prepare_shards(prompts_path, out_dir, shard_size=2, hide_from_recs_path=hide_path)
+        self.assertEqual(manifest["total_communities"], 5)
+        self.assertEqual(manifest["total_shards"], 3)
+        self.assertEqual(manifest["hide_from_recs_producers_removed"], 5)
+
+        # Live execution without --approve-spend must be blocked by the §4a gate
+        with self.assertRaises(SystemExit):
+            benchmark_one_shard(out_dir, approve_spend=False, dry_run_local=False)
+
+        bench = benchmark_one_shard(out_dir, dry_run_local=True)
+        self.assertTrue(bench["fits_budget"])
+        self.assertFalse(bench["qualifies_for_live_production_labels"])
+
+        ckpt = run_all_shards(out_dir, dry_run_local=True)
+        self.assertEqual(len(ckpt["completed_shards"]), 3)
+
+        receipt = verify_and_write_receipt(out_dir)
+        self.assertEqual(receipt["communities_labeled"], 5)
+        self.assertEqual(receipt["status"], "prepared_dry_run_only")
+
+        # Re-preparing with updated prompt content must invalidate stale shard checkpoints
+        old_s0_sha = ckpt["completed_shards"]["shard-000"]["input_sha256"]
+        prompts_path.write_text(prompts_path.read_text().replace("term0", "updated_term0"))
+        manifest2 = prepare_shards(prompts_path, out_dir, shard_size=2, hide_from_recs_path=hide_path)
+        self.assertNotEqual(manifest2["shards"][0]["sha256"], old_s0_sha)
+        benchmark_one_shard(out_dir, dry_run_local=True)
+        ckpt2 = run_all_shards(out_dir, dry_run_local=True)
+        self.assertEqual(ckpt2["completed_shards"]["shard-000"]["input_sha256"], manifest2["shards"][0]["sha256"])
 
 
 def _tsv_rows(path):
@@ -278,8 +440,5 @@ def _tsv_rows(path):
     return [dict(zip(names, row.split("\t"))) for row in rows]
 
 
-
 if __name__ == "__main__":
     unittest.main()
-
-

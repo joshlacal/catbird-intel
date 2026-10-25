@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catbird gold labels</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main id="home" hidden>
+  <h1>Catbird gold labels</h1>
+  <p class="muted">Labels here are your keystrokes only. No model output is shown or pre-filled.</p>
+  <section class="panel">
+    <h2>New session</h2>
+    <form id="new-session">
+      <label>Mode
+        <select name="kind">
+          <option value="axis">Single-axis pass</option>
+          <option value="trap">Collision-trap pairs</option>
+          <option value="narrate">Free narration</option>
+        </select>
+      </label>
+      <label data-for="axis">Axis <select name="axis"></select></label>
+      <label data-for="pool">Pool <select name="pool"></select></label>
+      <label data-for="pool">Subset <select name="subset"></select></label>
+      <button type="submit">Start</button>
+    </form>
+    <p id="form-error" class="error" hidden></p>
+  </section>
+  <section class="panel">
+    <h2>Sessions</h2>
+    <table id="sessions"><thead><tr><th>Session</th><th>Mode</th><th>Pool</th><th>Done</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+
+<main id="label" hidden>
+  <header class="bar">
+    <a href="/" class="back">← Sessions</a>
+    <strong id="axis-name"></strong>
+    <span id="progress" class="muted"></span>
+    <span id="rec" class="rec" hidden>● recording</span>
+    <span id="status" class="muted"></span>
+  </header>
+  <div class="layout">
+    <article id="card" class="card">
+      <div id="ctx-parent" class="ctx" hidden><div class="ctx-label">Replying to</div><div class="ctx-text"></div></div>
+      <div id="post-text" class="post-text"></div>
+      <div id="ctx-quote" class="ctx quote" hidden><div class="ctx-label">Quoting</div><div class="ctx-text"></div></div>
+      <div id="media" class="media muted"></div>
+      <div id="options" class="options" hidden></div>
+      <div class="meta muted"><span id="post-type"></span><span id="current-value"></span><span id="stratum" hidden></span></div>
+    </article>
+    <aside class="rubric">
+      <p id="definition"></p>
+      <ol id="keys" class="keys"></ol>
+      <ul id="rules" class="rules muted"></ul>
+      <p class="muted help" id="help"></p>
+    </aside>
+  </div>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{
+  "schema": "catbird-gold-label-pools-v1",
+  "created_at": "2026-10-23T13:37:39.896101+00:00",
+  "command": "uv run --with pyarrow python3 -m labeling build-pools",
+  "seed": 20261023,
+  "inputs": {
+    "bank": {
+      "path": "/Users/joshlacalamito/catbird-lake-local/drive-sync-staging/training-banks/phase3_health_training_150k_v1_unlabeled.parquet",
+      "sha256": "4bea16ece379a1c2f0e8d559bca97357b9eb653cc3f8083681d984cd07e0b538"
+    },
+    "holdout": {
+      "path": "eval/phase3_holdout_600_unlabeled.jsonl",
+      "sha256": "fd57d61c490cf11860c74341f4c5d16d884d65ae0a0b9dd200b867c52b6b9792"
+    },
+    "hydration": {
+      "path": "eval/pilot_holdout_parent_quote_hydration_20261021.jsonl",
+      "sha256": "2fe65eb207d0698d63bd5334c8c63bf7a0a8d5bc2fcf0a682ff320a933faf093"
+    }
+  },
+  "outputs": {
+    "extra_pool": {
+      "path": "labeling/pools/human_final_extra_v1.jsonl",
+      "sha256": "74c015b43ace1cf90aa80ef6aff19af0707d6f973b35b42dc134b1a4403c6ccd",
+      "rows": 450,
+      "pilot50": 50,
+      "extra": 400
+    },
+    "trap_pairs": {
+      "path": "labeling/pools/trap_pairs_v1.jsonl",
+      "sha256": "995a4e305fa800068b457362f803323353746fb8b44cdc80e49f39d8954af7c0",
+      "rows": 300,
+      "by_source": {
+        "bank_bucket16_trap_kw": 45,
+        "bank_bucket19_trap_kw": 135,
+        "holdout_collision_trap_kw": 120
+      }
+    },
+    "context": {
+      "path": "labeling/pools/context_extra_v1.jsonl",
+      "sha256": "9ff27c16b9735860122b82c8f32cd4db56de6f30ef18c3b0a737a76009e75f7a",
+      "referenced_outside_hydration": 391,
+      "resolved_from_bank": 25,
+      "unresolved": 366
+    }
+  },
+  "selection": {
+    "extra": "bucket 19 (human_final), langs has 'en', non-empty text, not a trap-keyword post, one post per author, seeded shuffle",
+    "traps": "all holdout collision_trap_kw posts + top-up from buckets (19, 16) in that order by TRAP_KW and NOT POLITICAL_KW, one post per author, authors disjoint from extra pool"
+  }
+}

@@ -301,6 +301,58 @@ class GraphGuards(unittest.TestCase):
         self.assertAlmostEqual(out_sh[p1_mask].tolist()[0], 0.09)
         self.assertAlmostEqual(out_sh[p1_mask].tolist()[1], 0.05)
 
+    def test_structural_entropy_density_hub_demotion_and_megahub_exclusion(self):
+        from cluster import assign_excluded_hubs, detect_and_demote_hubs
+
+        # Community 0: low-density hub (50 members, med=60k, mean=60k, low internal density)
+        # Community 1: large low-density community (50 members, med=5k, low internal density)
+        # Community 2: cohesive topical community (10 members, dense internal edges)
+        comm = np.array([0] * 50 + [1] * 50 + [2] * 10, dtype=np.int64)
+        followers = np.array([60_000] * 50 + [5_000] * 50 + [1_000] * 10, dtype=np.uint64)
+        # Dense internal edges in community 2 (nodes 100..109) so int_dens[2] is high
+        dense_c2 = [(100 + i, 100 + j, 0.40) for i in range(10) for j in range(10) if i != j]
+        # Producer 0 (in hub 0) has equal raw edge weight to large low-density c1 and cohesive c2
+        raw = np.array(
+            [(0, 50, 0.25), (0, 100, 0.25)] + dense_c2,
+            dtype=[("p", "<u4"), ("q", "<u4"), ("w", "<f4")],
+        )
+        kp = np.array([0, 50, 100], dtype=np.int64)
+        kc = np.array([0, 1, 2], dtype=np.int64)
+        share = np.array([0.85, 0.90, 0.90], dtype=np.float64)
+
+        out_kp, out_kc, out_sh, demoted = detect_and_demote_hubs(
+            n=110,
+            n_comm=3,
+            comm=comm,
+            followers=followers,
+            raw=raw,
+            kp=kp,
+            kc=kc,
+            share=share,
+            hub_mode="structural",
+        )
+        self.assertEqual(demoted, [0])
+        p0_mask = out_kp == 0
+        # Cohesive community 2 must beat large low-density community 1 ahead of demoted hub 0
+        self.assertEqual(out_kc[p0_mask].tolist(), [2, 0])
+        self.assertAlmostEqual(float(out_sh[p0_mask][0]), 0.09)
+        self.assertAlmostEqual(float(out_sh[p0_mask][1]), 0.05)
+
+        # Pre-Leiden excluded mega-hub (node 0 with comm=-1) is assigned to cohesive community 2
+        comm_ex = comm.copy()
+        comm_ex[0] = -1
+        assigned = assign_excluded_hubs(
+            n=110,
+            n_comm=3,
+            comm=comm_ex,
+            followers=followers,
+            raw=raw,
+            excluded_hub_pids=np.array([0], dtype=np.int64),
+        )
+        self.assertIn(0, assigned)
+        self.assertEqual(assigned[0][0][0], 2)
+        self.assertGreaterEqual(assigned[0][0][1], 0.50)
+
     def test_compact_known_for_preserves_schema_and_hide_from_recs_filter(self):
         import json
         from cluster import write_compact_known_for

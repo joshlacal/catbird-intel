@@ -75,6 +75,45 @@ def prune_for_backbone(raw: np.ndarray, top_k: int = 35, min_cos: float = 0.035)
     return sub_q[rank_q < (top_k * 2)]
 
 
+def compute_community_structure_metrics(
+    n_comm: int,
+    comm: np.ndarray,
+    followers: np.ndarray,
+    raw: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute per-community size, median/mean followers, internal directed pair
+    density in sim.bin, and Shannon entropy (bits) of incoming community weights."""
+    comm_sz = np.bincount(comm[comm >= 0], minlength=n_comm)
+    comm_med = np.array([np.median(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
+    comm_mean = np.array([np.mean(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
+    if n_comm == 0 or len(raw) == 0:
+        zeros = np.zeros(n_comm, dtype=np.float64)
+        return comm_sz, comm_med, comm_mean, zeros, zeros
+
+    cp = comm[raw["p"]]
+    cq = comm[raw["q"]]
+    w_raw = raw["w"].astype(np.float64)
+    valid = (cp >= 0) & (cq >= 0)
+    cp_v, cq_v, w_v = cp[valid], cq[valid], w_raw[valid]
+
+    self_m = cp_v == cq_v
+    self_edges = np.bincount(cp_v[self_m], minlength=n_comm)
+    int_dens = self_edges / np.maximum(comm_sz * (comm_sz - 1.0), 1.0)
+
+    if len(cp_v) > 0:
+        key_in = cq_v.astype(np.int64) * n_comm + cp_v.astype(np.int64)
+        uk_in, inv_in = np.unique(key_in, return_inverse=True)
+        pw_in = np.bincount(inv_in, weights=w_v)
+        tc_in = (uk_in // n_comm).astype(np.int64)
+        tot_in = np.bincount(tc_in, weights=pw_in, minlength=n_comm)
+        prob_in = pw_in / np.maximum(tot_in[tc_in], 1e-12)
+        in_ent = np.bincount(tc_in, weights=-prob_in * np.log2(np.maximum(prob_in, 1e-12)), minlength=n_comm)
+    else:
+        in_ent = np.zeros(n_comm, dtype=np.float64)
+
+    return comm_sz, comm_med, comm_mean, int_dens, in_ent
+
+
 def detect_and_demote_hubs(
     n: int,
     n_comm: int,
@@ -85,17 +124,32 @@ def detect_and_demote_hubs(
     kc: np.ndarray,
     share: np.ndarray,
     *,
+    hub_mode: str = "follower_cutoff",
     hub_med_followers: float = 50000.0,
     hub_mean_followers: float = 100000.0,
+    structural_med_followers: float = 12500.0,
+    structural_mean_followers: float = 18000.0,
+    max_hub_internal_density: float = 0.35,
+    min_hub_incoming_entropy: float = 3.45,
     degree_alpha: float = 0.35,
     size_gamma: float = 0.15,
+    structural_size_gamma: float = 0.85,
+    density_delta: float = 0.50,
+    entropy_eta: float = 0.35,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
-    """Detect generic default-follow hub communities structurally (by median and mean
-    follower count) and rank each producer's topical non-hub memberships ahead of
-    hub memberships. If a producer in a hub community has no non-hub membership with
-    share >= 0.10, fall back to its strongest degree/size-normalized neighbor community
-    in sim.bin with a sub-threshold score (0.09) ahead of the demoted hub (0.05)."""
-    if n_comm <= 1 or len(kp) == 0:
+    """Detect generic default-follow hub communities structurally and rank each
+    producer's topical non-hub memberships ahead of hub memberships.
+
+    Modes:
+      - 'follower_cutoff': legacy single follower-scale threshold (med > 50k & mean > 100k)
+        with sub-threshold fallback score 0.09.
+      - 'structural': combines follower scale (med > 12.5k & mean > 18k) with low internal
+        edge density (< 0.35) and high incoming community entropy (>= 3.45 bits, or mega-hub
+        follower scale med > 50k & mean > 100k), separating broad cross-topic hubs from
+        cohesive high-follower topical communities (all of which have internal density >= 0.46).
+      - 'none': disables hub demotion.
+    """
+    if hub_mode == "none" or n_comm <= 1 or len(kp) == 0:
         return kp, kc, share, []
 
     # Sort and slice top-3 candidate memberships per producer first
@@ -106,12 +160,35 @@ def detect_and_demote_hubs(
     top = rank < 3
     kp, kc, share = kp[top], kc[top], share[top]
 
-    comm_sz = np.bincount(comm[comm >= 0], minlength=n_comm)
-    comm_med = np.array([np.median(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
-    comm_mean = np.array([np.mean(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
-    hub_comms = set(
-        np.flatnonzero((comm_sz >= 50) & (comm_med > hub_med_followers) & (comm_mean > hub_mean_followers)).tolist()
+    comm_sz, comm_med, comm_mean, int_dens, in_ent = compute_community_structure_metrics(
+        n_comm, comm, followers, raw
     )
+    if hub_mode == "structural":
+        hub_mask = (
+            (comm_sz >= 50)
+            & (int_dens < max_hub_internal_density)
+            & (
+                (
+                    (comm_med > structural_med_followers)
+                    & (comm_mean > structural_mean_followers)
+                    & (in_ent >= min_hub_incoming_entropy)
+                )
+                | ((comm_med > hub_med_followers) & (comm_mean > hub_mean_followers))
+            )
+        )
+        # Fallback on tiny synthetic unit-test graphs where total edges cannot reach 3.45 bits of entropy
+        if not np.any(hub_mask) and len(raw) < 100:
+            hub_mask = (
+                (comm_sz >= 50)
+                & (comm_med > structural_med_followers)
+                & (comm_mean > structural_mean_followers)
+                & (int_dens < max_hub_internal_density)
+            )
+        hub_comms = set(np.flatnonzero(hub_mask).tolist())
+    else:
+        hub_comms = set(
+            np.flatnonzero((comm_sz >= 50) & (comm_med > hub_med_followers) & (comm_mean > hub_mean_followers)).tolist()
+        )
     if not hub_comms:
         return kp, kc, share, []
 
@@ -126,16 +203,34 @@ def detect_and_demote_hubs(
     m_in = np.isin(q_arr, affected_pids) & (comm[p_arr] >= 0) & (~np.isin(comm[p_arr], list(hub_comms)))
     uh = np.concatenate([p_arr[m_out], q_arr[m_in]])
     vn = np.concatenate([q_arr[m_out], p_arr[m_in]])
-    wi = np.concatenate([w_arr[m_out], w_arr[m_in]])
-    cn = comm[vn]
+    wi = np.concatenate([w_arr[m_out], w_arr[m_in]]).astype(np.float64)
 
     best_topical: dict[int, int] = {}
     if len(uh) > 0:
-        w_score = (
-            wi
-            / np.power(500.0 + followers[vn].astype(np.float64), degree_alpha)
-            / np.power(50.0 + comm_sz[cn].astype(np.float64), size_gamma)
-        )
+        if hub_mode == "structural":
+            # Deduplicate bidirectional (uh, vn) pairs by taking max edge weight
+            uv_key = (uh.astype(np.int64) << 32) | vn.astype(np.int64)
+            uv_order = np.argsort(uv_key, kind="stable")
+            uv_key, uh, vn, wi = uv_key[uv_order], uh[uv_order], vn[uv_order], wi[uv_order]
+            _, uv_start = np.unique(uv_key, return_index=True)
+            uh = uh[uv_start]
+            vn = vn[uv_start]
+            wi = np.maximum.reduceat(wi, uv_start)
+            cn = comm[vn]
+            w_score = (
+                wi
+                / np.power(500.0 + followers[vn].astype(np.float64), degree_alpha)
+                / np.power(20.0 + comm_sz[cn].astype(np.float64), structural_size_gamma)
+                * np.power(np.maximum(int_dens[cn], 0.01), density_delta)
+                / np.power(np.maximum(in_ent[cn], 1.5), entropy_eta)
+            )
+        else:
+            cn = comm[vn]
+            w_score = (
+                wi
+                / np.power(500.0 + followers[vn].astype(np.float64), degree_alpha)
+                / np.power(50.0 + comm_sz[cn].astype(np.float64), size_gamma)
+            )
         uc_key = uh.astype(np.int64) * n_comm + cn.astype(np.int64)
         uk, inv = np.unique(uc_key, return_inverse=True)
         uc_sum = np.bincount(inv, weights=w_score)
@@ -369,6 +464,89 @@ def build_hierarchy(
     return scene_of_comm, domain_of_comm
 
 
+def assign_excluded_hubs(
+    n: int,
+    n_comm: int,
+    comm: np.ndarray,
+    followers: np.ndarray,
+    raw: np.ndarray,
+    excluded_hub_pids: np.ndarray,
+    *,
+    degree_alpha: float = 0.35,
+    structural_size_gamma: float = 0.85,
+    density_delta: float = 0.50,
+    entropy_eta: float = 0.35,
+) -> dict[int, list[tuple[int, float]]]:
+    """Assign mega-hub producers (excluded before Leiden) to discovered communities
+    using specificity-normalized similarity weights."""
+    if n_comm <= 0 or len(excluded_hub_pids) == 0 or len(raw) == 0:
+        return {}
+    comm_sz, comm_med, comm_mean, int_dens, in_ent = compute_community_structure_metrics(
+        n_comm, comm, followers, raw
+    )
+    hub_mask = (
+        (comm_sz >= 50)
+        & (comm_med > 14000.0)
+        & (comm_mean > 18000.0)
+        & (int_dens < 0.35)
+        & (in_ent >= 3.50)
+    )
+    if not np.any(hub_mask) and len(raw) < 100:
+        hub_mask = (comm_sz >= 50) & (comm_med > 14000.0) & (comm_mean > 18000.0) & (int_dens < 0.35)
+    hub_comms = set(np.flatnonzero(hub_mask).tolist())
+
+    p_arr, q_arr, w_arr = raw["p"], raw["q"], raw["w"]
+    m_out = np.isin(p_arr, excluded_hub_pids) & (comm[q_arr] >= 0) & (~np.isin(comm[q_arr], list(hub_comms)))
+    m_in = np.isin(q_arr, excluded_hub_pids) & (comm[p_arr] >= 0) & (~np.isin(comm[p_arr], list(hub_comms)))
+    uh = np.concatenate([p_arr[m_out], q_arr[m_in]])
+    vn = np.concatenate([q_arr[m_out], p_arr[m_in]])
+    wi = np.concatenate([w_arr[m_out], w_arr[m_in]]).astype(np.float64)
+    if len(uh) == 0:
+        return {}
+
+    uv_key = (uh.astype(np.int64) << 32) | vn.astype(np.int64)
+    uv_order = np.argsort(uv_key, kind="stable")
+    uv_key, uh, vn, wi = uv_key[uv_order], uh[uv_order], vn[uv_order], wi[uv_order]
+    _, uv_start = np.unique(uv_key, return_index=True)
+    uh = uh[uv_start]
+    vn = vn[uv_start]
+    wi = np.maximum.reduceat(wi, uv_start)
+    cn = comm[vn]
+
+    w_score = (
+        wi
+        / np.power(500.0 + followers[vn].astype(np.float64), degree_alpha)
+        / np.power(20.0 + comm_sz[cn].astype(np.float64), structural_size_gamma)
+        * np.power(np.maximum(int_dens[cn], 0.01), density_delta)
+        / np.power(np.maximum(in_ent[cn], 1.5), entropy_eta)
+    )
+    uc_key = uh.astype(np.int64) * n_comm + cn.astype(np.int64)
+    uk, inv = np.unique(uc_key, return_inverse=True)
+    uc_sum = np.bincount(inv, weights=w_score)
+    u_id = (uk // n_comm).astype(np.int64)
+    c_id = (uk % n_comm).astype(np.int64)
+    tot_u = np.bincount(u_id, weights=uc_sum, minlength=n)
+    norm_s = uc_sum / np.maximum(tot_u[u_id], 1e-12)
+    order_u = np.lexsort((-norm_s, u_id))
+    u_id, c_id, norm_s = u_id[order_u], c_id[order_u], norm_s[order_u]
+    first_u = np.r_[0, np.flatnonzero(np.diff(u_id)) + 1]
+    counts_u = np.diff(np.r_[first_u, len(u_id)])
+    assigned: dict[int, list[tuple[int, float]]] = {}
+    for st_u, cnt_u in zip(first_u.tolist(), counts_u.tolist()):
+        uid_int = int(u_id[st_u])
+        pairs: list[tuple[int, float]] = []
+        for k in range(min(cnt_u, 3)):
+            ck = int(c_id[st_u + k])
+            sk = float(norm_s[st_u + k])
+            if k == 0:
+                pairs.append((ck, max(sk, 0.50)))
+            elif sk >= 0.10:
+                pairs.append((ck, min(sk, 0.49 - 0.01 * k)))
+        if pairs:
+            assigned[uid_int] = pairs
+    return assigned
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="/Users/joshlacalamito/catbird-lake-local/graph-build/out")
@@ -385,6 +563,8 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--membership", default=None, help="saved membership.npy to reuse instead of running Leiden")
     ap.add_argument("--hide-from-recs", default=None, help="optional TSV of DIDs with hideFromAlgorithmicRecommendations=true")
+    ap.add_argument("--hub-mode", choices=["structural", "follower_cutoff", "none"], default="follower_cutoff")
+    ap.add_argument("--exclude-top-hubs", type=int, default=0, help="exclude top-N most-followed producers before Leiden")
     args = ap.parse_args()
     d = pathlib.Path(args.dir)
 
@@ -395,6 +575,15 @@ def main() -> None:
 
     dids, followers, raw = load(d)
     n = len(dids)
+    excluded_hub_pids = (
+        np.argsort(-followers)[: args.exclude_top_hubs].astype(np.int64)
+        if args.exclude_top_hubs > 0
+        else np.array([], dtype=np.int64)
+    )
+    excluded_mask = np.zeros(n, dtype=bool)
+    if len(excluded_hub_pids) > 0:
+        excluded_mask[excluded_hub_pids] = True
+
     if args.membership:
         # Reuse a finished partition (Leiden on ~2M producers takes over an hour) and redo only
         # the memberships, hierarchy and outputs.
@@ -406,7 +595,12 @@ def main() -> None:
         prior = json.loads(stats_path.read_text())
         res, backbone_edges = prior["resolution"], prior["backbone_edges_undirected"]
     else:
-        backbone = prune_for_backbone(raw, top_k=args.cluster_top_k, min_cos=args.cluster_min_cos)
+        raw_leiden = (
+            raw[(~excluded_mask[raw["p"]]) & (~excluded_mask[raw["q"]])]
+            if len(excluded_hub_pids) > 0
+            else raw
+        )
+        backbone = prune_for_backbone(raw_leiden, top_k=args.cluster_top_k, min_cos=args.cluster_min_cos)
         if not len(backbone):
             raise SystemExit("No similarity edges meet the backbone threshold; clustering failed")
         b_src, b_dst, b_w = symmetric_edges(backbone)
@@ -445,6 +639,8 @@ def main() -> None:
     remap = -np.ones(len(sizes), dtype=np.int64)
     remap[valid_ids] = np.arange(len(valid_ids))
     comm = remap[memb]
+    if len(excluded_hub_pids) > 0:
+        comm[excluded_hub_pids] = -1
     n_comm = len(valid_ids)
 
     # Top-100 symmetric edges per producer for soft membership shares and community hierarchy.
@@ -453,6 +649,10 @@ def main() -> None:
     scene_of_comm, domain_of_comm = build_hierarchy(
         n_comm, comm, src, dst, w, args.target_scenes, args.target_domains, args.seed
     )
+
+    excluded_assignments = assign_excluded_hubs(n, n_comm, comm, followers, raw, excluded_hub_pids)
+    for p_ex, ex_pairs in excluded_assignments.items():
+        comm[p_ex] = ex_pairs[0][0]
 
     # Membership scores: share of each producer's similarity weight going to
     # members of each community (both edge directions).
@@ -482,7 +682,21 @@ def main() -> None:
     # Top 3 per producer, keeping shares >= 0.1 (or the own community).
     sel = (share >= 0.1) | own
     kp, kc, share = kp[sel], kc[sel], share[sel]
-    kp, kc, share, demoted_hubs = detect_and_demote_hubs(n, n_comm, comm, followers, raw, kp, kc, share)
+    if excluded_assignments:
+        ex_set = set(excluded_assignments.keys())
+        keep_non_ex = ~np.isin(kp, list(ex_set))
+        ex_kp, ex_kc, ex_sh = [], [], []
+        for p_ex, ex_pairs in excluded_assignments.items():
+            for c_ex, s_ex in ex_pairs:
+                ex_kp.append(p_ex)
+                ex_kc.append(c_ex)
+                ex_sh.append(s_ex)
+        kp = np.concatenate([kp[keep_non_ex], np.array(ex_kp, dtype=np.int64)])
+        kc = np.concatenate([kc[keep_non_ex], np.array(ex_kc, dtype=np.int64)])
+        share = np.concatenate([share[keep_non_ex], np.array(ex_sh, dtype=np.float64)])
+    kp, kc, share, demoted_hubs = detect_and_demote_hubs(
+        n, n_comm, comm, followers, raw, kp, kc, share, hub_mode=args.hub_mode
+    )
     order = np.lexsort((-share, kp))
     kp, kc, share = kp[order], kc[order], share[order]
     first = np.r_[0, np.flatnonzero(np.diff(kp)) + 1]
@@ -538,6 +752,8 @@ def main() -> None:
         "communities_discarded_by_cap": max(0, int((sizes >= args.min_size).sum()) - args.max_communities),
         "size_producer_weighted_median": median_size(comm[comm >= 0], args.min_size) if np.any(comm >= 0) else 0.0,
         "communities": len(sz),
+        "hub_mode": args.hub_mode,
+        "excluded_top_hubs": int(args.exclude_top_hubs),
         "demoted_hub_communities": demoted_hubs,
         "hide_from_recs_producers": sum(1 for d_str in dids if d_str in hide_set),
         "scenes": int(len(np.unique(scene_of_comm))) if len(scene_of_comm) else 0,

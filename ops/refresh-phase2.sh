@@ -180,9 +180,16 @@ WITH
     GROUP BY did
   ),
   vis AS (
-    SELECT did, max(hide_from_algorithmic) AS hide_algo
-    FROM catbird.visibility
-    WHERE is_deleted = 0
+    SELECT did, max(hide_algo) AS hide_algo
+    FROM (
+      SELECT did, toUInt8(hide_from_algorithmic) AS hide_algo
+      FROM catbird.visibility
+      WHERE is_deleted = 0
+      UNION ALL
+      SELECT did, toUInt8(hide_from_recs) AS hide_algo
+      FROM catbird.known_for FINAL
+      WHERE version = '$VERSION' AND hide_from_recs = 1
+    )
     GROUP BY did
   ),
   post_breakdown AS (
@@ -287,6 +294,7 @@ WITH
       AND created_at >= now() - INTERVAL 72 HOUR
       AND reply_parent = ''
       AND did NOT IN (SELECT did FROM catbird.visibility WHERE is_deleted = 0 AND hide_from_algorithmic = 1)
+      AND did NOT IN (SELECT did FROM catbird.known_for FINAL WHERE version = '$VERSION' AND hide_from_recs = 1)
       AND did NOT IN (SELECT did FROM catbird.account_status WHERE active = 0)
     GROUP BY did, rkey
     HAVING (did, rkey) NOT IN (
@@ -532,6 +540,7 @@ WITH
       AND pi.followers_est <= 250000
       AND coalesce(kc.max_comm_score, 0.5) >= 0.25
       AND pi.did NOT IN (SELECT did FROM catbird.visibility WHERE is_deleted = 0 AND hide_from_algorithmic = 1)
+      AND pi.did NOT IN (SELECT did FROM catbird.known_for FINAL WHERE version = '$VERSION' AND hide_from_recs = 1)
       AND pi.did NOT IN (SELECT did FROM catbird.account_status WHERE active = 0)
   )
 SELECT

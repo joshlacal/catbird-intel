@@ -713,12 +713,18 @@ def enrich_and_label_communities(
             else:
                 profiles[d] = (name or "", desc or "", extra or "")
 
-    # Group members by primary community
+    # Group members by primary community (falling back to secondary rows for demoted hubs)
     comm_members: dict[int, list[tuple[str, float]]] = collections.defaultdict(list)
+    sec_members: dict[int, list[tuple[str, float]]] = collections.defaultdict(list)
     for d, entries in by_did.items():
         if entries:
             c0, _s0, _dom0, w0 = entries[0]
             comm_members[c0].append((d, w0))
+            for c_sec, _s_sec, _dom_sec, w_sec in entries[1:]:
+                sec_members[c_sec].append((d, w_sec))
+    for c_sec, mlist in sec_members.items():
+        if not comm_members.get(c_sec):
+            comm_members[c_sec] = mlist
 
     # Global term frequency across profiles for TF-IDF
     global_df: dict[str, int] = collections.Counter()
@@ -824,6 +830,11 @@ def enrich_and_label_communities(
 def ship_to_netcup(graph_dir: pathlib.Path, version: str) -> dict[str, Any]:
     kf_path = graph_dir / "known_for.parquet"
     comm_path = graph_dir / "communities_labeled.parquet"
+    kf_bytes = kf_path.stat().st_size
+    if kf_bytes > 50_000_000:
+        raise SystemExit(f"Refusing to ship known_for.parquet ({kf_bytes} B > 50,000,000 B limit)")
+    if "hide_from_recs" not in pq.read_schema(kf_path).names:
+        raise SystemExit("Refusing to ship known_for.parquet without hide_from_recs column")
     subprocess.run(["scp", str(kf_path), str(comm_path), "netcup:/tmp/"], check=True)
     ddl = f"""
     CREATE TABLE IF NOT EXISTS catbird.known_for
@@ -840,6 +851,8 @@ def ship_to_netcup(graph_dir: pathlib.Path, version: str) -> dict[str, Any]:
     )
     ENGINE = ReplacingMergeTree
     ORDER BY (version, did, rank);
+
+    ALTER TABLE catbird.known_for ADD COLUMN IF NOT EXISTS hide_from_recs Bool DEFAULT false;
 
     CREATE TABLE IF NOT EXISTS catbird.communities
     (

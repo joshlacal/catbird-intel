@@ -109,7 +109,9 @@ def detect_and_demote_hubs(
     comm_sz = np.bincount(comm[comm >= 0], minlength=n_comm)
     comm_med = np.array([np.median(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
     comm_mean = np.array([np.mean(followers[comm == c]) if comm_sz[c] > 0 else 0.0 for c in range(n_comm)])
-    hub_comms = set(np.flatnonzero((comm_med > hub_med_followers) & (comm_mean > hub_mean_followers)).tolist())
+    hub_comms = set(
+        np.flatnonzero((comm_sz >= 50) & (comm_med > hub_med_followers) & (comm_mean > hub_mean_followers)).tolist()
+    )
     if not hub_comms:
         return kp, kc, share, []
 
@@ -163,10 +165,7 @@ def detect_and_demote_hubs(
         s_list = share[start : start + cnt].tolist()
         non_hub_pairs = [(int(c), float(s)) for c, s in zip(c_list, s_list) if int(c) not in hub_comms]
         hub_pairs = [(int(c), 0.05) for c, _s in zip(c_list, s_list) if int(c) in hub_comms]
-        if non_hub_pairs:
-            c0_nh, s0_nh = non_hub_pairs[0]
-            non_hub_pairs[0] = (c0_nh, max(s0_nh, 0.50))
-        elif p in best_topical:
+        if not non_hub_pairs and p in best_topical:
             non_hub_pairs = [(best_topical[p], 0.09)]
         merged = (non_hub_pairs + hub_pairs)[:3]
         for c_val, s_val in merged:
@@ -507,19 +506,14 @@ def main() -> None:
     })
     write_compact_known_for(kf, d / "known_for.parquet")
 
-    # Update primary community mapping from rank-0 KnownFor for demoted hub members
-    primary_comm = comm.copy()
-    r0_mask = (rank[top] == 0) & np.isin(comm[top_kp], demoted_hubs)
-    primary_comm[top_kp[r0_mask]] = top_kc[r0_mask].astype(np.int64)
-
     members: dict[int, list[int]] = {}
-    for p in np.flatnonzero(primary_comm >= 0):
-        members.setdefault(int(primary_comm[p]), []).append(int(p))
+    for p in np.flatnonzero(comm >= 0):
+        members.setdefault(int(comm[p]), []).append(int(p))
     c_rows = {"community": [], "scene_id": [], "domain_id": [], "size": [], "top_dids": [], "top_followers": []}
     for c in range(n_comm):
-        if c not in members and c not in demoted_hubs:
+        if c not in members:
             continue
-        ps = sorted(members.get(c, []), key=lambda p: -followers[p])
+        ps = sorted(members[c], key=lambda p: -followers[p])
         ps_visible = [p for p in ps if dids[p] not in hide_set]
         c_rows["community"].append(c)
         c_rows["scene_id"].append(int(scene_of_comm[c]))
@@ -542,13 +536,13 @@ def main() -> None:
         "max_communities": args.max_communities,
         "communities_before_cap": int((sizes >= args.min_size).sum()),
         "communities_discarded_by_cap": max(0, int((sizes >= args.min_size).sum()) - args.max_communities),
-        "size_producer_weighted_median": median_size(primary_comm[primary_comm >= 0], args.min_size) if np.any(primary_comm >= 0) else 0.0,
+        "size_producer_weighted_median": median_size(comm[comm >= 0], args.min_size) if np.any(comm >= 0) else 0.0,
         "communities": len(sz),
         "demoted_hub_communities": demoted_hubs,
         "hide_from_recs_producers": sum(1 for d_str in dids if d_str in hide_set),
         "scenes": int(len(np.unique(scene_of_comm))) if len(scene_of_comm) else 0,
         "domains": int(len(np.unique(domain_of_comm))) if len(domain_of_comm) else 0,
-        "assigned_producers": int((primary_comm >= 0).sum()),
+        "assigned_producers": int((comm >= 0).sum()),
         "size_median": statistics.median(sz) if sz else 0,
         "size_p90": float(np.quantile(sz, 0.9)) if sz else 0,
         "size_max": max(sz) if sz else 0,

@@ -273,26 +273,27 @@ class GraphGuards(unittest.TestCase):
     def test_structural_hub_demotion_promotes_topical_and_retains_hub_secondary(self):
         from cluster import detect_and_demote_hubs
 
-        # Community 0: structural mega-hub (median > 50k, mean > 100k)
-        # Community 1 & 2: normal topical communities
-        comm = np.array([0] * 10 + [1] * 10 + [2] * 10, dtype=np.int64)
-        followers = np.array([120_000] * 10 + [800] * 10 + [900] * 10, dtype=np.uint64)
+        # Community 0: structural mega-hub (size >= 50, median > 50k, mean > 100k)
+        # Community 1: normal topical community (size >= 50)
+        # Community 2: small community (< 50 members) with high followers -> must NOT be demoted
+        comm = np.array([0] * 50 + [1] * 50 + [2] * 10, dtype=np.int64)
+        followers = np.array([120_000] * 50 + [800] * 50 + [150_000] * 10, dtype=np.uint64)
         # Producer 0 has both hub 0 and non-hub 1 in KnownFor; Producer 1 only has hub 0 in KnownFor
         raw = np.array(
-            [(0, 10, 0.25), (1, 20, 0.20), (1, 21, 0.15), (10, 11, 0.50)],
+            [(0, 50, 0.25), (1, 100, 0.20), (1, 101, 0.15), (50, 51, 0.50)],
             dtype=[("p", "<u4"), ("q", "<u4"), ("w", "<f4")],
         )
-        kp = np.array([0, 0, 1, 10], dtype=np.int64)
+        kp = np.array([0, 0, 1, 50], dtype=np.int64)
         kc = np.array([0, 1, 0, 1], dtype=np.int64)
         share = np.array([0.70, 0.20, 0.80, 0.90], dtype=np.float64)
 
         out_kp, out_kc, out_sh, demoted = detect_and_demote_hubs(
-            n=30, n_comm=3, comm=comm, followers=followers, raw=raw, kp=kp, kc=kc, share=share
+            n=110, n_comm=3, comm=comm, followers=followers, raw=raw, kp=kp, kc=kc, share=share
         )
         self.assertEqual(demoted, [0])
         p0_mask = out_kp == 0
         self.assertEqual(out_kc[p0_mask].tolist(), [1, 0])
-        self.assertAlmostEqual(out_sh[p0_mask].tolist()[0], 0.50)
+        self.assertAlmostEqual(out_sh[p0_mask].tolist()[0], 0.20)
         self.assertAlmostEqual(out_sh[p0_mask].tolist()[1], 0.05)
 
         p1_mask = out_kp == 1
@@ -308,31 +309,40 @@ class GraphGuards(unittest.TestCase):
         tmp = pathlib.Path(tempfile.mkdtemp(prefix="catbird-kf-compact-"))
         kf_in = pa.table(
             {
-                "pid": pa.array([0, 0, 1], type=pa.uint32()),
-                "did": pa.array(["did:plc:hidden1", "did:plc:hidden1", "did:plc:visible2"], type=pa.string()),
-                "community": pa.array([10, 20, 10], type=pa.uint32()),
-                "scene_id": pa.array([300, 400, 300], type=pa.uint16()),
-                "domain_id": pa.array([5, 6, 5], type=pa.uint8()),
-                "score": pa.array([0.85, 0.15, 0.90], type=pa.float32()),
-                "rank": pa.array([0, 1, 0], type=pa.uint8()),
-                "hide_from_recs": pa.array([True, True, False], type=pa.bool_()),
+                "pid": pa.array([0, 0, 1, 1], type=pa.uint32()),
+                "did": pa.array(
+                    ["did:plc:hidden1", "did:plc:hidden1", "did:plc:visible2", "did:plc:visible2"],
+                    type=pa.string(),
+                ),
+                "community": pa.array([10, 20, 10, 20], type=pa.uint32()),
+                "scene_id": pa.array([300, 400, 300, 400], type=pa.uint16()),
+                "domain_id": pa.array([5, 6, 5, 6], type=pa.uint8()),
+                "score": pa.array([0.85, 0.05, 0.90, 0.05], type=pa.float32()),
+                "rank": pa.array([0, 1, 0, 1], type=pa.uint8()),
+                "hide_from_recs": pa.array([True, True, False, False], type=pa.bool_()),
             }
         )
         write_compact_known_for(kf_in, tmp / "known_for.parquet")
         comm_in = pa.table(
             {
-                "community": pa.array([10], type=pa.uint32()),
-                "scene_id": pa.array([300], type=pa.uint16()),
-                "domain_id": pa.array([5], type=pa.uint8()),
-                "size": pa.array([2], type=pa.uint32()),
-                "top_dids": pa.array([["did:plc:hidden1", "did:plc:visible2"]], type=pa.list_(pa.string())),
-                "top_followers": pa.array([[5000, 1000]], type=pa.list_(pa.uint64())),
+                "community": pa.array([10, 20], type=pa.uint32()),
+                "scene_id": pa.array([300, 400], type=pa.uint16()),
+                "domain_id": pa.array([5, 6], type=pa.uint8()),
+                "size": pa.array([2, 2], type=pa.uint32()),
+                "top_dids": pa.array(
+                    [
+                        ["did:plc:hidden1", "did:plc:visible2"],
+                        ["did:plc:hidden1", "did:plc:visible2"],
+                    ],
+                    type=pa.list_(pa.string()),
+                ),
+                "top_followers": pa.array([[5000, 1000], [5000, 1000]], type=pa.list_(pa.uint64())),
             }
         )
         pq.write_table(comm_in, tmp / "communities.parquet")
 
         by_did, kf_read, comm_read = load_known_for(tmp)
-        self.assertEqual(kf_read.num_rows, 3)
+        self.assertEqual(kf_read.num_rows, 4)
         self.assertEqual(kf_read.schema.field("scene_id").type, pa.uint16())
         self.assertEqual(kf_read.schema.field("domain_id").type, pa.uint8())
         self.assertEqual(kf_read.schema.field("hide_from_recs").type, pa.bool_())
@@ -364,10 +374,13 @@ class GraphGuards(unittest.TestCase):
             events_path,
         )
         enriched = enrich_and_label_communities([events_path], tmp, by_did, comm_read, kf=kf_read)
-        self.assertEqual(enriched["top_dids"].to_pylist(), [["did:plc:visible2"]])
-        self.assertEqual(enriched["top_followers"].to_pylist(), [[1000]])
-        prompt_obj = json.loads((tmp / "colab_community_labeling_prompts.jsonl").read_text().splitlines()[0])
-        self.assertEqual([p["did"] for p in prompt_obj["top_producers"]], ["did:plc:visible2"])
+        self.assertEqual(enriched["top_dids"].to_pylist(), [["did:plc:visible2"], ["did:plc:visible2"]])
+        self.assertEqual(enriched["top_followers"].to_pylist(), [[1000], [1000]])
+        # Demoted hub community 20 (which only appears at rank > 0 in KnownFor) must still get TF-IDF keywords
+        self.assertTrue(len(enriched["keywords"].to_pylist()[1]) > 0)
+        prompt_objs = [json.loads(line) for line in (tmp / "colab_community_labeling_prompts.jsonl").read_text().splitlines()]
+        self.assertEqual([p["did"] for p in prompt_objs[0]["top_producers"]], ["did:plc:visible2"])
+        self.assertEqual([p["did"] for p in prompt_objs[1]["top_producers"]], ["did:plc:visible2"])
 
     def test_colab_community_labeling_gate_checkpoint_and_receipt(self):
         import json

@@ -8,17 +8,20 @@
 
 CREATE TABLE IF NOT EXISTS catbird.known_for
 (
-    version   LowCardinality(String),
-    pid       UInt32,
-    did       String CODEC(ZSTD(3)),
-    community UInt32,
-    scene_id  UInt16,
-    domain_id UInt8,
-    score     Float32,
-    rank      UInt8
+    version        LowCardinality(String),
+    pid            UInt32,
+    did            String CODEC(ZSTD(3)),
+    community      UInt32,
+    scene_id       UInt16,
+    domain_id      UInt8,
+    score          Float32,
+    rank           UInt8,
+    hide_from_recs Bool DEFAULT false
 )
 ENGINE = ReplacingMergeTree
 ORDER BY (version, did, rank);
+
+ALTER TABLE catbird.known_for ADD COLUMN IF NOT EXISTS hide_from_recs Bool DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS catbird.communities
 (

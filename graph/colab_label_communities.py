@@ -303,9 +303,13 @@ def run_all_shards(
     outputs_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = out_dir / "checkpoint_manifest.json"
     manifest_hash = sha256_file(manifest_path)
+    valid_sids = {s["shard_id"] for s in manifest["shards"]}
     if checkpoint_path.is_file():
         checkpoint = json.loads(checkpoint_path.read_text())
         checkpoint["manifest_sha256"] = manifest_hash
+        checkpoint["completed_shards"] = {
+            sid: v for sid, v in checkpoint.get("completed_shards", {}).items() if sid in valid_sids
+        }
     else:
         checkpoint = {
             "schema": "catbird.colab.community_labeling_checkpoint.v1",

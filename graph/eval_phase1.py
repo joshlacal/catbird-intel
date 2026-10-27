@@ -675,15 +675,6 @@ def enrich_and_label_communities(
     The archive projection does not provide profile handles or starter-pack titles
     here, so no claim of either enrichment is made.
     """
-    hide_dids: set[str] = set()
-    hide_path = graph_dir / "hide_from_recs.tsv"
-    if hide_path.is_file():
-        hide_dids.update(line.strip() for line in hide_path.read_text().splitlines() if line.strip())
-    if kf is not None and "hide_from_recs" in kf.column_names:
-        for d_val, h_val in zip(kf["did"].to_pylist(), kf["hide_from_recs"].to_pylist()):
-            if h_val:
-                hide_dids.add(d_val)
-
     profiles: dict[str, tuple[str, str, str]] = {}  # did -> (name, description, handle)
     latest_profile: dict[str, tuple[str, bool]] = {}
     for pf in event_files:
@@ -752,14 +743,10 @@ def enrich_and_label_communities(
     s_ids = comm_tbl["scene_id"].to_pylist()
     d_ids = comm_tbl["domain_id"].to_pylist()
     sizes = comm_tbl["size"].to_pylist()
-    raw_top_dids_col = comm_tbl["top_dids"].to_pylist()
-    raw_top_foll_col = comm_tbl["top_followers"].to_pylist()
-    top_dids_col = []
-    top_foll_col = []
-    for tdids, tfoll in zip(raw_top_dids_col, raw_top_foll_col):
-        filtered_pairs = [(d, f) for d, f in zip(tdids, tfoll) if d not in hide_dids]
-        top_dids_col.append([d for d, _ in filtered_pairs])
-        top_foll_col.append([f for _, f in filtered_pairs])
+    # hide-from-recs governs posts in discovery feeds, not profiles, so flagged
+    # producers stay in top_dids (DECISIONS 2026-10-27).
+    top_dids_col = comm_tbl["top_dids"].to_pylist()
+    top_foll_col = comm_tbl["top_followers"].to_pylist()
 
     labels = []
     keywords_col = []

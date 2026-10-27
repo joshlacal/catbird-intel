@@ -727,14 +727,15 @@ def main() -> None:
     for c in range(n_comm):
         if c not in members:
             continue
+        # hide-from-recs governs posts in discovery feeds, not profiles, so those
+        # producers stay in top_dids (DECISIONS 2026-10-27).
         ps = sorted(members[c], key=lambda p: -followers[p])
-        ps_visible = [p for p in ps if dids[p] not in hide_set]
         c_rows["community"].append(c)
         c_rows["scene_id"].append(int(scene_of_comm[c]))
         c_rows["domain_id"].append(int(domain_of_comm[c]))
         c_rows["size"].append(len(ps))
-        c_rows["top_dids"].append([dids[p] for p in ps_visible[:20]])
-        c_rows["top_followers"].append([int(followers[p]) for p in ps_visible[:20]])
+        c_rows["top_dids"].append([dids[p] for p in ps[:20]])
+        c_rows["top_followers"].append([int(followers[p]) for p in ps[:20]])
     pq.write_table(pa.table(c_rows), d / "communities.parquet", compression="zstd")
 
     sz = [len(v) for v in members.values() if len(v) > 0]

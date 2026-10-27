@@ -353,7 +353,7 @@ class GraphGuards(unittest.TestCase):
         self.assertEqual(assigned[0][0][0], 2)
         self.assertGreaterEqual(assigned[0][0][1], 0.50)
 
-    def test_compact_known_for_preserves_schema_and_hide_from_recs_filter(self):
+    def test_compact_known_for_preserves_schema_and_keeps_hide_from_recs_in_top_dids(self):
         import json
         from cluster import write_compact_known_for
         from eval_phase1 import enrich_and_label_communities, load_known_for
@@ -426,13 +426,14 @@ class GraphGuards(unittest.TestCase):
             events_path,
         )
         enriched = enrich_and_label_communities([events_path], tmp, by_did, comm_read, kf=kf_read)
-        self.assertEqual(enriched["top_dids"].to_pylist(), [["did:plc:visible2"], ["did:plc:visible2"]])
-        self.assertEqual(enriched["top_followers"].to_pylist(), [[1000], [1000]])
+        # hide-from-recs is about posts, not profiles: flagged producers stay in top_dids.
+        self.assertEqual(enriched["top_dids"].to_pylist(), [["did:plc:hidden1", "did:plc:visible2"]] * 2)
+        self.assertEqual(enriched["top_followers"].to_pylist(), [[5000, 1000], [5000, 1000]])
         # Demoted hub community 20 (which only appears at rank > 0 in KnownFor) must still get TF-IDF keywords
         self.assertTrue(len(enriched["keywords"].to_pylist()[1]) > 0)
         prompt_objs = [json.loads(line) for line in (tmp / "colab_community_labeling_prompts.jsonl").read_text().splitlines()]
-        self.assertEqual([p["did"] for p in prompt_objs[0]["top_producers"]], ["did:plc:visible2"])
-        self.assertEqual([p["did"] for p in prompt_objs[1]["top_producers"]], ["did:plc:visible2"])
+        self.assertEqual([p["did"] for p in prompt_objs[0]["top_producers"]], ["did:plc:hidden1", "did:plc:visible2"])
+        self.assertEqual([p["did"] for p in prompt_objs[1]["top_producers"]], ["did:plc:hidden1", "did:plc:visible2"])
 
     def test_colab_community_labeling_gate_checkpoint_and_receipt(self):
         import json

@@ -1,12 +1,13 @@
 """One labelling prompt per cand1 community: curated-list names, top producers' bios, sample posts.
 
-  build_community_prompts.py GRAPH_DIR LIST_NAMES_TSV PROFILES_PARQUET EXCLUDE_DIDS_TXT OUT_JSONL DAY_DIR [DAY_DIR ...]
+  build_community_prompts.py GRAPH_DIR LIST_NAMES_TSV PROFILES_PARQUET POST_EXCLUDE_TXT PROFILE_EXCLUDE_TXT OUT_JSONL DAY_DIR [DAY_DIR ...]
 
-GRAPH_DIR holds communities.parquet and known_for.parquet. Producers in EXCLUDE_DIDS_TXT
-(hide-from-recs union, user-intents opt-outs) or flagged hide_from_recs contribute neither
-bios nor posts. Sample posts are live original posts (not replies) from the netcup days by
-the community's rank-0 KnownFor members, at most one per author, preferring >=40 characters.
-Seed 20261027.
+GRAPH_DIR holds communities.parquet and known_for.parquet. hideFromAlgorithmicRecommendations
+is about posts in discovery feeds, not profiles (DECISIONS 2026-10-25), so producers in
+POST_EXCLUDE_TXT (hide-from-recs union) or flagged hide_from_recs contribute no posts but
+keep their bios; PROFILE_EXCLUDE_TXT (user-intents opt-outs) removes both. Sample posts are
+live original posts (not replies) from the netcup days by the community's rank-0 KnownFor
+members, at most one per author, preferring >=40 characters. Seed 20261027.
 """
 import collections
 import json
@@ -16,14 +17,15 @@ import sys
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-GRAPH, LISTS, PROFILES, EXCL, OUT, *DAYS = sys.argv[1:]
+GRAPH, LISTS, PROFILES, POST_EXCL, PROFILE_EXCL, OUT, *DAYS = sys.argv[1:]
 rng = random.Random(20261027)
-excl = {l.strip() for l in open(EXCL) if l.strip()}
+excl = {l.strip() for l in open(PROFILE_EXCL) if l.strip()}
+post_excl = excl | {l.strip() for l in open(POST_EXCL) if l.strip()}
 
 kf = pq.read_table(f"{GRAPH}/known_for.parquet", columns=["did", "community", "rank", "hide_from_recs"])
-excl.update(kf.filter(kf["hide_from_recs"])["did"].to_pylist())
+post_excl.update(kf.filter(kf["hide_from_recs"])["did"].to_pylist())
 kf0 = kf.filter(pc.equal(kf["rank"], 0))
-home = {d: c for d, c in zip(kf0["did"].to_pylist(), kf0["community"].to_pylist()) if d not in excl}
+home = {d: c for d, c in zip(kf0["did"].to_pylist(), kf0["community"].to_pylist()) if d not in post_excl}
 
 prof = pq.read_table(PROFILES)
 bios = {d: (n, b) for d, n, b in zip(*(prof[c].to_pylist() for c in ["did", "name", "description"]))}

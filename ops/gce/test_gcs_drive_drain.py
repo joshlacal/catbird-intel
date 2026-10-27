@@ -268,7 +268,7 @@ class DrainTests(unittest.TestCase):
         self.assertEqual(self.cloud.deleted, [])
         self.assertEqual(self.drive.uploads, [])
     def test_pilot_manifest_enforces_caps_and_retention(self):
-        for change in ({"retain_gcs": False}, {"max_charged_bytes": (320 << 20)+1},
+        for change in ({"retain_gcs": False}, {"max_charged_bytes": (512 << 20)+1},
                        {"max_duration_seconds": 1201}, {"control_allowance_bytes": 0},
                        {"control_allowance_bytes": (1 << 20) + 1}):
             manifest = self.pilot_manifest()

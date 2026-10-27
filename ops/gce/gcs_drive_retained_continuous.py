@@ -652,7 +652,7 @@ def _snapshot(*, account_id: str, writer_id: str, authority_db: Path,
                "--account-id", account_id, "--writer-id", writer_id,
                "--authority-db", str(authority_db), "--work-dir", str(work),
                "--max-scan", "5000", "--max-pairs", "8",
-               "--max-reserved-bytes", str(8 * 320 * (1 << 20)),
+               "--max-reserved-bytes", str(8 * 512 * (1 << 20)),
                "--max-run-seconds", "1200", "--max-snapshot-seconds", "300"]
     code, output = _run_bounded(command, timeout=min(330, timeout), monitor=monitor)
     if code != 0:

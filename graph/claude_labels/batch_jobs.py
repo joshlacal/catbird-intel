@@ -1,10 +1,10 @@
-"""Submit and collect Claude Message Batches for the community and hostile-stance label jobs.
+"""Submit and collect Claude Message Batches for the community, profile and hostile-stance label jobs.
 
   batch_jobs.py submit JOB INPUT OUT_DIR [--offset N] [--limit N] [--exclude DIDS_TXT]
   batch_jobs.py collect BATCH_ID OUT_DIR
 
-JOB is one of JOBS below. INPUT is community_prompts.jsonl (community) or reply_pairs.parquet
-(hostile_*). --exclude drops pairs whose parent or child author is listed (applied again at
+JOB is one of JOBS below. INPUT is community_prompts.jsonl (community*), profile_inputs.parquet
+(profile_*: pid, did, name, description, community_label) or reply_pairs.parquet (hostile_*). --exclude drops pairs whose parent or child author is listed (applied again at
 submit time so the final opt-out union is honoured even if INPUT was built earlier).
 submit writes OUT_DIR/<batch_id>.submit.json (job, model, custom_ids, input sha256);
 collect writes OUT_DIR/<batch_id>.results.jsonl and a usage/cost summary at Batch API prices.
@@ -54,6 +54,19 @@ Fields:
 - confidence: high, medium or low.
 Posts may be in any language. Judge only what is written; sarcasm counts if it is clear."""
 
+ACCOUNT_TYPES = ["person", "organization", "news_media", "brand_or_commercial", "creator_or_artist", "adult_creator",
+                 "bot_or_automated", "fan_or_roleplay", "unclear"]
+
+PROFILE_SYSTEM = """You classify Bluesky accounts from their display name and bio. Labels train a small classifier used in aggregate for account recommendations; nothing is shown to users. You may also get the label of the follow-graph community the account belongs to, which is context, not proof.
+
+Fields:
+- account_type: person (an individual posting as themselves); organization (non-commercial group, institution, government, school, NGO); news_media (outlet, journalist account run as an outlet, news aggregator); brand_or_commercial (company, shop, product, paid service, promoter); creator_or_artist (individual whose account mainly promotes their art, writing, music, streams or other work); adult_creator (sexual or explicit content, including links to paid adult content); bot_or_automated (feeds, reposters, automated or generated posting); fan_or_roleplay (fan account, character or roleplay account, parody); unclear (not enough to tell).
+- primary_language: ISO 639-1 code of the bio, "multi", or "" when there is no text.
+- topics: up to 3 short English topic tags the account is about (e.g. "ornithology", "US politics", "K-pop"), or [].
+- sensitivity: every class the bio itself reveals: news, politics, religion, sexuality_gender, health, ethnicity_nationality, adult, likely_minors. Never infer ethnicity_nationality from language alone. Use likely_minors only for an explicit age under 18 or school-age cues.
+- confidence: high, medium or low.
+Bios may be in any language and may use stylised Unicode letters."""
+
 COMMUNITY_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["label", "label_native", "description", "primary_language", "community_type",
@@ -78,7 +91,21 @@ HOSTILE_SCHEMA = {
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
     },
 }
+PROFILE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["account_type", "primary_language", "topics", "sensitivity", "confidence"],
+    "properties": {
+        "account_type": {"type": "string", "enum": ACCOUNT_TYPES},
+        "primary_language": {"type": "string"},
+        "topics": {"type": "array", "items": {"type": "string"}},
+        "sensitivity": {"type": "array", "items": {"type": "string", "enum": SENSITIVE}},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+}
 JOBS = {
+    "community_high": ("claude-opus-5-5", "high", 12000, COMMUNITY_SYSTEM, COMMUNITY_SCHEMA),
+    "profile_haiku": ("claude-haiku-5-5", "low", 1000, PROFILE_SYSTEM, PROFILE_SCHEMA),
+    "profile_sonnet": ("claude-sonnet-5-5", "low", 1000, PROFILE_SYSTEM, PROFILE_SCHEMA),
     "community": ("claude-opus-5-5", "medium", 8000, COMMUNITY_SYSTEM, COMMUNITY_SCHEMA),
     "hostile_sonnet": ("claude-sonnet-5-5", "low", 2000, HOSTILE_SYSTEM, HOSTILE_SCHEMA),
     "hostile_haiku": ("claude-haiku-5-5", "low", 2000, HOSTILE_SYSTEM, HOSTILE_SCHEMA),
@@ -94,12 +121,21 @@ def client():
 
 
 def items(job, path, excl):
-    if job == "community":
+    if job.startswith("community"):
         for line in open(path):
             r = json.loads(line)
             yield r["custom_id"], r["prompt"]
         return
     t = pq.read_table(path)
+    if job.startswith("profile"):
+        for r in t.to_pylist():
+            if r["did"] in excl:
+                continue
+            text = f"Display name: {(r['name'] or '').strip()[:100]}\nBio: {' '.join((r['description'] or '').split())[:600]}"
+            if r.get("community_label"):
+                text += f"\nFollow-graph community: {r['community_label']}"
+            yield r["pid"], text
+        return
     for r in t.to_pylist():
         if r["parent_did"] in excl or r["child_did"] in excl:
             continue

@@ -1,6 +1,10 @@
 """One labelling prompt per cand1 community: curated-list names, top producers' bios, sample posts.
 
   build_community_prompts.py GRAPH_DIR LIST_NAMES_TSV PROFILES_PARQUET POST_EXCLUDE_TXT PROFILE_EXCLUDE_TXT OUT_JSONL DAY_DIR [DAY_DIR ...]
+      [--only IDS_TXT] [--producers 12] [--posts 10]
+
+--only limits output to the listed community ids (one per line), e.g. to re-ask low-confidence
+communities with more evidence via --producers/--posts.
 
 GRAPH_DIR holds communities.parquet and known_for.parquet. hideFromAlgorithmicRecommendations
 is about posts in discovery feeds, not profiles (DECISIONS 2026-10-25), so producers in
@@ -9,15 +13,25 @@ keep their bios; PROFILE_EXCLUDE_TXT (user-intents opt-outs) removes both. Sampl
 live original posts (not replies) from the netcup days by the community's rank-0 KnownFor
 members, at most one per author, preferring >=40 characters. Seed 20261027.
 """
+import argparse
 import collections
 import json
 import random
-import sys
 
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-GRAPH, LISTS, PROFILES, POST_EXCL, PROFILE_EXCL, OUT, *DAYS = sys.argv[1:]
+ap = argparse.ArgumentParser()
+for name in ["graph", "lists", "profiles", "post_excl", "profile_excl", "out"]:
+    ap.add_argument(name)
+ap.add_argument("days", nargs="+")
+ap.add_argument("--only")
+ap.add_argument("--producers", type=int, default=12)
+ap.add_argument("--posts", type=int, default=10)
+A = ap.parse_args()
+GRAPH, LISTS, PROFILES, POST_EXCL, PROFILE_EXCL, OUT, DAYS = (A.graph, A.lists, A.profiles, A.post_excl,
+                                                              A.profile_excl, A.out, A.days)
+only = {int(l) for l in open(A.only) if l.strip()} if A.only else None
 rng = random.Random(20261027)
 excl = {l.strip() for l in open(PROFILE_EXCL) if l.strip()}
 post_excl = excl | {l.strip() for l in open(POST_EXCL) if l.strip()}
@@ -55,7 +69,9 @@ n = 0
 with open(OUT, "w") as out:
     for c, scene, size, tops, folls in zip(*(comms[k].to_pylist() for k in
                                               ["community", "scene_id", "size", "top_dids", "top_followers"])):
-        prods = [(d, f) for d, f in zip(tops, folls) if d not in excl][:12]
+        if only is not None and c not in only:
+            continue
+        prods = [(d, f) for d, f in zip(tops, folls) if d not in excl][:A.producers]
         lines = [f"Community {c} (scene {scene}), {size} accounts.",
                  f"Post languages in a 4-day sample: " + (", ".join(f"{k} {v}" for k, v in langs[c].most_common(5)) or "no posts"),
                  f"Most common names of curated lists containing members ({lists.get(c, (0, ''))[0]} memberships): "
@@ -68,7 +84,7 @@ with open(OUT, "w") as out:
         rng.shuffle(sample)
         sample.sort(key=lambda p: not p[0])
         lines.append("Sample recent original posts by members:")
-        lines += [f"- {' '.join(t.split())[:280]}" for _, t in sample[:10]] or ["- none"]
+        lines += [f"- {' '.join(t.split())[:280]}" for _, t in sample[:A.posts]] or ["- none"]
         out.write(json.dumps({"custom_id": f"c{c}", "community": c, "size": size,
                               "prompt": "\n".join(lines)}, ensure_ascii=False) + "\n")
         n += 1

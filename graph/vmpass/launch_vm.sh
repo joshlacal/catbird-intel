@@ -4,7 +4,7 @@
 # PRINT-ONLY BY DEFAULT. Nothing touches GCP unless --execute is given, and
 # --execute is for Josh (or an agent he approved) after the run ask (R-S8 / R-S9):
 #
-#   launch_vm.sh s8  RUN_ID            # print the S8 commands (max-run 1.25 h, cap $4)
+#   launch_vm.sh s8  RUN_ID            # print the S8 commands (max-run 1.5 h, cap $4.50; R-S8 2026-10-28)
 #   launch_vm.sh s9  RUN_ID            # print the S9 commands (max-run 9 h, cap $32)
 #   launch_vm.sh resume RUN_ID         # S9's one resumed restart (fresh VM, max-run 2 h 45 m)
 #   launch_vm.sh buckets               # print the D1b bucket + lifecycle + label commands
@@ -103,9 +103,9 @@ create_vm() {  # $1 step label, $2 max-run duration
 case "$MODE" in
   s8)
     need_run_id
-    echo "# S8 smoke test: cap \$4 = \$2.715/h x <=1.25 h max-run (+ ~120k Class B GETs ~ \$0.05)"
+    echo "# S8 smoke test: cap \$4.50 = \$2.715/h x <=1.5 h max-run (+ ~120k Class B GETs ~ \$0.05)"
     stage_code
-    create_vm s8 75m
+    create_vm s8 90m
     ;;
   s9)
     need_run_id

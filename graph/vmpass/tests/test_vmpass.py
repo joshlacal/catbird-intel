@@ -648,7 +648,7 @@ class Guards(unittest.TestCase):
         (fake / "gcloud").write_text("#!/bin/sh\necho CALLED >> \"$(dirname \"$0\")/calls\"\nexit 1\n")
         (fake / "gcloud").chmod(0o755)
         env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}", "SESSIONS": str(ENV['root'] / "sessions.tsv")}
-        for mode, maxrun in (("s8", "75m"), ("s9", "9h"), ("resume", "165m")):
+        for mode, maxrun in (("s8", "90m"), ("s9", "9h"), ("resume", "165m")):
             r = subprocess.run(["bash", str(VMPASS / "launch_vm.sh"), mode, "t-run"], capture_output=True, text=True, env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
             o = r.stdout

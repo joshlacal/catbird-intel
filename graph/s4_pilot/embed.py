@@ -35,8 +35,19 @@ SPECS = {
 DIM, MAX_SEQ = 256, 512
 
 
+def force_text_modality():
+    """Every input is text. sentence-transformers 6 otherwise treats a post that is a bare media URL
+    (`https://….jpg`, a YouTube link) or an existing local media path as an image/video/audio input
+    and would fetch and decode it. S4 embeds text only and must never fetch URLs from post text."""
+    from sentence_transformers.base import modality as stm
+    stm.is_image_url_or_path = stm.is_video_url_or_path = stm.is_audio_url_or_path = lambda _text: False
+    assert stm.infer_modality("https://www.youtube.com/watch?v=x") == "text"
+    assert stm.infer_modality("https://example.com/a.jpg") == "text"
+
+
 def load(name):
     from sentence_transformers import SentenceTransformer
+    force_text_modality()
     s = SPECS[name]
     kw = dict(device="mps", local_files_only=True, model_kwargs={"dtype": torch.bfloat16})
     if s["config_kwargs"]:

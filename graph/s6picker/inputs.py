@@ -143,7 +143,8 @@ def all_list_names():
 
 def s5_card_packs(s5_dir):
     """S5's offer set: universe/card_packs.tsv (community, pack uri, share of members in the card, members)."""
-    f = pathlib.Path(s5_dir).expanduser() / "work/universe/card_packs.tsv"
+    root = pathlib.Path(s5_dir).expanduser()
+    f = root / "card_packs.tsv" if (root / "card_packs.tsv").exists() else root / "work/universe/card_packs.tsv"
     if not f.exists():
         return None, None
     out = collections.defaultdict(list)

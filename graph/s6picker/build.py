@@ -288,7 +288,8 @@ def verify(data, lv, hfr, claude_p, claude_c, excluded, s5_excl=frozenset()):
 def make_receipt(data, lv, s5_dir, out, stats, drop_member, excluded, ver, t0):
     ins = {k: {"path": str(p), "sha256": inputs.sha256(p)} for k, p in inputs.PATHS.items() if pathlib.Path(p).exists()}
     for name in ("card_packs.tsv", "serving_universe.tsv"):
-        p = pathlib.Path(s5_dir).expanduser() / "work/universe" / name
+        p = pathlib.Path(s5_dir).expanduser() / name
+        p = p if p.exists() else pathlib.Path(s5_dir).expanduser() / "work/universe" / name
         if p.exists():
             ins["s5_" + name] = {"path": str(p), "sha256": inputs.sha256(p)}
     for p in inputs.FEEDGEN_DAYS + inputs.PACK_DAYS:

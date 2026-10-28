@@ -123,8 +123,13 @@ def project(ps) -> dict:
 
     t2, t2lin, t2pow = (x * F for x in extrap(a.get("seconds", 0) or 0, c.get("seconds", 0) or 0))
     m2, m2lin, m2pow = (x * F for x in extrap(a.get("peak_rss_bytes", 0) or 0, c.get("peak_rss_bytes", 0) or 0))
-    p2_full_s = t2 * skew2
-    p2_peak = m2 * maxskew2
+    # Phase 2 at rate 1. The two sample rates differ only in the inbound rows, so extrapolating the
+    # whole step's seconds or RSS from them multiplies noise by ~400 (S8: -11.5 h and 564 GB). Instead:
+    # pairs grow linearly in the inbound sample (exact counts), statements are split into fixed,
+    # inbound-scaled and pair-scaled ones, and the pair aggregate's memory is per pair x pairs per chunk.
+    model = phase2_model(ps, o1a, o1c, r1, r2, F)
+    p2_full_s = model["seconds_rate1"] * skew2 if model.get("seconds_rate1") else t2 * skew2
+    p2_peak = model["peak_bytes_rate1"] * maxskew2 if model.get("peak_bytes_rate1") else m2 * maxskew2
     b2a, b2c = _bytes(ps, "p2_s400_00"), _bytes(ps, "p2_s200_00")
     p2_bytes_1 = extrap(b2a, b2c)[0] * F
 
@@ -243,7 +248,7 @@ def project(ps) -> dict:
             "globals_hours": glob_s / 3600, "teacher_hours": teacher_s / 3600, "didmap_hours": didmap_s / 3600,
             "main_run_hours_excl_staging": (total_s - stage_s) / 3600, "main_run_hours": hours,
             "peak_ram_phase1_bytes": p1_peak, "peak_ram_phase2_bytes": p2_peak,
-            "peak_ram_phase2_linear_vs_power": [m2lin * maxskew2, m2pow * maxskew2],
+            "peak_ram_phase2_linear_vs_power": [m2lin * maxskew2, m2pow * maxskew2], "phase2_model": model,
             "intermediate_bytes": p1_bytes * skew1 + p2_bytes_1 * skew2,
             "intermediate_bytes_phase1": p1_bytes * skew1, "intermediate_bytes_phase2": p2_bytes_1 * skew2,
             "maint_shuffle_bytes": maintd_bytes_full, "e0_edges": e0_full,
@@ -404,3 +409,49 @@ def render_partial(p: dict) -> str:
     if "s9_bucket_estimate" in k:
         lines.append(f"  S9 bucketing estimate: {k['s9_bucket_estimate']['s9_bucket_hours']:.2f} h")
     return "\n".join(lines) + "\n"
+
+
+PAIR_BYTES_DEFAULT = 2400.0  # synthetic: 12 GiB per 5M pairs for the 153-column per-pair aggregate
+PAIR_SCALED = ("CREATE TABLE l2_", "INSERT INTO acc_", "CREATE TABLE x_maint", "INSERT INTO FUNCTION file( %e0_", "DROP TABLE l2_")
+INBOUND_SCALED = ("CREATE TABLE te ", "CREATE TABLE r0 ", "CREATE TABLE tr ", "CREATE TABLE crj ", "CREATE TABLE evx ",
+                  "CREATE TABLE bp ", "CREATE TABLE bpj ", "CREATE TABLE eng_light ", "CREATE TABLE lev ", "CREATE TABLE levj ")
+
+
+def phase2_model(ps, o1a: dict, o1c: dict, r1: float, r2: float, F: float = 1.0) -> dict:
+    from sqlc import ram_bytes
+    pa, pc = sum(o1a.get("pairs_prod", {}).values()), sum(o1c.get("pairs_prod", {}).values())
+    tc = sum(o1c.get("typed_engagement", {}).values())
+    if not pc or not tc:
+        return {}
+    inbound_pairs = max(0.0, (pc - pa) / (r2 - r1)) * F           # pairs contributed by all actors at rate 1
+    own_pairs = max(0.0, pc - inbound_pairs * r2 / F)              # the partition's own rows (rate-independent)
+    pairs1 = own_pairs * F + inbound_pairs
+    eng_ratio = (tc / r2 * F) / tc                                 # inbound engagement growth s200 -> rate 1
+    pair_ratio = pairs1 / pc
+    st = _st(ps, "p2_s200_00")
+    stmts = st.get("statements") or st.get("slowest_statements") or []
+    k_s8 = st.get("subchunks") or ps.rules["p2_user_subchunks"]
+    ram = ram_bytes()
+    # S9's own sub-chunk rule (passrun.p2_chunks), applied to the projected pair count
+    k9 = max(int(ps.rules["p2_user_subchunks"]), -(-int(pairs1 * PAIR_BYTES_DEFAULT) // int(ram * 0.25)))
+    secs = {"fixed": 0.0, "inbound": 0.0, "pairs": 0.0}
+    for x in stmts:
+        cat = "pairs" if x["what"].startswith(PAIR_SCALED) else "inbound" if x["what"].startswith(INBOUND_SCALED) else "fixed"
+        secs[cat] += x["seconds"]
+    known = sum(secs.values())
+    rest = max(0.0, (st.get("seconds") or 0) - known)
+    seconds1 = (secs["fixed"] + rest) * F + secs["inbound"] * eng_ratio + secs["pairs"] * pair_ratio * F if stmts else None
+    fixed_peak = max([x.get("peak_rss_bytes", 0) for x in stmts if not x["what"].startswith(PAIR_SCALED)] or [0])
+    l2 = [x for x in stmts if x["what"].startswith("CREATE TABLE l2_") and x.get("peak_rss_bytes")]
+    if l2 and pc:
+        base = min(x.get("peak_rss_bytes", 0) for x in stmts if x.get("peak_rss_bytes")) if stmts else 0
+        per_pair = max(PAIR_BYTES_DEFAULT, (max(x["peak_rss_bytes"] for x in l2) - base) / (pc / k_s8))
+    else:
+        per_pair = PAIR_BYTES_DEFAULT
+    l2_chunk_bytes = per_pair * pairs1 / k9
+    peak1 = max(fixed_peak * F, fixed_peak * F + l2_chunk_bytes) if fixed_peak else None
+    return {"pairs_s400": pa, "pairs_s200": pc, "own_pairs": own_pairs, "inbound_pairs_rate1": inbound_pairs, "pairs_rate1": pairs1,
+            "pair_bytes": per_pair, "subchunks_s9": k9, "l2_chunk_bytes_rate1": l2_chunk_bytes, "fixed_peak_bytes_s200": fixed_peak,
+            "seconds_by_category_s200": secs, "seconds_rate1": seconds1, "peak_bytes_rate1": peak1,
+            "note": "fixed statements as measured; inbound ones x inbound-engagement growth; pair ones x pair growth; "
+                    "peak = largest fixed statement + one sub-chunk of the per-pair aggregate (conservative: adds them)"}

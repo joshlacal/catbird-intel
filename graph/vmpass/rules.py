@@ -101,6 +101,15 @@ def s1_rules() -> dict:
     return r
 
 
+def s9_rules() -> dict:
+    """S1's rules with S8's projected O3 shrink applied (registered shrink order step 1, twice):
+    O3a fit users 829,810 -> 207,452, above the 150k floor; a third halving (103,726) would breach it."""
+    r = s1_rules()
+    r["status"] = r["status"] + " S9: O3 shrink step 1 applied twice per S8 s8-20261028b's projection (fit_halvings = 2)."
+    r["samples"] = {**r["samples"], "fit_halvings": 2}
+    return r
+
+
 def draft_rules() -> dict:
     feats = draft_features()
     return {
@@ -228,6 +237,6 @@ def load(path: str | pathlib.Path | None = None) -> Rules:
 
 
 if __name__ == "__main__":  # regenerate both rules files
-    for path, data in ((DRAFT, draft_rules()), (S1, s1_rules())):
+    for path, data in ((DRAFT, draft_rules()), (S1, s1_rules()), (HERE / "rules_s9.json", s9_rules())):
         path.write_text(json.dumps(data, indent=1) + "\n")
         print(path.name, len(data["features"]), "features", hashlib.sha256(path.read_bytes()).hexdigest())

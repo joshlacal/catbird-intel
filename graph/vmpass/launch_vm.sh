@@ -110,7 +110,8 @@ case "$MODE" in
   s9)
     need_run_id
     [[ -n "$O3B_SCALES" ]] || echo "# WARNING: S9 should get O3B_SCALES=<S8 run>/S8/o3b_scales.json (S1 R4); its sha256 goes in R-S9" >&2
-    echo "# S9 main pass: cap \$32 = (9 h + one 2.75 h restart) x \$2.715/h; a fresh VM re-stages (10-30 min)"
+    echo "# S9 main pass on $MACHINE: max-run 9 h + one 2.75 h resumed restart; cap = 11.75 h x the machine's Spot rate"
+    echo "#   (c2d-highmem-56 + 8 local SSD, us-west1 Spot, Billing Catalog 2026-10-28: \$1.785/h -> cap \$21); a fresh VM re-stages (~10 min)"
     stage_code
     create_vm s9 9h
     ;;

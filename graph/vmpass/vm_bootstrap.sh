@@ -129,6 +129,7 @@ fi
 ( while sleep 180; do upload_log; done ) &   # passrun also streams work/progress.log to _logs/progress.log
 SHARD_ARG=()
 [[ "$BUCKET_SHARDS" -gt 0 ]] && SHARD_ARG=(--bucket-shards "$BUCKET_SHARDS")
+[[ "$MODE" == "s9" ]] && SHARD_ARG+=(--free-stage-after-bucket)
 /mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py run --mode "$MODE" --stage /mnt/ssd/stage --work /mnt/ssd/work \
   --store30 "$PLAN30" --store60 "$PLAN60" --run-id "$RUN_ID" --inputs "$PLAN30/inputs/$RUN_ID" \
   --manifest /mnt/ssd/stage/manifest.tsv --simgraph "$SIMGRAPH" --stage-seconds "$STAGE_S" "${RULES_ARG[@]}" "${SHARD_ARG[@]}"

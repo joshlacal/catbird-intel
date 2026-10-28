@@ -201,7 +201,8 @@ class Pass:
         for st in slow[:5]:
             self.log(f"  {name} slowest: {st['seconds']:.1f}s stmt {st['i'] + 1}: {st['what'][:80]}")
         return {"seconds": r["seconds"], "peak_rss_bytes": r["peak_rss_bytes"], "mean_cpu_pct": r["mean_cpu_pct"],
-                "clickhouse_progress": r["last_progress"], "slowest_statements": slow, "stdout": r["stdout"][-2000:]}
+                "clickhouse_progress": r["last_progress"], "slowest_statements": slow, "statements": r["statements"],
+                "stdout": r["stdout"][-2000:]}
 
     # ---------- progress log (streamed to the 30-day store, so an overrun still shows where time went) ----------
     def log(self, msg: str) -> None:
@@ -346,6 +347,14 @@ class Pass:
         hf = "cityHash64(ifNull(did, ''))"
         actor_filter = f"({hf} % {r['samples']['s8_actor_mod'][0]} = 0 OR {hf} % {N} = 0)" if s8 else "1"
         self.step("bucket", lambda: self.bucket_step(actor_filter), local_only=True, uploads=("buckets",))
+        if getattr(self.a, "free_stage_after_bucket", False) and (self.local_ledger / "bucket.json").exists():
+            # S9 disk budget: the staged copy (~853 GiB) is not read after bucketing (inventory ran first;
+            # a fresh VM re-stages anyway), so dropping it keeps 3,000 GiB of local SSD comfortable.
+            n = 0
+            for pq_file in self.stage.glob("*/**/*.parquet"):
+                pq_file.unlink()
+                n += 1
+            self.log(f"freed the staged extract after bucketing ({n} files)")
         p1opts = {"have_maps": self.have["maps"]}
         if s8:  # O3 sizing: every sampled actor stands in for a fit / M1 user
             p1opts.update(fit_flag="s200", m1_flag="s200")
@@ -387,8 +396,7 @@ class Pass:
             o = self.work / sub / f"j{j:02d}"
             fin = {k: (v if not samp else v.replace("/out30/", f"/out30/S8-{samp}/").replace("/out60/", f"/out60/S8-{samp}/")) for k, v in final2.items()}
             opts = {**p2opts, "inbound_sample": samp}
-            self.step(tag, lambda j=j, o=o, fin=fin, opts=opts, tag=tag: self._fp16(fin, j, (self._clean(o), self.sql(tag, sql_p2.p2(
-                r, j, str(self.p1dir), str(self.g), str(self.buckets), str(o), fin, opts)))[1]),
+            self.step(tag, lambda j=j, o=o, fin=fin, opts=opts, tag=tag: self._fp16(fin, j, self._p2(tag, j, o, fin, opts)),
                 uploads=(f"{sub}/j{j:02d}", "out30", "out60"))
             p2names.append((tag, sub))
         main_sub = "p2_s200" if s8 else "p2"
@@ -427,6 +435,31 @@ class Pass:
         st = self.sql(name, sql_p1.p1(self.rules, i, str(self.buckets / f"ev/p{i}/*.parquet"), str(self.buckets / f"po/p{i}/*.parquet"),
                                       str(self.g / "didmap.parquet"), str(self.side), str(o), final1, {**p1opts, "chunks": k}))
         return {**st, "bucket_rows": rows, "chunks": k}
+
+    def p2_chunks(self, j: int) -> tuple[int, int]:
+        """User sub-chunks for phase-2 partition j, sized from RAM. The per-pair aggregate costs ~2.4 KB
+        of memory per (user, producer) pair (synthetic: 12 GiB per 5M pairs, 153 aggregate columns).
+        Pairs are bounded by the evidence rows phase 1 re-keyed here (inbound likes, reposts, replies,
+        quotes, curator adds and follows, plus the partition's own follows); a chunk gets 25% of RAM,
+        so with the fixed Join tables the step stays under ~half of RAM."""
+        from sqlc import ram_bytes
+        rows = 0
+        pats = [self.p1dir / "i*" / name / f"j{j}.parquet" for name in ("eng", "rep", "fol", "cur")]
+        pats.append(self.p1dir / f"i{j:02d}" / "fol_own.parquet")
+        for pat in pats:
+            if glob.glob(str(pat)):
+                rows += int(chrun.query(f"SELECT count() FROM file('{pat}', Parquet) FORMAT TSV", self.work, f"p2rows_{j}").strip() or 0)
+        pair_bytes = float(os.environ.get("VMPASS_P2_PAIR_BYTES", "2500"))
+        pairs_est = rows * float(os.environ.get("VMPASS_P2_PAIRS_PER_ROW", "0.6"))
+        k = max(int(self.rules["p2_user_subchunks"]), -(-int(pairs_est * pair_bytes) // int(ram_bytes() * 0.25)))
+        return rows, k
+
+    def _p2(self, tag: str, j: int, o: pathlib.Path, fin: dict, opts: dict) -> dict:
+        self._clean(o)
+        rows, k = self.p2_chunks(j)
+        self.log(f"{tag}: {rows} evidence rows -> {k} user sub-chunk(s)")
+        st = self.sql(tag, sql_p2.p2(self.rules, j, str(self.p1dir), str(self.g), str(self.buckets), str(o), fin, {**opts, "subchunks": k}))
+        return {**st, "evidence_rows": rows, "subchunks": k}
 
     def _clean(self, d: pathlib.Path) -> None:
         if d.exists():
@@ -634,6 +667,8 @@ def main() -> int:
     p.add_argument("--manifest", default="")
     p.add_argument("--simgraph", default="")
     p.add_argument("--o3b-scales", default="", help="JSON {feature: scale} from S8's projection (S1 R4)")
+    p.add_argument("--free-stage-after-bucket", action="store_true",
+                   help="S9: delete the staged Parquet once bucketing has finished (local SSD budget)")
     p.add_argument("--bucket-shards", type=int, default=0,
                    help="S8 only: bucket K evenly spaced staged directories and scale the projection by the row fraction")
     p.add_argument("--stage-seconds", type=float, default=0, help="staging wall time from the bootstrap, for the S8 projection")

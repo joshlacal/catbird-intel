@@ -131,12 +131,25 @@ def run_script(sql: str, workdir: pathlib.Path, name: str, timeout: float | None
         cpu_samples: list[float] = []
         done = threading.Event()
 
+        stmt_peak: dict[int, int] = {}
+
         def sample() -> None:
             last_hb = time.monotonic()
+            cur_i, last_size = -1, -1
             while not done.is_set():
                 rss, cpu = _ps(proc.pid)
                 peak[0] = max(peak[0], rss)
                 cpu_samples.append(cpu)
+                if marks:  # attribute RSS to the statement running now (per-statement peak memory)
+                    try:
+                        size = outpath.stat().st_size
+                        if size != last_size:
+                            last_size = size
+                            m = _marks(outpath.read_text(errors="replace"))
+                            cur_i = m[-1][0] if m else -1
+                    except OSError:
+                        pass
+                    stmt_peak[cur_i] = max(stmt_peak.get(cur_i, 0), rss)
                 if heartbeat and time.monotonic() - last_hb >= heartbeat_s:
                     last_hb = time.monotonic()
                     try:
@@ -163,6 +176,8 @@ def run_script(sql: str, workdir: pathlib.Path, name: str, timeout: float | None
     shutil.rmtree(chpath, ignore_errors=True)
     raw_out = outpath.read_text(errors="replace")
     stmts = statement_times(raw_out) if marks else []
+    for st in stmts:
+        st["peak_rss_bytes"] = stmt_peak.get(st["i"], 0) * 1024
     stdout = "".join(line + "\n" for line in raw_out.splitlines() if not line.startswith(MARK + "\t"))
     if proc.returncode != 0:
         cur = _marks(raw_out)

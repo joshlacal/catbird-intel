@@ -1,0 +1,785 @@
+{
+ "status": "S1: translation of docs/execution-plans/2026-10-28-whole-network-preregistration.md (frozen 2026-10-28, amendment A1). O3b scales come from S8 (R4) via --o3b-scales. S9: O3 shrink step 1 applied twice per S8 s8-20261028b's projection (fit_halvings = 2).",
+ "n_partitions": 16,
+ "cutoffs": {
+  "T_fit": "2026-07-18",
+  "T_val": "2026-08-01",
+  "T": "2026-08-15",
+  "T_test": "2026-09-20",
+  "T_now": "2026-10-18"
+ },
+ "window_days": 90,
+ "label_days_A": 14,
+ "label_days_B": [
+  7,
+  30
+ ],
+ "label_days_C": 30,
+ "label_cap_pre_T": "2026-08-15",
+ "label_cap_final": "2026-10-18",
+ "m1_label_end": "2026-09-12",
+ "m2_cohort": [
+  "2026-08-15",
+  "2026-09-08"
+ ],
+ "m2_outcome_days": 30,
+ "o5_follow_window": [
+  "2026-08-15",
+  "2026-09-18"
+ ],
+ "o5_outcome_days": 30,
+ "twelve_month_start": "2025-10-18",
+ "snapshot_end": "2026-10-24T23:59:59Z",
+ "tid_valid": [
+  "2022-11-01T00:00:00Z",
+  "2026-10-25T00:00:00Z"
+ ],
+ "light_max_producer_follows": 3000,
+ "burst_window_s": 30,
+ "burst_threshold": 10,
+ "bulk_div": 10,
+ "like_day_cap": 500,
+ "repost_day_cap": 100,
+ "like_pair_day_cap": 3,
+ "cr_window_s": 259200,
+ "hostile_window_s": 172800,
+ "early_s": 300,
+ "late_s": 7200,
+ "maint": {
+  "n_min": 5,
+  "recip_min": 0.5,
+  "cov_min": 0.5,
+  "orig_min": 5
+ },
+ "a_u_k": 50,
+ "a_u_alphas": [
+  0.5,
+  1.0
+ ],
+ "k_min": 50,
+ "samples": {
+  "fit_mod": 50,
+  "fit_rem": 7,
+  "fit_halvings": 2,
+  "m1_mod": 100,
+  "m1_rem": 13,
+  "m1_halvings": 0,
+  "pc_mod": 1000,
+  "pc_lt": 20,
+  "holdout_salt": "holdout",
+  "holdout_mod": 5,
+  "holdout_rem": 0,
+  "s8_actor_mod": [
+   200,
+   400
+  ]
+ },
+ "o3": {
+  "max_followed": 100,
+  "max_evidenced": 30,
+  "n_random": 20,
+  "m1_max_pairs": 300,
+  "budget_bytes": 8000000000,
+  "min_fit_users": 150000,
+  "min_m1_users": 100000,
+  "drop_t_test": false,
+  "trim_features": [],
+  "trim_order": [
+   "LO_L120",
+   "LR_L120",
+   "RP_L120",
+   "CR_L120",
+   "URf_L120",
+   "URn_L120",
+   "Qf_L120",
+   "Qn_L120",
+   "LU_L120",
+   "DL_L120",
+   "LO_DSF",
+   "LR_DSF",
+   "RP_DSF",
+   "CR_DSF",
+   "URf_DSF",
+   "URn_DSF",
+   "Qf_DSF",
+   "Qn_DSF",
+   "LO_DP",
+   "LR_DP",
+   "RP_DP",
+   "CR_DP",
+   "URf_DP",
+   "URn_DP",
+   "Qf_DP",
+   "Qn_DP",
+   "LO_ES",
+   "LO_LS",
+   "LR_ES",
+   "LR_LS",
+   "RP_ES",
+   "RP_LS",
+   "CR_ES",
+   "CR_LS",
+   "URf_ES",
+   "URf_LS",
+   "URn_ES",
+   "URn_LS",
+   "Qf_ES",
+   "Qf_LS",
+   "Qn_ES",
+   "Qn_LS"
+  ]
+ },
+ "o3b_default_scales": {
+  "dec": 6.0,
+  "nzdays": 90,
+  "nposts": 255,
+  "dsl": 91,
+  "dsf": 91,
+  "n7d": 255,
+  "early": 1.0,
+  "late": 1.0,
+  "dl": 1.0,
+  "pair": 8.0,
+  "user": 16.0,
+  "producer": 20.0,
+  "L": 6.0,
+  "ND": 5.0,
+  "DP": 6.0,
+  "DSL": 90,
+  "DSF": 90,
+  "C7": 6.0,
+  "ES": 1.0,
+  "LS": 1.0
+ },
+ "o3b_scales": {},
+ "list_split": {
+  "salt": "",
+  "mod": 8,
+  "A": [
+   0,
+   1,
+   4,
+   5
+  ],
+  "B1a": [
+   2
+  ],
+  "B1b": [
+   6
+  ],
+  "B2": [
+   3,
+   7
+  ]
+ },
+ "curate": {
+  "max_members": 500,
+  "max_lists_per_owner": 3,
+  "seed": "7"
+ },
+ "o6_recent_days": 30,
+ "o8": {
+  "max_posts": 64,
+  "per_month": 6
+ },
+ "o12": {
+  "emit": true,
+  "per_stratum": 10000,
+  "random_nonfollower_quotes": 200
+ },
+ "o13": {
+  "window": [
+   "2026-05-17",
+   "2026-10-12"
+  ],
+  "m1_mod": 100,
+  "m1_rem": 13
+ },
+ "teacher": {
+  "min_engagements": 2,
+  "min_days": 2,
+  "top_k": 200,
+  "min_light_engagers": 50,
+  "follower_idf_alpha": 1.0,
+  "sample": 1000,
+  "cap": 500,
+  "min_cos": 0.02,
+  "seed": 42
+ },
+ "positive_control": {
+  "like_day": "2026-10-20",
+  "snapshot_min": "2026-10-21T00:00:00Z"
+ },
+ "backfill_filter": null,
+ "status_list_complete": false,
+ "p2_user_subchunks": 4,
+ "clickhouse": {
+  "max_memory_usage": 420000000000,
+  "max_bytes_before_external_group_by": 160000000000,
+  "max_bytes_before_external_sort": 160000000000
+ },
+ "features": [
+  {
+   "name": "LO_L14",
+   "type": "LO",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "LO_L45",
+   "type": "LO",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "LO_L120",
+   "type": "LO",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "LO_ND",
+   "type": "LO",
+   "stat": "ND"
+  },
+  {
+   "name": "LO_DP",
+   "type": "LO",
+   "stat": "DP"
+  },
+  {
+   "name": "LO_DSL",
+   "type": "LO",
+   "stat": "DSL"
+  },
+  {
+   "name": "LO_DSF",
+   "type": "LO",
+   "stat": "DSF"
+  },
+  {
+   "name": "LO_C7",
+   "type": "LO",
+   "stat": "C7"
+  },
+  {
+   "name": "LO_ES",
+   "type": "LO",
+   "stat": "ES"
+  },
+  {
+   "name": "LO_LS",
+   "type": "LO",
+   "stat": "LS"
+  },
+  {
+   "name": "LR_L14",
+   "type": "LR",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "LR_L45",
+   "type": "LR",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "LR_L120",
+   "type": "LR",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "LR_ND",
+   "type": "LR",
+   "stat": "ND"
+  },
+  {
+   "name": "LR_DP",
+   "type": "LR",
+   "stat": "DP"
+  },
+  {
+   "name": "LR_DSL",
+   "type": "LR",
+   "stat": "DSL"
+  },
+  {
+   "name": "LR_DSF",
+   "type": "LR",
+   "stat": "DSF"
+  },
+  {
+   "name": "LR_C7",
+   "type": "LR",
+   "stat": "C7"
+  },
+  {
+   "name": "LR_ES",
+   "type": "LR",
+   "stat": "ES"
+  },
+  {
+   "name": "LR_LS",
+   "type": "LR",
+   "stat": "LS"
+  },
+  {
+   "name": "RP_L14",
+   "type": "RP",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "RP_L45",
+   "type": "RP",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "RP_L120",
+   "type": "RP",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "RP_ND",
+   "type": "RP",
+   "stat": "ND"
+  },
+  {
+   "name": "RP_DP",
+   "type": "RP",
+   "stat": "DP"
+  },
+  {
+   "name": "RP_DSL",
+   "type": "RP",
+   "stat": "DSL"
+  },
+  {
+   "name": "RP_DSF",
+   "type": "RP",
+   "stat": "DSF"
+  },
+  {
+   "name": "RP_C7",
+   "type": "RP",
+   "stat": "C7"
+  },
+  {
+   "name": "RP_ES",
+   "type": "RP",
+   "stat": "ES"
+  },
+  {
+   "name": "RP_LS",
+   "type": "RP",
+   "stat": "LS"
+  },
+  {
+   "name": "CR_L14",
+   "type": "CR",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "CR_L45",
+   "type": "CR",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "CR_L120",
+   "type": "CR",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "CR_ND",
+   "type": "CR",
+   "stat": "ND"
+  },
+  {
+   "name": "CR_DP",
+   "type": "CR",
+   "stat": "DP"
+  },
+  {
+   "name": "CR_DSL",
+   "type": "CR",
+   "stat": "DSL"
+  },
+  {
+   "name": "CR_DSF",
+   "type": "CR",
+   "stat": "DSF"
+  },
+  {
+   "name": "CR_C7",
+   "type": "CR",
+   "stat": "C7"
+  },
+  {
+   "name": "CR_ES",
+   "type": "CR",
+   "stat": "ES"
+  },
+  {
+   "name": "CR_LS",
+   "type": "CR",
+   "stat": "LS"
+  },
+  {
+   "name": "URf_L14",
+   "type": "URf",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "URf_L45",
+   "type": "URf",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "URf_L120",
+   "type": "URf",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "URf_ND",
+   "type": "URf",
+   "stat": "ND"
+  },
+  {
+   "name": "URf_DP",
+   "type": "URf",
+   "stat": "DP"
+  },
+  {
+   "name": "URf_DSL",
+   "type": "URf",
+   "stat": "DSL"
+  },
+  {
+   "name": "URf_DSF",
+   "type": "URf",
+   "stat": "DSF"
+  },
+  {
+   "name": "URf_C7",
+   "type": "URf",
+   "stat": "C7"
+  },
+  {
+   "name": "URf_ES",
+   "type": "URf",
+   "stat": "ES"
+  },
+  {
+   "name": "URf_LS",
+   "type": "URf",
+   "stat": "LS"
+  },
+  {
+   "name": "URn_L14",
+   "type": "URn",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "URn_L45",
+   "type": "URn",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "URn_L120",
+   "type": "URn",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "URn_ND",
+   "type": "URn",
+   "stat": "ND"
+  },
+  {
+   "name": "URn_DP",
+   "type": "URn",
+   "stat": "DP"
+  },
+  {
+   "name": "URn_DSL",
+   "type": "URn",
+   "stat": "DSL"
+  },
+  {
+   "name": "URn_DSF",
+   "type": "URn",
+   "stat": "DSF"
+  },
+  {
+   "name": "URn_C7",
+   "type": "URn",
+   "stat": "C7"
+  },
+  {
+   "name": "URn_ES",
+   "type": "URn",
+   "stat": "ES"
+  },
+  {
+   "name": "URn_LS",
+   "type": "URn",
+   "stat": "LS"
+  },
+  {
+   "name": "Qf_L14",
+   "type": "Qf",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "Qf_L45",
+   "type": "Qf",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "Qf_L120",
+   "type": "Qf",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "Qf_ND",
+   "type": "Qf",
+   "stat": "ND"
+  },
+  {
+   "name": "Qf_DP",
+   "type": "Qf",
+   "stat": "DP"
+  },
+  {
+   "name": "Qf_DSL",
+   "type": "Qf",
+   "stat": "DSL"
+  },
+  {
+   "name": "Qf_DSF",
+   "type": "Qf",
+   "stat": "DSF"
+  },
+  {
+   "name": "Qf_C7",
+   "type": "Qf",
+   "stat": "C7"
+  },
+  {
+   "name": "Qf_ES",
+   "type": "Qf",
+   "stat": "ES"
+  },
+  {
+   "name": "Qf_LS",
+   "type": "Qf",
+   "stat": "LS"
+  },
+  {
+   "name": "Qn_L14",
+   "type": "Qn",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "Qn_L45",
+   "type": "Qn",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "Qn_L120",
+   "type": "Qn",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "Qn_ND",
+   "type": "Qn",
+   "stat": "ND"
+  },
+  {
+   "name": "Qn_DP",
+   "type": "Qn",
+   "stat": "DP"
+  },
+  {
+   "name": "Qn_DSL",
+   "type": "Qn",
+   "stat": "DSL"
+  },
+  {
+   "name": "Qn_DSF",
+   "type": "Qn",
+   "stat": "DSF"
+  },
+  {
+   "name": "Qn_C7",
+   "type": "Qn",
+   "stat": "C7"
+  },
+  {
+   "name": "Qn_ES",
+   "type": "Qn",
+   "stat": "ES"
+  },
+  {
+   "name": "Qn_LS",
+   "type": "Qn",
+   "stat": "LS"
+  },
+  {
+   "name": "LU_L14",
+   "type": "LU",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "LU_L45",
+   "type": "LU",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "LU_L120",
+   "type": "LU",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "LU_ND",
+   "type": "LU",
+   "stat": "ND"
+  },
+  {
+   "name": "DL_L14",
+   "type": "DL",
+   "stat": "L",
+   "h": 14
+  },
+  {
+   "name": "DL_L45",
+   "type": "DL",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "DL_L120",
+   "type": "DL",
+   "stat": "L",
+   "h": 120
+  },
+  {
+   "name": "DL_ND",
+   "type": "DL",
+   "stat": "ND"
+  },
+  {
+   "name": "LST_N",
+   "level": "pair"
+  },
+  {
+   "name": "QH_L45",
+   "type": "QH",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "RH_L45",
+   "type": "RH",
+   "stat": "L",
+   "h": 45
+  },
+  {
+   "name": "BLK",
+   "level": "pair"
+  },
+  {
+   "name": "LBLK",
+   "level": "pair"
+  },
+  {
+   "name": "FOL",
+   "level": "pair"
+  },
+  {
+   "name": "FAGE",
+   "level": "pair"
+  },
+  {
+   "name": "FBURST",
+   "level": "pair"
+  },
+  {
+   "name": "MUT",
+   "level": "pair"
+  },
+  {
+   "name": "ACKS",
+   "level": "pair"
+  },
+  {
+   "name": "RNL",
+   "level": "pair"
+  },
+  {
+   "name": "MAINT",
+   "level": "pair"
+  },
+  {
+   "name": "DU",
+   "level": "user"
+  },
+  {
+   "name": "DVP",
+   "level": "user"
+  },
+  {
+   "name": "HEAVY",
+   "level": "user"
+  },
+  {
+   "name": "MISS",
+   "level": "user"
+  },
+  {
+   "name": "PFOL",
+   "level": "producer"
+  },
+  {
+   "name": "PORIG",
+   "level": "producer"
+  },
+  {
+   "name": "POSH",
+   "level": "producer"
+  },
+  {
+   "name": "PCUR",
+   "level": "producer"
+  },
+  {
+   "name": "PBLK",
+   "level": "producer"
+  },
+  {
+   "name": "PBLKN",
+   "level": "producer"
+  }
+ ]
+}

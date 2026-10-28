@@ -345,7 +345,9 @@ SELECT p, uniqExact(x) AS targets, countIf(hb > 0) / greatest(1, count()) AS sha
   WHERE x != u AND NOT arrayExists(iv -> iv.1 <= t AND t < iv.2, joinGet('fown', 'iv', u, x))
 ) GROUP BY p;
 CREATE TABLE lang_{tag} ENGINE = Join(ANY, LEFT, p) AS
-SELECT u AS p, topK(3)(lang) AS langs FROM (SELECT u, arrayJoin(langs) AS lang FROM pi WHERE t > {C - 31536000} AND t <= {C}) GROUP BY u;""")
+SELECT p, arrayMap(x -> x.2, arraySlice(arrayReverseSort(groupArray((n, lang))), 1, 3)) AS langs FROM (
+  SELECT u AS p, lang, count() AS n FROM (SELECT u, arrayJoin(langs) AS lang FROM pi
+  WHERE t > {C - 31536000} AND t <= {C} AND joinGet('dmu', 'is_prod', u) = 1) GROUP BY p, lang) GROUP BY p;""")
     sql += "\n".join(comb)
     for cidx, tag in ((names.index("T"), "eval"), (names.index("T_now"), "prod")):
         sumcols = ", ".join(f"toFloat32(sum(`{f}__a05`)) AS `{f}__a05`, toFloat32(sum(`{f}__a10`)) AS `{f}__a10`" for f in fn + ["S0"])
@@ -436,20 +438,24 @@ SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/',
   FROM pi WHERE is_reply = 0 AND t > {tn - recent} AND t <= {tn} AND joinGet('dmu', 'is_prod', u) = 1
     AND joinGet('dmu', 'hide', u) = 0 AND joinGet('dmu', 'synth_no', u) = 0
 ) WHERE rn <= 3 AND nl > 0;
-CREATE TABLE ptxt ENGINE = Join(ANY, LEFT, ph) AS
-SELECT ph, argMax(text, (rev, seq)) AS text, argMax(alts, (rev, seq)) AS alts, argMax(labels, (rev, seq)) AS labels
-FROM {src(f'{buckets}/po/p{j}/*.parquet', 'po')} WHERE op != 3 GROUP BY ph;
-{out(final['o8'] + f'/j{j:02d}.parquet')}
-SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/', rkey) AS uri,
-  formatDateTime(toDateTime(t), '%Y-%m-%dT%H:%i:%SZ') AS created,
-  concat(joinGet('ptxt', 'text', ph), arrayStringConcat(arrayMap(x -> concat(' [image: ', x, ']'), arrayFilter(x -> x != '', joinGet('ptxt', 'alts', ph))), '')) AS text,
-  langs, img AS image_count, joinGet('ptxt', 'labels', ph) AS self_labels
-FROM (
+-- O8: pick the slab posts first, then fetch only their text. (Fetching every post's text of the partition
+-- into a Join table first was S8's phase-2 peak: ~145 GB and 220 s, independent of the inbound sample.)
+CREATE TABLE o8s ENGINE = MergeTree ORDER BY ph AS
+SELECT u, ph, rkey, t, langs, img FROM (
   SELECT *, row_number() OVER (PARTITION BY u ORDER BY t DESC) AS rall FROM (
     SELECT *, row_number() OVER (PARTITION BY u, toYYYYMM(toDateTime(t)) ORDER BY joinGet('eng_light', 'nl', ph) DESC, cityHash64(ph)) AS rm
     FROM pi WHERE is_reply = 0 AND t > {t12} AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'hide', u) = 0 AND joinGet('dmu', 'synth_no', u) = 0
   ) WHERE rm <= {o8['per_month']}
 ) WHERE rall <= {o8['max_posts']};
+CREATE TABLE ptxt ENGINE = Join(ANY, LEFT, ph) AS
+SELECT ph, argMax(text, (rev, seq)) AS text, argMax(alts, (rev, seq)) AS alts, argMax(labels, (rev, seq)) AS labels
+FROM {src(f'{buckets}/po/p{j}/*.parquet', 'po')} WHERE op != 3 AND ph IN (SELECT ph FROM o8s) GROUP BY ph;
+{out(final['o8'] + f'/j{j:02d}.parquet')}
+SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/', rkey) AS uri,
+  formatDateTime(toDateTime(t), '%Y-%m-%dT%H:%i:%SZ') AS created,
+  concat(joinGet('ptxt', 'text', ph), arrayStringConcat(arrayMap(x -> concat(' [image: ', x, ']'), arrayFilter(x -> x != '', joinGet('ptxt', 'alts', ph))), '')) AS text,
+  langs, img AS image_count, joinGet('ptxt', 'labels', ph) AS self_labels
+FROM o8s ORDER BY p, t DESC;
 {out(final['o9'] + f'/j{j:02d}.parquet')}
 SELECT u AS p, argMax(name, (rev, seq)) AS display_name, argMax(descr, (rev, seq)) AS description
 FROM {src(f'{buckets}/ev/p{j}/*.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'synth_no', u) = 0

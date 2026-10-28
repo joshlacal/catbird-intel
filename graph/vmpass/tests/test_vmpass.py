@@ -45,8 +45,8 @@ def ch(sql: str) -> list[list[str]]:
 
 
 def run_pass(mode: str, root: pathlib.Path, work: str, run_id: str, rules: str | None = None, env: dict | None = None,
-             extra: list[str] | None = None) -> subprocess.CompletedProcess:
-    cmd = [PY, str(VMPASS / "passrun.py"), "run", "--mode", mode, "--stage", str(root / "stage"), "--work", str(root / work),
+             extra: list[str] | None = None, stage: str = "stage") -> subprocess.CompletedProcess:
+    cmd = [PY, str(VMPASS / "passrun.py"), "run", "--mode", mode, "--stage", str(root / stage), "--work", str(root / work),
            "--store30", str(root / "s30"), "--store60", str(root / "s60"), "--run-id", run_id, "--inputs", str(root / "side"),
            "--manifest", str(root / "stage" / "manifest.tsv")]
     if mode == "s9":
@@ -92,11 +92,13 @@ def setUpModule() -> None:  # noqa: N802
     r = run_pass("s8", root, "work8k", "s8kill", rules=str(root / "rules_s8.json"), env={"VMPASS_FAIL_AFTER": "bucket"})
     assert r.returncode != 0
     # killed after p1_05, then resumed on a fresh work dir (a new Spot VM)
-    r = run_pass("s9", root, "workk", "kill", env={"VMPASS_FAIL_AFTER": "p1_05"})
+    shutil.copytree(root / "stage", root / "stagek")  # the resumed run frees its staged copy after bucketing
+    r = run_pass("s9", root, "workk", "kill", env={"VMPASS_FAIL_AFTER": "p1_05"}, stage="stagek")
     ENV["kill_rc"] = r.returncode
     ENV["kill_err"] = r.stderr
     shutil.rmtree(root / "workk")
-    r = run_pass("s9", root, "workk", "kill")
+    shutil.copytree(root / "stage", root / "stagek", dirs_exist_ok=True)  # a fresh VM re-stages
+    r = run_pass("s9", root, "workk", "kill", stage="stagek", extra=["--free-stage-after-bucket"])
     assert r.returncode == 0, r.stderr[-4000:]
     ENV["resume_out"] = r.stdout
 
@@ -702,6 +704,23 @@ class Progress(unittest.TestCase):
         self.assertGreater(e["rows_per_s"], 0)
         self.assertGreater(e["s9_phase1_hours"], 0)
 
+    def test_phase2_subchunks_and_model(self):
+        rec = json.loads((ENV["root"] / "s30" / "intermediates" / "base" / "_ledger" / "p2_00.json").read_text())
+        self.assertGreaterEqual(rec["stats"]["subchunks"], 4)
+        self.assertGreater(rec["stats"]["evidence_rows"], 0)
+        self.assertTrue(any(x.get("peak_rss_bytes") for x in rec["stats"]["statements"]))
+        m = json.loads((out30("s8") / "S8" / "projection.json").read_text())["projected"]["phase2_model"]
+        for k in ("pairs_rate1", "own_pairs", "inbound_pairs_rate1", "subchunks_s9", "seconds_rate1", "peak_bytes_rate1"):
+            self.assertIn(k, m)
+        self.assertGreaterEqual(m["pairs_rate1"], m["pairs_s200"])
+        self.assertGreater(m["seconds_rate1"], 0)
+
+    def test_free_stage_after_bucket(self):
+        self.assertFalse(list((ENV["root"] / "stagek").glob("*/**/*.parquet")))
+        self.assertTrue(list((ENV["root"] / "stage").glob("*/**/*.parquet")))
+        log = (ENV["root"] / "s30" / "intermediates" / "kill" / "_logs" / "progress.log").read_text()
+        self.assertIn("freed the staged extract after bucketing", log)
+
     def test_split_writes_one_file_per_partition(self):
         for name in ("eng", "rep", "fol", "blk", "cur", "cand"):
             files = sorted(pathlib.Path(f).name for f in glob.glob(f"{ENV['root']}/work/p1/i00/{name}/j*.parquet"))
@@ -784,6 +803,19 @@ class VmPython(unittest.TestCase):
                             "--mode", "s8"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr[-3000:])
         self.assertIn("selfcheck OK: python 3.11", r.stdout)
+
+
+class S9Rules(unittest.TestCase):
+    def test_s9_rules_apply_two_fit_halvings_above_the_floor(self):
+        s9 = rules_mod.load(VMPASS / "rules_s9.json")
+        s1 = rules_mod.load(rules_mod.S1)
+        self.assertFalse(s9.draft)
+        self.assertEqual(s9["samples"]["fit_halvings"], 2)
+        self.assertEqual({k: v for k, v in s9.d.items() if k not in ("status", "samples")},
+                         {k: v for k, v in s1.d.items() if k not in ("status", "samples")})
+        fit_full = 829809.6  # S8 s8-20261028b projection: fit_users_full
+        self.assertGreaterEqual(fit_full / 4, s9["o3"]["min_fit_users"])
+        self.assertLess(fit_full / 8, s9["o3"]["min_fit_users"])
 
 
 class Guards(unittest.TestCase):

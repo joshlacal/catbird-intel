@@ -158,6 +158,11 @@ def draft_rules() -> dict:
         "o6_recent_days": 30,
         "o8": {"max_posts": 64, "per_month": 6},
         "o12": {"emit": True, "per_stratum": 10000, "random_nonfollower_quotes": 200},
+        # O13: M1/M2 users' own likes, reposts and confirmed replies for eval_temporal.py,
+        # one row per (did, subject, kind, UTC day) = that day's last event; window (a, b]
+        # day-granular = (T - 90 d, 2026-09-12 + 30 d]. M1 users: h % m1_mod == m1_rem (the
+        # unhalved M1 sample, a superset of --m1-mod 200); M2: the uploaded cohort list.
+        "o13": {"window": ["2026-05-17", "2026-10-12"], "m1_mod": 100, "m1_rem": 13},
         "teacher": {"min_engagements": 2, "min_days": 2, "top_k": 200, "min_light_engagers": 50,
                     "follower_idf_alpha": 1.0, "sample": 1000, "cap": 500, "min_cos": 0.02, "seed": 42},
         "positive_control": {"like_day": "2026-10-20", "snapshot_min": "2026-10-21T00:00:00Z"},

@@ -68,6 +68,9 @@ class World:
         self.replier = self.users[10]
         self.p_main = self.producers[0]
         self.late_follower = self.users[11]
+        self.o13_user = self.users[254]           # cityHash64(did) % 100 == 13: an M1 user
+        self.o13_prod = self.producers[12]
+        self.m2_users = [self.users[50], self.users[51], self.users[254]]
 
 
 def build(stage: pathlib.Path, side: pathlib.Path, seed: int = 7) -> World:
@@ -237,6 +240,18 @@ def build(stage: pathlib.Path, side: pathlib.Path, seed: int = 7) -> World:
         commit(u, "app.bsky.feed.like", tid(ts("2026-10-20", 3600 + k)), subject=uri,
                t_ing=ts("2026-10-20", 7200) if k % 3 == 0 else None)
 
+    # O13 edge cases: users[254] is in the M1 hash sample (cityHash64(did) % 100 == 13)
+    u13, p13 = w.o13_user, w.o13_prod
+    pb = {d: [x for x in posts_by[p13] if dt.datetime.fromtimestamp(x[1], dt.timezone.utc).strftime("%Y-%m-%d") == d]
+          for d in ("2026-03-10", "2026-05-20", "2026-06-15", "2026-09-01", "2026-10-10")}
+    for (uri, _), when in ((pb["2026-03-10"][0], ts("2026-05-17", 86399)), (pb["2026-03-10"][1], ts("2026-05-18", 1)),
+                           (pb["2026-05-20"][0], ts("2026-07-01", 36000)), (pb["2026-05-20"][1], ts("2026-07-01", 54000)),
+                           (pb["2026-10-10"][0], ts("2026-10-12", 86399)), (pb["2026-10-10"][1], ts("2026-10-13", 1))):
+        commit(u13, "app.bsky.feed.like", tid(when), subject=uri, created_at=iso(when))
+    commit(u13, "app.bsky.feed.repost", tid(ts("2026-07-01", 43200)), subject=pb["2026-06-15"][0][0], created_at=iso(ts("2026-07-01", 43200)))
+    r13 = post(u13, pb["2026-09-01"][0][1] + 600, text="synthetic o13 reply", reply=pb["2026-09-01"][0][0])
+    commit(p13, "app.bsky.feed.like", tid(pb["2026-09-01"][0][1] + 4200), subject=r13, created_at=iso(pb["2026-09-01"][0][1] + 4200))
+
     rnd.shuffle(ev)
     rnd.shuffle(po)
     shards = 3
@@ -268,6 +283,7 @@ def build(stage: pathlib.Path, side: pathlib.Path, seed: int = 7) -> World:
     (side / "hide.tsv").write_text(w.hide_prod + "\n")
     (side / "intents.tsv").write_text("did\tbulkDataset\tprotocolBridging\tpublicAccessArchive\tsyntheticContentGeneration\n"
                                       f"{w.bulk_no}\tfalse\ttrue\ttrue\ttrue\n{w.synth_prod}\ttrue\ttrue\ttrue\tfalse\n")
+    (side / "m2_cohort.tsv").write_text("".join(d + "\n" for d in w.m2_users))
     (side / "comm_cand1.tsv").write_text("".join(f"{i}\t{i % 4}\n" for i in range(len(order))))
     (side / "comm_cand5.tsv").write_text("".join(f"{i}\t{i % 3}\n" for i in range(len(order))))
     w.pid = {p: i for i, p in enumerate(order)}

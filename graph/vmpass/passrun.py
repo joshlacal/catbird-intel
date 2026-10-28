@@ -38,7 +38,7 @@ import sql_p2  # noqa: E402
 from store import Ledger, open_store, sha256_file  # noqa: E402
 
 SIDE_REQUIRED = ("producers.tsv", "hide.tsv", "intents.tsv")
-SIDE_OPTIONAL = ("status.tsv", "plc.tsv", "comm_cand1.tsv", "comm_cand5.tsv")
+SIDE_OPTIONAL = ("status.tsv", "plc.tsv", "comm_cand1.tsv", "comm_cand5.tsv", "m2_cohort.parquet", "m2_cohort.tsv")
 SPOT_PER_HOUR = 2.715  # plan §7.1: n2-highmem-64 Spot + 8 x 375 GiB local SSD + boot
 
 
@@ -180,7 +180,9 @@ class Pass:
     def detect_inputs(self) -> None:
         self.have = {"status": (self.side / "status.tsv").exists() and (self.side / "status.tsv").stat().st_size > 0,
                      "plc": (self.side / "plc.tsv").exists() and (self.side / "plc.tsv").stat().st_size > 0,
-                     "maps": (self.side / "comm_cand1.tsv").exists() and (self.side / "comm_cand5.tsv").exists()}
+                     "maps": (self.side / "comm_cand1.tsv").exists() and (self.side / "comm_cand5.tsv").exists(),
+                     "m2_parquet": (self.side / "m2_cohort.parquet").exists(),
+                     "m2_tsv": (self.side / "m2_cohort.tsv").exists() and (self.side / "m2_cohort.tsv").stat().st_size > 0}
 
     # ---------- steps ----------
     def run(self) -> dict:
@@ -231,7 +233,7 @@ class Pass:
         self.step("o7", lambda: self.sql("o7", sql_global.o7_final(r, str(self.p1dir), str(self.out30 / "O7"))), uploads=("out30/O7",))
         final2 = {"o2": str(self.out30 / "O2"), "o3a": str(self.out30 / "O3a"), "o3b": str(self.out30 / "O3b"), "o6": str(self.out30 / "O6"),
                   "o8": str(self.out60 / "O8"), "o9": str(self.out60 / "O9"), "o11": str(self.out30 / "O11")}
-        p2opts = {"fit_flag": p1opts.get("fit_flag", "fit")}
+        p2opts = {"fit_flag": p1opts.get("fit_flag", "fit"), "o13_flag": "s200" if s8 else "o13m1"}
         if self.a.o3b_scales:  # S1 R4: p99.9 of |x_k| on S8's sample, hashed into R-S9
             p2opts["o3b_scales"] = json.loads(pathlib.Path(self.a.o3b_scales).read_text())
             self.stats["o3b_scales"] = {"path": self.a.o3b_scales, "sha256": sha256_file(pathlib.Path(self.a.o3b_scales))}
@@ -256,6 +258,8 @@ class Pass:
                 self.ensure(tag)
         self.step("maint", lambda: self.sql("maint", sql_global.maint_shuffle(r, str(self.work / main_sub), str(self.out30 / "O11-side")))
                   | self._o11_users(), uploads=("out30/O11-side",))
+        self.step("o13", lambda: self.sql("o13", sql_global.o13_merge(r, str(self.work / main_sub), str(self.out60 / "O13"))),
+                  uploads=("out60/O13",))
         self.step("teacher", lambda: self.teacher(main_sub), uploads=("out30/O4",))
         if r["o12"]["emit"]:
             self.step("o12", lambda: self.o12(main_sub), uploads=("out30/O12",))
@@ -433,7 +437,7 @@ def main() -> int:
     p.add_argument("--store30", required=True, help="gs://plan-30d bucket (or a local dir in tests)")
     p.add_argument("--store60", required=True, help="gs://plan-60d bucket (or a local dir in tests)")
     p.add_argument("--run-id", required=True)
-    p.add_argument("--inputs", required=True, help="dir or gs:// prefix with producers.tsv, hide.tsv, intents.tsv [status.tsv plc.tsv comm_cand{1,5}.tsv]")
+    p.add_argument("--inputs", required=True, help="dir or gs:// prefix with producers.tsv, hide.tsv, intents.tsv [status.tsv plc.tsv comm_cand{1,5}.tsv m2_cohort.parquet or .tsv]")
     p.add_argument("--rules", default=str(rules_mod.DRAFT))
     p.add_argument("--rules-sha256", default="")
     p.add_argument("--allow-draft-rules", action="store_true")

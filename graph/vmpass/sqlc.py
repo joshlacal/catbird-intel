@@ -58,7 +58,7 @@ def settings_sql(rules) -> str:
 S = {
     "didmap": "did String, uid UInt32, h UInt64, part UInt8, is_prod UInt8, ls UInt8, fit UInt8, m1 UInt8, "
               "pc UInt8, ho UInt8, s200 UInt8, s400 UInt8, hide UInt8, synth_no UInt8, bulk_no UInt8, purge UInt8, "
-              "purge_reason UInt8, plc_t UInt32, web UInt8, followers UInt32",
+              "purge_reason UInt8, plc_t UInt32, web UInt8, followers UInt32, o13m1 UInt8, m2c UInt8",
     "ev": "u UInt32, part UInt8, kind UInt8, coll UInt8, op UInt8, rk UInt64, t UInt32, tok UInt8, rev UInt64, "
           "seq UInt64, ing UInt32, src UInt8, subj UInt32, spart UInt8, sph UInt64, scoll UInt8, st UInt32, "
           "lh UInt64, gph UInt64, created UInt32, extra String, trunc UInt8, name String, descr String, feed String, "
@@ -93,6 +93,7 @@ S = {
     "e0": "u UInt32, p UInt32, cidx UInt8, withqn UInt8, noqn UInt8",
     "maintd": "u UInt32, p UInt32, cidx UInt8, n_up UInt32, n_pu UInt32, flag UInt8, kpart UInt8",
     "o12c": "stratum UInt8, kind UInt8, c_ph UInt64, c_a UInt32, x_ph UInt64, x_a UInt32, hsh UInt64",
+    "o13p": "m1 UInt8, m2 UInt8, did String, subject String, kind String, created_us Int64",
 }
 
 

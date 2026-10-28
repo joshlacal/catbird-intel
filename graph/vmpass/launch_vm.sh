@@ -60,7 +60,8 @@ stage_code() {  # code + inputs go up first (free ingress); the VM pulls them
     "producers.tsv=${PRODUCERS:-$lake/graph-build-v3/out-full-20261024/producers.tsv}"
     "hide.tsv=${HIDE:-$lake/s5-declarations-20261027/hide_from_recs_union.tsv}"
     "intents.tsv=${INTENTS:-$lake/s5-declarations-20261027/user_intents_records.tsv}"
-    "status.tsv=${STATUS:-}" "plc.tsv=${PLC:-}" "comm_cand1.tsv=${COMM1:-}" "comm_cand5.tsv=${COMM5:-}")
+    "status.tsv=${STATUS:-}" "plc.tsv=${PLC:-}" "comm_cand1.tsv=${COMM1:-}" "comm_cand5.tsv=${COMM5:-}"
+    "m2_cohort.parquet=${M2_COHORT:-}")   # S2a's m2_cohort.parquet (did, created_us): O13's M2 users
   for kv in "${inputs[@]}"; do
     local name="${kv%%=*}" path="${kv#*=}"
     if [[ -n "$path" ]]; then run "gcloud storage cp '$path' '$PLAN30/inputs/$RUN_ID/$name'"

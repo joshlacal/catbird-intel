@@ -159,6 +159,8 @@ def p2(rules, j: int, P1: str, G: str, buckets: str, o: str, final: dict, opts: 
     crw, hw = r["cr_window_s"], r["hostile_window_s"]
     k_min = r["k_min"]
     K_MIN[0] = k_min
+    o13flag = opts.get("o13_flag", "o13m1")
+    o13lo, o13hi = day_start(r["o13"]["window"][0]) + 86400, day_start(r["o13"]["window"][1]) + 86400
     t12 = day_start(r["twelve_month_start"])
     tn = cut["T_now"]
     LA = r["label_days_A"] * 86400
@@ -192,7 +194,7 @@ CREATE TABLE pij ENGINE = Join(ANY, LEFT, ph) AS SELECT ph, toUInt8(1) AS one, t
 
 -- typed inbound likes and reposts
 CREATE TABLE te ENGINE = MergeTree ORDER BY (u, a) AS
-SELECT u, a, ph, t, s_t, fol, m, ty, isr, toInt64(t) - toInt64(if(has = 1, tp, s_t)) AS lat FROM (
+SELECT u, a, ph, t, s_t, fol, m, ty, isr, typ, toInt64(t) - toInt64(if(has = 1, tp, s_t)) AS lat FROM (
   SELECT e.*, joinGet('pij', 'one', ph) AS has, joinGet('pij', 'tp', ph) AS tp, joinGet('pij', 'is_reply', ph) AS isr,
     joinGet('pij', 'par_a', ph) AS pa, joinGet('pij', 'root_a', ph) AS ra, joinGet('supj', 'sup', a) AS asup,
     toUInt8(multiIf(has = 0 AND asup = 1, {TY['LU']}, has = 0, 0, typ = 2, {TY['RP']}, isr = 0, {TY['LO']}, u = pa OR u = ra, {TY['ACK']}, {TY['LR']})) AS ty
@@ -464,6 +466,19 @@ SELECT stratum, kind, c_ph, c_a, x_ph, x_a, hsh FROM (
     WHERE kind = 2 AND fol = 0 AND t > {t12} AND joinGet('dmu', 'hide', u) = 0 AND joinGet('dmu', 'hide', a) = 0
       AND joinGet('dmu', 'synth_no', u) = 0 AND joinGet('dmu', 'synth_no', a) = 0)
 ) WHERE rn <= if(stratum = 6, {nq}, {per});
+-- O13: the M1/M2 users' own qualifying engagement toward this partition's authors (eval_temporal.py inputs).
+-- Kinds: like = LO/LR/LU likes, repost = RP/LU reposts, confirmed_reply = CR; ACK (courtesy) likes excluded.
+CREATE TABLE o13u ENGINE = Join(ANY, LEFT, uid) AS
+SELECT uid, did, {o13flag} AS m1x, m2c FROM file('{G}/didmap.parquet', Parquet, '{S['didmap']}') WHERE {o13flag} = 1 OR m2c = 1;
+{out(o + '/o13.parquet')}
+SELECT joinGet('o13u', 'm1x', u) AS m1, joinGet('o13u', 'm2c', u) AS m2, joinGet('o13u', 'did', u) AS did,
+  joinGet('dmd', 'did', a) AS subject, kind, toInt64(max(t)) * 1000000 AS created_us
+FROM (
+  SELECT u, a, if(typ = 2, 'repost', 'like') AS kind, t FROM te WHERE ty IN ({TY['LO']}, {TY['LR']}, {TY['LU']}, {TY['RP']})
+  UNION ALL SELECT u, a, 'confirmed_reply', t FROM tr WHERE kind = 1 AND cr_t > 0 AND gated = 0
+) WHERE (joinGet('o13u', 'm1x', u) = 1 OR joinGet('o13u', 'm2c', u) = 1) AND t >= {o13lo} AND t < {o13hi}
+GROUP BY u, a, kind, intDiv(t, 86400);
+INSERT INTO o1 SELECT 'o13_rows', toString(m1), toString(m2), '', count() FROM file('{o}/o13.parquet', Parquet, '{S['o13p']}') GROUP BY m1, m2;
 {out(o + '/o1.parquet')} SELECT * FROM o1;
 """
     return sql

@@ -254,6 +254,23 @@ def project(ps) -> dict:
     if total_b(o3(n_fit, n_m1, nf, False)) > O3_BUDGET:
         over.append("O3 over 8 GB before the shrink order")
     proj["kind_source_listing"] = kind_source
+    # O13 (eval_temporal.py engagement): rows for the sampled users toward partition-0 authors,
+    # x post-file skew for all authors, per sampled user, x the full M1 user count (h % m1_mod == m1_rem)
+    o13f = f"{ps.work}/p2_s200/j00/o13.parquet"
+    if glob.glob(o13f):
+        import os
+        o13_rows = int(_q(ps, f"SELECT count() FROM file('{o13f}', Parquet)")[0][0])
+        o13_bytes = os.path.getsize(o13f)
+        n13 = int(_q(ps, f"SELECT countIf(o13m1 = 1) FROM file('{ps.g}/didmap.parquet')")[0][0]) * frac_actor
+        rpu13 = o13_rows * skew2 / max(1, users_s)
+        bpr13 = o13_bytes / max(1, o13_rows)
+        m2n = int(_q(ps, f"SELECT countIf(m2c = 1) FROM file('{ps.g}/didmap.parquet')")[0][0])
+        proj["projected"]["O13"] = {
+            "rows_per_user": rpu13, "bytes_per_row_parquet": bpr13, "m1_users": n13,
+            "m1_rows": rpu13 * n13, "m1_bytes": rpu13 * n13 * bpr13,
+            "m2_users_listed": m2n, "m2_rows": rpu13 * m2n, "m2_bytes": rpu13 * m2n * bpr13,
+            "note": "M2 cohort users are new (Aug 15 - Sep 8), so rows_per_user overstates their rows",
+        }
     # S1 R4: O3b u8 scales = p99.9 of |x_k| on S8's sample (the S8-s200 O3a rows), written for R-S9
     if glob.glob(o3ag):
         names = [f["name"] for f in r.features]
@@ -287,6 +304,8 @@ def render(p: dict) -> str:
         f"  cross-shard duplicate rate: {pr['cross_shard_duplicate_rate']}",
         f"  sample share of rows: {p['measured']['sample_share_of_all_rows']:.4f}",
         f"  descoping triggered: {p['descoping_triggered'] or 'no'}",
+        "  O13: " + (f"{pr['O13']['m1_rows']:.0f} M1 rows, {pr['O13']['m1_bytes'] / gb:.2f} GB; {pr['O13']['m2_rows']:.0f} M2 rows "
+                     f"({pr['O13']['rows_per_user']:.1f} rows/user)" if "O13" in pr else "not measured"),
         "  kind / source_id (events): " + "; ".join(f"{x['source_id']}/{x['kind']} {x['rows']} rows {x['time_min']}..{x['time_max']}"
                                                      for x in p["kind_source_listing"]["events"]),
         "  modal-rev share by (src, kind) code on the sample: " + "; ".join(

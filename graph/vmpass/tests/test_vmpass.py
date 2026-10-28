@@ -240,7 +240,7 @@ class Phase2(unittest.TestCase):
         for t in ("1", "2", "3", "4", "5"):
             self.assertIn(t, types, f"type {t} missing: {types}")
         ack = ch(f"SELECT liker FROM file('{out30()}/O11/*.parquet') WHERE type = 3")
-        self.assertEqual({int(x[0]) for x in ack}, {uid(w.p_main)})
+        self.assertEqual({int(x[0]) for x in ack}, {uid(w.p_main), uid(w.o13_prod)})  # parent authors liking replies
         lu = ch(f"SELECT DISTINCT author FROM file('{out30()}/O11/*.parquet') WHERE type = 4")
         self.assertEqual({int(x[0]) for x in lu}, {uid(w.sup_prod)})
 
@@ -518,6 +518,73 @@ class GcsBatching(unittest.TestCase):
         self.assertEqual(len(calls), 3)  # two uploads (one per directory) and one download
         self.assertTrue(all("--custom-time=2026-10-28T00:00:00Z" in c for c in calls[:2]))
         self.assertTrue(calls[0].endswith("gs://b/outputs/r/x/"))
+
+
+class O13(unittest.TestCase):
+    """eval_temporal.py's m1_/m2_engagement.parquet: one row per (did, subject, kind, UTC day), last event."""
+
+    def _rows(self, f, did=None, subject=None):
+        w = f" WHERE did = '{did}'" + (f" AND subject = '{subject}'" if subject else "") if did else ""
+        return ch(f"SELECT did, subject, created_us, kind FROM file('{out60()}/O13/{f}'){w} ORDER BY created_us, kind")
+
+    def test_schema_matches_eval_temporal(self):
+        import pyarrow.parquet as pq
+        for f in ("m1_engagement.parquet", "m2_engagement.parquet"):
+            sch = pq.read_schema(out60() / "O13" / f)
+            self.assertEqual([(x.name, str(x.type)) for x in sch],
+                             [("did", "string"), ("subject", "string"), ("created_us", "int64"), ("kind", "string")])
+        sys.path.insert(0, str(VMPASS.parent))
+        import eval_temporal
+        kinds = {r[0] for r in ch(f"SELECT DISTINCT kind FROM file('{out60()}/O13/*.parquet')")}
+        self.assertTrue(kinds <= set(eval_temporal.ENGAGE_KINDS))
+        self.assertEqual(kinds, set(eval_temporal.ENGAGE_KINDS))
+
+    def test_window_matches_eval_temporal_constants(self):
+        sys.path.insert(0, str(VMPASS.parent))
+        import eval_temporal as et
+        lo, hi = ch(f"SELECT min(created_us), max(created_us) FROM file('{out60()}/O13/*.parquet')")[0]
+        self.assertGreaterEqual(int(lo), et.M1_HIST_US)                      # (T - 90 d, ...: from 05-18 00:00
+        self.assertLess(int(hi), et.M1_END_US + et.ENGAGED_DAYS_US)          # ..., 09-12 + 30 d]: before 10-13 00:00
+        self.assertLessEqual(et.M2_COHORT_END_US + et.ENGAGED_DAYS_US, et.M1_END_US + et.ENGAGED_DAYS_US)
+
+    def test_day_aggregation_and_window_edges(self):
+        w = ENV["world"]
+        rows = self._rows("m1_engagement.parquet", w.o13_user, w.o13_prod)
+        got = {(fixtures.dt.datetime.fromtimestamp(int(r[2]) / 1e6, fixtures.dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), r[3]) for r in rows}
+        self.assertIn(("2026-05-18T00:00:01", "like"), got)                  # first included second
+        self.assertNotIn("2026-05-17", " ".join(x[0] for x in got))         # last excluded second
+        self.assertIn(("2026-10-12T23:59:59", "like"), got)                  # last included second
+        self.assertNotIn("2026-10-13", " ".join(x[0] for x in got))
+        jul = [x for x in got if x[0].startswith("2026-07-01")]
+        self.assertEqual(sorted(jul), [("2026-07-01T12:00:00", "repost"), ("2026-07-01T15:00:00", "like")])  # two likes -> the later
+        self.assertTrue(any(k == "confirmed_reply" and d.startswith("2026-09-01") for d, k in got))
+        for f in ("m1_engagement.parquet", "m2_engagement.parquet"):
+            dup = ch(f"SELECT count() FROM (SELECT did, subject, kind, intDiv(created_us, 86400000000) d, count() c FROM "
+                     f"file('{out60()}/O13/{f}') GROUP BY ALL HAVING c > 1)")
+            self.assertEqual(int(dup[0][0]), 0, f)
+
+    def test_users_m1_hash_and_m2_list(self):
+        w = ENV["world"]
+        m1 = {r[0] for r in ch(f"SELECT DISTINCT did FROM file('{out60()}/O13/m1_engagement.parquet')")}
+        self.assertTrue(m1)
+        self.assertTrue(all(city_hash64(d) % 100 == 13 for d in m1))
+        m2 = {r[0] for r in ch(f"SELECT DISTINCT did FROM file('{out60()}/O13/m2_engagement.parquet')")}
+        self.assertTrue(m2 and m2 <= set(w.m2_users))
+        self.assertIn(w.o13_user, m2)
+
+    def test_exclusions(self):
+        w = ENV["world"]
+        dids = " ".join(" ".join(r) for r in ch(f"SELECT did, subject FROM file('{out60()}/O13/*.parquet')"))
+        self.assertNotIn(w.purged, dids)
+        self.assertNotIn(w.bulk_no, dids)
+        hid = ch(f"SELECT count() FROM file('{ENV['root']}/work/p2/j*/o13.parquet', Parquet) WHERE subject = '{w.hide_prod}'")
+        self.assertGreaterEqual(int(hid[0][0]), 0)  # A1: hide-from-recs subjects are not removed (behaviour, not post text)
+
+    def test_s8_projects_o13(self):
+        p = json.loads((out30("s8") / "S8" / "projection.json").read_text())["projected"]["O13"]
+        for k in ("m1_rows", "m1_bytes", "rows_per_user", "m2_rows"):
+            self.assertIn(k, p)
+        self.assertGreater(p["rows_per_user"], 0)
 
 
 class S1Rules(unittest.TestCase):

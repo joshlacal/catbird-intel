@@ -57,6 +57,14 @@ def didmap(rules, stage: str, side: str, o: str, have: dict) -> str:
               f"{lsx} IN {_in(ls['B2'])}, 4, 0)")
     hox = f"cityHash64(concat(did, '{smp['holdout_salt']}')) % {smp['holdout_mod']} = {smp['holdout_rem']}"
     status_join = "LEFT JOIN st ON st.did = a.did" if have.get("status") else ""
+    o13 = rules["o13"]
+    if have.get("m2_parquet"):
+        m2c = f"CREATE TABLE m2c ENGINE = Join(ANY, LEFT, did) AS SELECT DISTINCT did, toUInt8(1) AS f FROM file('{side}/m2_cohort.parquet', Parquet) WHERE did != '';"
+    elif have.get("m2_tsv"):
+        m2c = (f"CREATE TABLE m2c ENGINE = Join(ANY, LEFT, did) AS SELECT DISTINCT splitByChar('\\t', line)[1] AS did, toUInt8(1) AS f "
+               f"FROM file('{side}/m2_cohort.tsv', LineAsString, 'line String') WHERE startsWith(line, 'did:');")
+    else:
+        m2c = "CREATE TABLE m2c (did String, f UInt8) ENGINE = Join(ANY, LEFT, did);"
     status_cols = "st.did != '' AS in_listing, st.active AS relay_active" if have.get("status") else "0 AS in_listing, 1 AS relay_active"
     complete = 1 if (have.get("status") and rules["status_list_complete"]) else 0
     plc = (f"CREATE TABLE plc ENGINE = Join(ANY, LEFT, did) AS SELECT did, toUInt32(parseDateTimeBestEffortOrZero(created)) AS plc_t "
@@ -70,6 +78,7 @@ CREATE TABLE hide ENGINE = Join(ANY, LEFT, did) AS SELECT DISTINCT did, toUInt8(
 CREATE TABLE intents ENGINE = Join(ANY, LEFT, did) AS SELECT did, max(lower(bulk) = 'false') AS bulk_no, max(lower(synth) = 'false') AS synth_no
   FROM file('{side}/intents.tsv', TSV, 'did String, bulk String, bridging String, archive String, synth String') WHERE startsWith(did, 'did:') GROUP BY did;
 {plc}
+{m2c}
 {status}
 CREATE TABLE ids ENGINE = MergeTree ORDER BY did AS
 SELECT d AS did,
@@ -105,7 +114,8 @@ SELECT did, uid, h, toUInt8(h % {n}) AS part, toUInt8(is_prod) AS is_prod, toUIn
   toUInt8(joinGet('hide', 'f', did)) AS hide, toUInt8(joinGet('intents', 'synth_no', did)) AS synth_no,
   toUInt8(joinGet('intents', 'bulk_no', did)) AS bulk_no,
   toUInt8(purge_reason > 0) AS purge, purge_reason, joinGet('plc', 'plc_t', did) AS plc_t,
-  toUInt8(startsWith(did, 'did:web:')) AS web, toUInt32(followers) AS followers
+  toUInt8(startsWith(did, 'did:web:')) AS web, toUInt32(followers) AS followers,
+  toUInt8(h % {o13['m1_mod']} = {o13['m1_rem']}) AS o13m1, toUInt8(joinGet('m2c', 'f', did)) AS m2c
 FROM (
   SELECT a.*, cityHash64(a.did) AS h, {status_cols},
     toUInt8(multiIf(relay_active = 0 AND in_listing, 1, {complete} = 1 AND NOT in_listing, 2,
@@ -278,4 +288,14 @@ SELECT * FROM (
   UNION ALL
   SELECT 'cand5', c5(actor), c5(target), what, uniqExact(actor) FROM ev GROUP BY 2, 3, 4
 ) WHERE n_actors >= {k} AND c_actor >= 0 AND c_target >= 0;
+"""
+
+
+def o13_merge(rules, p2: str, o: str) -> str:
+    """O13: merge the per-partition rows into the two files eval_temporal.py reads."""
+    srcx = src(p2 + '/j*/o13.parquet', 'o13p')
+    return PRELUDE + settings_sql(rules) + f"""
+{out(o + '/m1_engagement.parquet')} SELECT did, subject, created_us, kind FROM {srcx} WHERE m1 = 1 ORDER BY did, subject, created_us, kind;
+{out(o + '/m2_engagement.parquet')} SELECT did, subject, created_us, kind FROM {srcx} WHERE m2 = 1 ORDER BY did, subject, created_us, kind;
+SELECT countIf(m1 = 1), countIf(m2 = 1), uniqExactIf(did, m1 = 1), uniqExactIf(did, m2 = 1) FROM {srcx} FORMAT TSV;
 """

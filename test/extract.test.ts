@@ -45,7 +45,10 @@ describe("eventToRows", () => {
       embed: {
         $type: "app.bsky.embed.recordWithMedia",
         record: { record: { uri: "at://did:plc:q/app.bsky.feed.post/3" } },
-        media: { $type: "app.bsky.embed.images", images: [{ alt: "a crab" }, { alt: "" }] },
+        media: { $type: "app.bsky.embed.images", images: [
+          { alt: "a crab", image: { $type: "blob", ref: { $link: "bafkreidtt757okdivxau7bl5jgwtmbaq62s7s67cd63greeaqbiq33msae" }, mimeType: "image/jpeg", size: 1 } },
+          { alt: "", image: { cid: "../../etc/passwd", mimeType: "image/png" } },
+        ] },
       },
       facets: [{ features: [{ $type: "app.bsky.richtext.facet#tag", tag: "RustLang" }, { $type: "app.bsky.richtext.facet#link", uri: "https://doc.rust-lang.org" }] }],
       labels: { $type: "com.atproto.label.defs#selfLabels", values: [{ val: "!no-unauthenticated" }] },
@@ -57,10 +60,24 @@ describe("eventToRows", () => {
     expect(r.quote_uri).toBe("at://did:plc:q/app.bsky.feed.post/3");
     expect(r.image_count).toBe(2);
     expect(r.has_alt_text).toBe(1);
+    expect(r.image_cids).toEqual(["bafkreidtt757okdivxau7bl5jgwtmbaq62s7s67cd63greeaqbiq33msae"]);
+    expect(r.image_mimes).toEqual(["image/jpeg"]);
     expect(r.facet_tags).toEqual(["rustlang"]);
     expect(r.facet_links).toEqual(["https://doc.rust-lang.org"]);
     expect(r.self_labels).toEqual(["!no-unauthenticated"]);
     expect(r.is_deleted).toBe(0);
+  });
+
+  test("legacy blob form and plain image posts keep their CIDs", () => {
+    const rows = eventToRows(commit("app.bsky.feed.post", "create", {
+      text: "wip",
+      createdAt: TIME,
+      embed: { $type: "app.bsky.embed.images", images: [{ alt: "", image: { cid: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", mimeType: "image/png" } }] },
+    }));
+    expect(rows[0]!.row.image_cids).toEqual(["QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"]);
+    expect(rows[0]!.row.image_mimes).toEqual(["image/png"]);
+    const plain = eventToRows(commit("app.bsky.feed.post", "create", { text: "no media", createdAt: TIME }));
+    expect(plain[0]!.row.image_cids).toEqual([]);
   });
 
   test("delete writes a tombstone row in the same partition plus a ledger row", () => {

@@ -86,9 +86,23 @@ function selfLabels(record: Obj): string[] {
     .slice(0, 16);
 }
 
+// CIDv1 base32 (b...) or legacy CIDv0 (Qm...); anything else is dropped so a
+// CDN URL built from it can never carry a path or query.
+const CID_RE = /^(b[a-z2-7]{20,120}|Qm[1-9A-HJ-NP-Za-km-z]{44})$/;
+
+/** Blob CID and mime type, current (`ref.$link`) or legacy (`cid`) form. */
+function blobRef(blob: Obj): { cid: string; mime: string } | null {
+  const ref = isObj(blob.ref) ? str(blob.ref.$link, 128) : str(blob.cid, 128);
+  if (!CID_RE.test(ref)) return null;
+  return { cid: ref, mime: str(blob.mimeType, 64) };
+}
+
 /** Pull embed-derived fields out of a post record. */
 function postEmbed(embed: unknown) {
-  const out = { embedType: "", imageCount: 0, hasAlt: 0, hasVideo: 0, externalUri: "", quoteUri: "" };
+  const out = {
+    embedType: "", imageCount: 0, hasAlt: 0, hasVideo: 0, externalUri: "", quoteUri: "",
+    imageCids: [] as string[], imageMimes: [] as string[],
+  };
   if (!isObj(embed)) return out;
   const type = str(embed.$type, 128);
   out.embedType = type.replace(/^app\.bsky\.embed\./, "");
@@ -99,6 +113,12 @@ function postEmbed(embed: unknown) {
       const images = arr(m.images);
       out.imageCount = Math.min(images.length, 255);
       out.hasAlt = images.some((i) => isObj(i) && str(i.alt).trim().length > 0) ? 1 : 0;
+      for (const i of images.slice(0, 16)) {
+        const blob = isObj(i) && isObj(i.image) ? blobRef(i.image) : null;
+        if (!blob) continue;
+        out.imageCids.push(blob.cid);
+        out.imageMimes.push(blob.mime);
+      }
     } else if (t === "app.bsky.embed.video") {
       out.hasVideo = 1;
       out.hasAlt = str(m.alt).trim().length > 0 ? 1 : 0;
@@ -222,6 +242,8 @@ export function eventToRows(ev: RawEventLike): RowOut[] {
           embed_type: embed.embedType,
           image_count: embed.imageCount,
           has_alt_text: embed.hasAlt,
+          image_cids: embed.imageCids,
+          image_mimes: embed.imageMimes,
           has_video: embed.hasVideo,
           external_uri: embed.externalUri,
           facet_links: facets.links,

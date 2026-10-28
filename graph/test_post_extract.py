@@ -84,6 +84,65 @@ class PostRows(unittest.TestCase):
             self.assertEqual(table.column("operation").to_pylist(), ["create", "delete"])
 
 
+CID_A = "bafkreidtt757okdivxau7bl5jgwtmbaq62s7s67cd63greeaqbiq33msae"
+CID_B = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+
+
+def blob(cid):
+    return {"$type": "blob", "ref": {"$link": cid}, "mimeType": "image/jpeg", "size": 1234}
+
+
+class ImageCids(unittest.TestCase):
+    def test_images_embed_in_record_order(self):
+        rec = {"text": "two", "embed": {"$type": "app.bsky.embed.images", "images": [
+            {"alt": "a", "image": blob(CID_A)}, {"alt": "b", "image": blob(CID_B)}]}}
+        row = age.post_row(commit(rec), "gce_main")
+        self.assertEqual(row["image_cids"], [CID_A, CID_B])
+        self.assertEqual((row["image_count"], row["image_alts"]), (2, ["a", "b"]))
+
+    def test_record_with_media_images(self):
+        rec = {"embed": {"$type": "app.bsky.embed.recordWithMedia",
+                         "record": {"record": {"uri": "at://did:plc:q/app.bsky.feed.post/3"}},
+                         "media": {"$type": "app.bsky.embed.images", "images": [{"alt": "", "image": blob(CID_A)}]}}}
+        self.assertEqual(age.post_row(commit(rec), "gce_main")["image_cids"], [CID_A])
+
+    def test_legacy_blob_cid_form(self):
+        rec = {"embed": {"$type": "app.bsky.embed.images",
+                         "images": [{"alt": "", "image": {"cid": CID_B, "mimeType": "image/png"}}]}}
+        self.assertEqual(age.post_row(commit(rec), "gce_main")["image_cids"], [CID_B])
+
+    def test_video_external_and_record_have_none(self):
+        for embed in ({"$type": "app.bsky.embed.video", "video": blob(CID_A), "alt": "v"},
+                      {"$type": "app.bsky.embed.external",
+                       "external": {"uri": "https://x.test", "thumb": blob(CID_A)}},
+                      {"$type": "app.bsky.embed.recordWithMedia", "record": {"record": {"uri": "at://x"}},
+                       "media": {"$type": "app.bsky.embed.video", "video": blob(CID_A)}},
+                      {"$type": "app.bsky.embed.record", "record": {"uri": "at://x"}}):
+            self.assertEqual(age.post_row(commit({"embed": embed}), "gce_main")["image_cids"], [], embed["$type"])
+
+    def test_malformed_or_unsafe_cids_are_dropped(self):
+        rec = {"embed": {"$type": "app.bsky.embed.images", "images": [
+            {"image": blob("../../avatar/plain/did:plc:x/" + CID_A)},  # path injection
+            {"image": blob(CID_A.upper())},                            # not lowercase base32
+            {"image": blob("Qm" + "a" * 44)},                          # CIDv0
+            {"image": {"ref": 5}}, {"image": "nope"}, {"alt": "no image"}, 7,
+            {"image": blob(CID_B)}]}}
+        row = age.post_row(commit(rec), "gce_main")
+        self.assertEqual(row["image_cids"], [CID_B])
+
+    def test_delete_and_no_embed_have_empty_list(self):
+        self.assertEqual(age.post_row(commit(None, operation="delete"), "gce_main")["image_cids"], [])
+        self.assertEqual(age.post_row(commit({"text": "x"}), "gce_main")["image_cids"], [])
+
+    def test_new_column_is_appended_last(self):
+        names = POST_SCHEMA.names
+        self.assertEqual(names[-1], "image_cids")
+        self.assertEqual(names[:-1], ["source_id", "seq", "time", "did", "rkey", "rev", "operation", "created_at",
+                                      "text", "langs", "reply_root", "reply_parent", "embed_type", "quote_uri",
+                                      "external_uri", "image_count", "image_alts", "facet_links", "facet_tags",
+                                      "facet_mentions", "self_labels"])
+
+
 class AllContent(unittest.TestCase):
     def test_split_writes_posts_and_events_and_keeps_generic_records(self):
         age._ACTIVE_COLLECTIONS = set(age.ALL_COLLECTIONS)

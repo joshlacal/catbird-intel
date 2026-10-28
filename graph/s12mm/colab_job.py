@@ -325,7 +325,9 @@ def batch():
     work, out = os.path.join(ROOT, "work", name), os.path.join(ROOT, "out", name)
     srv = None
     args = ["run"] + common_args(work, out) + ["--posts", os.path.join(inb, "units"), "--soft-tokens",
-                                               os.environ.get("S12C_SOFT", "70"), "--unit-rows", str(meta["unit_rows"])]
+                                               os.environ.get("S12C_SOFT", "70"), "--unit-rows", str(meta["unit_rows"]),
+                                               "--text-bs", os.environ.get("S12C_TEXT_BS_RUN", "64"),
+                                               "--mm-bs", os.environ.get("S12C_MM_BS_RUN", "8")]
     if REHEARSAL:
         sys.path.insert(0, os.path.join(CODE, "s12mm"))
         from synth import ImageServer

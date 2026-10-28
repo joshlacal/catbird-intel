@@ -10,6 +10,10 @@ The Mac is the source of truth. A Colab VM, its disk and everything uploaded to 
   RUN_DIR/sessions.tsv            one line per session event: created / stopped / dropped / stopped(trap) ...
                                   The driver only ever stops sessions recorded here for this run.
   RUN_DIR/spend/<session>.json    t_created, t_last_seen (heartbeat), t_stopped, units/h, `colab usage` balances.
+  RUN_DIR/ledger/claims/<unit>.json   a lease {owner, expires}: parallel sessions (--sessions N) each take disjoint
+                                  units by claiming them under an flock'd lock; a lease that expires (a dropped
+                                  session, a killed driver) puts its units back in the pool, and a lane that sees
+                                  its session drop releases its leases at once. Marking a unit done removes its lease.
 
 Spend = sum over sessions of (t_stopped, else t_last_seen + grace) - t_created, x units/h. The guard uses the
 larger of that and the account balance drop since the run's first session (account-wide, so it over-counts when
@@ -17,15 +21,18 @@ another Colab job runs at the same time: conservative). Stdlib only, except `ver
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import pathlib
 import re
 import shutil
 import tempfile
+import threading
 import time
 
 GRACE_S = 900
+_THREAD_LOCKS: dict = {}
 
 
 def atomic_write(path, text):
@@ -72,6 +79,88 @@ class RunLedger:
         for d in ("ledger", "vectors/units", "vectors/receipt", "spend", "incoming", "logs"):
             (self.dir / d).mkdir(parents=True, exist_ok=True)
         self.tsv = self.dir / "sessions.tsv"
+        (self.dir / "ledger" / "claims").mkdir(exist_ok=True)
+        self._tlock = _THREAD_LOCKS.setdefault(str(self.dir.resolve()), threading.RLock())
+
+    # --- leases -----------------------------------------------------------------------------------------------
+    class _Locked:
+        def __init__(self, led):
+            self.led = led
+
+        def __enter__(self):
+            self.led._tlock.acquire()
+            self.fh = open(self.led.dir / "ledger" / "claims.lock", "a")
+            fcntl.flock(self.fh, fcntl.LOCK_EX)     # also excludes a second driver process on this run dir
+            return self
+
+        def __exit__(self, *exc):
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
+            self.led._tlock.release()
+
+    def _claim_path(self, unit):
+        return self.dir / "ledger" / "claims" / f"{unit}.json"
+
+    def claims(self, now=None):
+        """{unit: lease} of leases that have not expired."""
+        now = self.clock() if now is None else now
+        out = {}
+        for p in (self.dir / "ledger" / "claims").glob("*.json"):
+            try:
+                c = json.loads(p.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if c.get("expires", 0) > now:
+                out[p.stem] = c
+        return out
+
+    def claim(self, owner, manifest, n, ttl_s):
+        """Lease up to n units that are neither done nor under a live lease (anyone's, including owner's own
+        in-flight batches), in manifest order."""
+        with self._Locked(self):
+            now, done, live = self.clock(), self.done(), self.claims()
+            got = []
+            for u in manifest["units"]:
+                if len(got) >= n:
+                    break
+                if u["unit"] in done or u["unit"] in live:
+                    continue
+                atomic_write(self._claim_path(u["unit"]), json.dumps({"owner": owner, "t": now, "expires": now + ttl_s}))
+                got.append(u)
+            return got
+
+    def renew(self, owner, units, ttl_s):
+        with self._Locked(self):
+            now = self.clock()
+            for u in units:
+                p = self._claim_path(u)
+                try:
+                    c = json.loads(p.read_text())
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if c.get("owner") == owner:
+                    atomic_write(p, json.dumps({**c, "expires": now + ttl_s}))
+
+    def release(self, owner, units=None):
+        """Drop owner's leases (all of them, or those on `units`)."""
+        with self._Locked(self):
+            want = None if units is None else set(units)
+            n = 0
+            for p in (self.dir / "ledger" / "claims").glob("*.json"):
+                if want is not None and p.stem not in want:
+                    continue
+                try:
+                    c = json.loads(p.read_text())
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if c.get("owner") == owner:
+                    p.unlink(missing_ok=True)
+                    n += 1
+            return n
+
+    def unclaimed_todo(self, manifest):
+        live = self.claims()
+        return [u for u in self.todo(manifest) if u["unit"] not in live]
 
     # --- units ------------------------------------------------------------------------------------------------
     def done(self) -> dict:
@@ -116,6 +205,7 @@ class RunLedger:
         self.mark(unit_meta["unit"], {"sha256": got, "rows": unit_meta["rows"], "file": str(dst.relative_to(self.dir)),
                                       "input_sha256": unit_meta.get("sha256"), "vm": vm_rec,
                                       "verified_at": self.clock()})
+        self._claim_path(unit_meta["unit"]).unlink(missing_ok=True)
         return True, None
 
     # --- sessions and spend -------------------------------------------------------------------------------------

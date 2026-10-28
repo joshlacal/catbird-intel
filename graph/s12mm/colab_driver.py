@@ -1,9 +1,9 @@
 """S7g benchmark and S12m main run on Colab L4 sessions (GCE had no L4 capacity). PRINT-ONLY unless --execute.
 
   colab_driver.py bench  --run-id ID [--execute] [--cap 3] [--ramp] [--rps 50]
-  colab_driver.py run    --run-id ID --units DIR [--execute] [--cap 120] [--batch-units 24] [--rps 50]
-                         [--allow-above-etiquette] [--session-max-h 11.5] [--max-drops 3] [--max-sessions 0]
-                         [--max-batches 0]
+  colab_driver.py run    --run-id ID --units DIR [--execute] [--cap 220] [--sessions 1..3] [--batch-units 24]
+                         [--rps 50 per session] [--allow-above-etiquette] [--soft-tokens 70] [--text-bs 64] [--mm-bs 8]
+                         [--session-max-h 11.5] [--max-drops 3] [--max-sessions 0 per lane] [--max-batches 0]
   colab_driver.py status --run-id ID [--units DIR]
   common: [--gate DIR] [--run-dir DIR] [--gpu L4] [--max-label-lag-h 36]
 
@@ -22,7 +22,12 @@ bench_producers.txt); run: one batch-<k>.tar per batch of input units (split_uni
 
 bench: one L4 session, setup exec then bench exec under a unit cap (default 3; the job's guard and the exec
 timeout both derive from it); downloads bench_results.tar into RUN_DIR/results/.
-run: loops until every unit of the manifest is in the Mac ledger (colab_ledger.py) or the run's unit cap would be
+run: --sessions N (1..3) parallel lanes, each with its own L4 session (own CLI state file, own sessions.tsv
+lines, stopped by the exit trap), taking disjoint units from the shared Mac ledger by lease (colab_ledger.claim;
+a dropped session's leases are released at once, a killed driver's expire). `colab new` runs one lane at a time;
+if it fails for a lane after another lane has a session, that lane retires and the run continues with fewer.
+The unit guard sums every session; each batch may spend an equal share of what is left under the cap. Each lane
+loops until every unit of the manifest is in the Mac ledger (colab_ledger.py) or the run's unit cap would be
 crossed: session -> setup -> batches (upload batch k+1 while batch k runs; download + verify batch k while k+1
 runs) -> stop at --session-max-h or a drop -> next session resumes from the ledger. A batch that a drop
 interrupts is simply redone. Stops and asks (exit 6) when the gate bundle is older than --max-label-lag-h, exits
@@ -57,6 +62,8 @@ import colab_ledger as CL  # noqa: E402
 LAKE = pathlib.Path.home() / "catbird-lake-local"
 REAL_COLAB = pathlib.Path.home() / ".local/bin/colab"
 RATES = {"L4": 1.71, "A100": 5.4}
+L4_TEXT_PPS, L4_MM70_PPS = 432.0, 31.3      # S7g s7g-colab-20261028a on a Colab L4
+MAX_SESSIONS = 3
 REMOTE = "/content/s12mm"
 UPLOAD_CHUNK = int(os.environ.get("S12C_UPLOAD_CHUNK", 16 * 1024 * 1024))  # larger single uploads hit a contents-API 500 (2026-10-28)
 REMOTE_ROOT_EXPR = ("os.path.join(os.environ.get('S12C_CONTENT', '/content') if os.environ.get('S12C_REHEARSAL') == '1'"
@@ -107,12 +114,22 @@ class Stop(Exception):
 # --- Colab CLI ------------------------------------------------------------------------------------------------
 
 class Colab:
-    def __init__(self, a, led):
+    """The colab CLI with one --config state file. The CLI's own docs say to isolate parallel runs by state file,
+    so every session gets its own (RUN_DIR/colab-state/<session>.json, derivable from the name for a later
+    reconcile); the driver's account-level calls (usage, sessions receipts) use RUN_DIR/colab-cli-state.json."""
+
+    def __init__(self, a, led, cfg=None, log=None, lock=None):
+        self.a = a
         self.bin = os.environ.get("S12C_COLAB_BIN", str(REAL_COLAB))
-        self.cfg = str(pathlib.Path(a.run_dir) / "colab-cli-state.json")
+        self.cfg = str(cfg or pathlib.Path(a.run_dir) / "colab-cli-state.json")
         self.execute, self.led = a.execute, led
-        self.log = open(led.dir / "logs" / f"driver-{time.strftime('%Y%m%dT%H%M%S')}.log", "a")
-        self.lock = threading.Lock()
+        self.log = log or open(led.dir / "logs" / f"driver-{time.strftime('%Y%m%dT%H%M%S')}.log", "a")
+        self.lock = lock or threading.Lock()
+
+    def for_session(self, name):
+        d = pathlib.Path(self.a.run_dir) / "colab-state"
+        d.mkdir(exist_ok=True)
+        return Colab(self.a, self.led, d / f"{name}.json", self.log, self.lock)
 
     def __call__(self, *args, timeout=None, tee=None):
         cmd = [self.bin, "--config", self.cfg, *map(str, args)]
@@ -136,14 +153,20 @@ class Colab:
         return rc, out
 
 
+_SEQ = itertools.count(1)       # session names stay unique when a lane replaces a session within the same second
+
+
 class Session:
     """One named Colab session. Stopped on any exit by the driver's handler; only sessions this object created."""
 
-    def __init__(self, drv, mode):
-        self.drv, self.c, self.led = drv, drv.colab, drv.led
+    def __init__(self, drv, mode, lane=0):
+        self.drv, self.led, self.lane = drv, drv.led, lane
         self.gpu = drv.a.gpu
-        self.name = f"s12c-{mode}-{re.sub(r'[^a-z0-9]+', '-', drv.a.run_id.lower())}-{time.strftime('%Y%m%dT%H%M%S')}"
+        self.name = (f"s12c-{mode}-{re.sub(r'[^a-z0-9]+', '-', drv.a.run_id.lower())}"
+                     f"{f'-l{lane}' if mode == 'run' else ''}-{time.strftime('%Y%m%dT%H%M%S')}-{next(_SEQ)}")
+        self.c = drv.colab.for_session(self.name)
         self.live, self.t0, self.rate = False, None, RATES[self.gpu]
+        self._lk = threading.Lock()
 
     def create(self):
         _rc, u0 = self.c("usage")
@@ -174,9 +197,10 @@ class Session:
         return rc == 0 and self.name in out
 
     def stop(self, why="stopped"):
-        if not self.live:
-            return
-        self.live = False
+        with self._lk:                     # a lane and the exit trap may both try
+            if not self.live:
+                return
+            self.live = False
         self.c("stop", "-s", self.name, timeout=300)
         if self.c.execute:
             _rc, u = self.c("usage")
@@ -184,7 +208,8 @@ class Session:
             self.led.spend_update(self.name, t_stopped=time.time(), ended=why, balance_after=CL.parse_usage(u)["balance"])
 
     def dropped(self):
-        self.live = False
+        with self._lk:
+            self.live = False
         if self.c.execute:
             self.led.record(self.name, "dropped", "-")
             self.led.spend_update(self.name, t_stopped=time.time(), ended="dropped")
@@ -280,10 +305,14 @@ class Driver:
         self.a = a
         self.led = CL.RunLedger(a.run_dir)
         self.colab = Colab(a, self.led)
-        self.session = None
+        self.session = None                      # bench's one session
+        self.live_sessions = set()               # run: every live session across lanes (the exit trap stops these)
+        self.lock, self.create_lock = threading.Lock(), threading.Lock()
+        self.halt = threading.Event()
+        self.fatal = None
+        self.lane_end = {}
         self.stage = self.led.dir / "stage"
         self.stage.mkdir(exist_ok=True)
-        self.pool = ThreadPoolExecutor(2, thread_name_prefix="xfer")
 
     def say(self, *x):
         msg = " ".join(str(v) for v in x)
@@ -339,14 +368,14 @@ class Driver:
         return files
 
     def mkdirs(self, s):
-        p = self.stage / "_mkdir.py"
+        p = self.stage / f"_mkdir-{s.name}.py"
         p.write_text("import os\nfor d in ['in', 'batches', 'dl', 'out', 'work', 'in/bench']:\n"
                      "    os.makedirs(os.path.join(os.environ.get('S12C_CONTENT', '/content') if os.environ.get('S12C_REHEARSAL') == '1'"
                      " else '/content', 's12mm', d), exist_ok=True)\nprint('mkdir ok')\n")
         envs = []
         for k, v in self.rehearsal_env().items():
             envs += ["--env", f"{k}={v}"]
-        rc, out = self.colab("exec", "-s", s.name, "-f", p, "--timeout", 120, *envs, timeout=400)
+        rc, out = s.c("exec", "-s", s.name, "-f", p, "--timeout", 120, *envs, timeout=400)
         if self.a.execute and (rc != 0 or "mkdir ok" not in out):
             raise Stop(EXIT_SESSION, f"remote mkdir failed: {out[-300:]}")
 
@@ -357,7 +386,7 @@ class Driver:
         if local.stat().st_size <= UPLOAD_CHUNK:
             self._upload_one(s, local, remote)
             return
-        parts_dir = self.stage / "_parts" / remote.replace("/", "__")
+        parts_dir = self.stage / "_parts" / s.name / remote.replace("/", "__")
         parts_dir.mkdir(parents=True, exist_ok=True)
         names = []
         with open(local, "rb") as f:
@@ -370,7 +399,7 @@ class Driver:
                 names.append(p)
         for p in names:
             self._upload_one(s, p, f"{remote}.{p.name}")
-        join = self.stage / "_join.py"
+        join = parts_dir / "_join.py"
         join.write_text(
             "import hashlib, os, sys\n"
             f"dst = os.path.join({REMOTE_ROOT_EXPR}, {remote!r})\n"
@@ -387,14 +416,14 @@ class Driver:
         envs = []
         for k, v in self.rehearsal_env().items():
             envs += ["--env", f"{k}={v}"]
-        rc, out = self.colab("exec", "-s", s.name, "-f", join, "--timeout", 600, *envs, timeout=900)
+        rc, out = s.c("exec", "-s", s.name, "-f", join, "--timeout", 600, *envs, timeout=900)
         if self.a.execute and (rc != 0 or "join ok" not in out):
             raise Stop(EXIT_SESSION, f"upload {remote}: remote join failed: {out[-300:]}")
         for p in names:
             p.unlink()
 
     def _upload_one(self, s, local, remote):
-        rc, out = self.colab("upload", "-s", s.name, local, f"{REMOTE}/{remote}", timeout=3600)
+        rc, out = s.c("upload", "-s", s.name, local, f"{REMOTE}/{remote}", timeout=3600)
         if self.a.execute and rc != 0:
             raise Stop(EXIT_SESSION, f"upload {remote} failed: {out[-300:]}")
 
@@ -445,7 +474,7 @@ class Driver:
         res = self.led.dir / "results"
         res.mkdir(exist_ok=True)
         m = re.search(r"\[s12c\] BENCH RC (-?\d+) TAR (\S+) (\d+) ([0-9a-f]{64})", out)
-        self.colab("download", "-s", s.name, f"{REMOTE}/dl/bench_results.tar", res / "bench_results.tar", timeout=3600)
+        s.c("download", "-s", s.name, f"{REMOTE}/dl/bench_results.tar", res / "bench_results.tar", timeout=3600)
         verdict = {"exec_rc": rc, "job_rc": int(m.group(1)) if m else None}
         if a.execute and m:
             got = CL.sha256_file(res / "bench_results.tar") if (res / "bench_results.tar").exists() else None
@@ -471,17 +500,19 @@ class Driver:
         return man
 
     def unit_secs_estimate(self, man):
-        """Seconds per unit: measured wall from the ledger once there is some, else fetch-or-GPU priors."""
+        """Seconds per unit in one session: measured wall from the ledger once there is some, else the S7g L4
+        measurements (text 432 posts/s at batch 64, mm70 31.3 posts/s at batch 8; the fetch of unit k+1 overlaps
+        the GPU work of unit k, so a unit costs the larger of the two)."""
         walls = [r["vm"].get("wall_s") for r in self.led.done().values() if isinstance(r.get("vm"), dict) and r["vm"].get("wall_s")]
         if len(walls) >= 3:
             return sum(walls[-20:]) / len(walls[-20:]) * 1.15
         t = man["totals"]
         per_posts = t["posts"] / max(1, t["units"])
         imgs = t["images"] / max(1, t["units"])
-        return max(imgs / float(self.a.rps), per_posts / 2000 + t["image_posts"] / max(1, t["units"]) / 120) * 1.2 + 10
+        return max(imgs / float(self.a.rps), per_posts / L4_TEXT_PPS + t["image_posts"] / max(1, t["units"]) / L4_MM70_PPS) * 1.15 + 10
 
     def make_batch(self, s, k, units):
-        name = f"{s.name[-15:]}-b{k:03d}"
+        name = f"l{s.lane}-{s.name[-15:]}-b{k:03d}"
         d = self.stage / "batches" / name
         (d / "units").mkdir(parents=True, exist_ok=True)
         for u in units:
@@ -509,7 +540,7 @@ class Driver:
             return [], rc, []
         inc = self.led.dir / "incoming" / name
         tar = self.led.dir / "incoming" / f"{name}.tar"
-        r, _out = self.colab("download", "-s", s.name, f"{REMOTE}/dl/{name}.tar", tar, timeout=3600)
+        r, _out = s.c("download", "-s", s.name, f"{REMOTE}/dl/{name}.tar", tar, timeout=3600)
         if not self.a.execute:
             return [], rc, []
         if r != 0 or not tar.exists() or CL.sha256_file(tar) != m.group(5):
@@ -550,201 +581,257 @@ class Driver:
         spent, det = self.led.spent_units(balance_now=self.balance_now())
         rate = RATES[a.gpu]
         need = len(todo) * per_unit / 3600 * rate
-        self.say(f"S12m {a.run_id}: {len(todo)} of {man['totals']['units']} units to do, ~{per_unit:.0f} s/unit at "
-                 f"{a.rps} req/s -> ~{need:.1f} units more; spent {det}; cap {a.cap}; gate age {age:.1f} h")
+        self.say(f"S12m {a.run_id}: {len(todo)} of {man['totals']['units']} units to do, ~{per_unit:.0f} s/unit/session "
+                 f"at {a.rps} req/s per session, {a.sessions} parallel session(s) -> ~{need:.1f} units more; spent {det}; "
+                 f"cap {a.cap}; gate age {age:.1f} h")
         if spent + need > a.cap:
             self.say(f"WARNING: projected {spent + need:.1f} units exceeds the cap {a.cap}; the guard will stop at the cap")
         if not todo:
             self.say("nothing to do: every unit is in the ledger")
             return 0
-        files = self.stage_common({})
+        self.files = self.stage_common({})
         self.receipts("before")
-        drops, sessions = 0, 0
-        rc = 0
+        self.per_unit = per_unit
+        lanes = [threading.Thread(target=self.lane, args=(i,), name=f"lane{i}", daemon=True) for i in range(a.sessions)]
+        for i, t in enumerate(lanes):
+            t.start()
+            if i + 1 < len(lanes):
+                self.halt.wait(0.2 if a.rehearsal else 30)    # stagger session creation and setup downloads
         try:
-            while self.led.todo(man):
+            while any(t.is_alive() for t in lanes):
+                for t in lanes:
+                    t.join(0.5)
+        finally:
+            self.halt.set()
+            for t in lanes:
+                t.join(5)
+            for s in list(self.live_sessions):
+                s.stop("stopped(trap)")
+            self.receipts("after")
+        done = self.led.done()
+        spent, det = self.led.spent_units(balance_now=self.balance_now())
+        self.say(f"ledger: {len(done)} of {man['totals']['units']} units done; spend {det}; lanes {self.lane_end}")
+        if self.fatal:
+            self.say(f"STOP ({self.fatal.code}): {self.fatal.why}")
+            return self.fatal.code
+        if self.led.todo(man) and a.execute and not a.max_sessions:
+            return EXIT_SESSION      # every lane ended (no session could be had) with units left
+        return 0
+
+    def fail(self, e):
+        with self.lock:
+            if self.fatal is None:
+                self.fatal = e
+        self.halt.set()
+
+    def lane(self, i):
+        """One parallel lane: sessions one after another, each taking disjoint leased units from the shared ledger."""
+        a, man = self.a, self.man
+        drops, sessions = 0, 0
+        try:
+            while self.led.unclaimed_todo(man) and not self.halt.is_set():
                 if a.max_sessions and sessions >= a.max_sessions:
-                    self.say(f"--max-sessions {a.max_sessions} reached")
-                    break
+                    self.lane_end[i] = "max-sessions"
+                    return
                 spent, det = self.led.spent_units(balance_now=self.balance_now())
-                if spent + per_unit / 3600 * rate + 0.5 > a.cap:
+                if spent + self.per_unit / 3600 * RATES[a.gpu] * self.n_live() + 0.5 > a.cap:
                     raise Stop(EXIT_CAP, f"unit cap: spent {det} of {a.cap}; another session would cross it")
                 self.check_gate()
-                s = self.session = Session(self, "run").create()
+                with self.create_lock:              # one `colab new` at a time: the rate delta stays attributable
+                    if self.halt.is_set():
+                        return
+                    s = Session(self, "run", lane=i)
+                    try:
+                        s.create()
+                    except Stop as e:
+                        if i == 0 and sessions == 0 and not self.live_sessions:
+                            raise
+                        self.lane_end[i] = f"degraded: {e.why[:200]}"
+                        self.say(f"lane {i}: no further session ({e.why[:200]}); continuing with fewer sessions")
+                        return
+                    self.live_sessions.add(s)
                 sessions += 1
+                end = "done"
                 try:
-                    self.setup_session(s, files)
-                    end = self.session_batches(s, per_unit)
+                    self.setup_session(s, self.files)
+                    end = self.session_batches(s)
                 except Stop as e:
                     if e.code != EXIT_SESSION:
                         raise
                     end = "drop:" + e.why
+                finally:
+                    self.led.release(s.name)             # anything still leased goes back to the pool now
                 if end.startswith("drop"):
                     drops += 1
                     if s.alive():
                         s.stop("stopped(after-failure)")
                     else:
                         s.dropped()
-                    self.say(f"session {s.name} lost ({end}); drops {drops}/{a.max_drops}")
+                    self.say(f"lane {i}: session {s.name} lost ({end}); drops {drops}/{a.max_drops}")
                     if drops >= a.max_drops:
-                        raise Stop(EXIT_SESSION, f"{drops} session drops in a row")
+                        raise Stop(EXIT_SESSION, f"lane {i}: {drops} session drops in a row")
                 else:
                     drops = 0
                     s.stop()
-                self.session = None
+                self.live_sessions.discard(s)
                 if end.startswith("cap"):
                     raise Stop(EXIT_CAP, end)
                 if not a.execute:
                     break
+            self.lane_end.setdefault(i, "done" if not self.led.todo(man) else "halted" if self.halt.is_set() else "pool empty")
         except Stop as e:
-            rc = e.code
-            self.say(f"STOP ({e.code}): {e.why}")
+            self.lane_end[i] = f"stop {e.code}"
+            self.fail(e)
+        except Exception as e:  # a bug in one lane stops every lane cleanly
+            self.lane_end[i] = f"error {type(e).__name__}"
+            self.fail(Stop(EXIT_JOB, f"lane {i}: {type(e).__name__}: {e}"))
         finally:
-            if self.session is not None:
-                self.session.stop("stopped(trap)")
-                self.session = None
-            self.receipts("after")
-        done = self.led.done()
-        spent, det = self.led.spent_units(balance_now=self.balance_now())
-        self.say(f"ledger: {len(done)} of {man['totals']['units']} units done; spend {det}")
-        return rc
+            for s in [x for x in list(self.live_sessions) if x.lane == i]:
+                s.stop("stopped(trap)")
+                self.live_sessions.discard(s)
 
-    def session_batches(self, s, per_unit):
-        """Batches until the session ends. Returns 'done', 'session-max', 'cap: ...' or 'drop: ...'."""
-        a, man = self.a, self.man
-        k, inflight, confirmed = 0, set(), []
-        self.empty_batches = 0
-        pending_dl = None                     # (future, name)
-        nxt = None                            # (future of upload, (name, tar, sha, units))
+    def n_live(self):
+        return max(1, len(self.live_sessions))
+
+    def batch_share(self, s):
+        """Units this session's next batch may spend: an equal share of what is left under the cap."""
+        spent, _ = self.led.spent_units()
+        return (self.a.cap - spent - 0.3) / self.n_live()
+
+    def session_batches(self, s):
+        """Batches until the session ends. Returns 'done', 'session-max', 'batch-limit', 'halt', 'cap: ...' or
+        'drop: ...'. Units are leased per batch; a lease lasts the batch's exec timeout + 30 min and is renewed
+        when the batch finishes, until its download is verified."""
+        a, man, per_unit = self.a, self.man, self.per_unit
+        pool = ThreadPoolExecutor(2, thread_name_prefix=f"xfer-{s.lane}")
+        st = {"k": 0, "confirmed": [], "empty": 0}
+        pending_dl = None
         result = "done"
+        unit_cost = per_unit / 3600 * s.rate
+
+        def lease_s(n):
+            return int(n * per_unit * 3 + 900 + 1800)
 
         def plan_batch():
-            nonlocal k
-            if a.max_batches and k >= a.max_batches:
+            if a.max_batches and st["k"] >= a.max_batches:
                 return None
-            spent, _ = self.led.spent_units()
-            left_units = a.cap - spent - 0.3
-            n = min(a.batch_units, int(left_units / (per_unit / 3600 * s.rate)))
-            todo = self.led.todo(man, exclude=inflight)[:max(0, n)]
-            if not todo:
+            n = min(a.batch_units, int(self.batch_share(s) / unit_cost))
+            if n <= 0:
                 return None
-            k += 1
-            b = self.make_batch(s, k, todo)
-            inflight.update(u["unit"] for u in todo)
-            return b
+            got = self.led.claim(s.name, man, n, lease_s(n))
+            if not got:
+                return None
+            st["k"] += 1
+            return self.make_batch(s, st["k"], got)
 
         def upload(b):
             self.upload(s, b[1], f"batches/{b[0]}.tar")
             return b
 
-        b = plan_batch()
-        if b is None:
-            return "cap: no unit fits under the cap" if self.led.todo(man) else "done"
-        cur = self.pool.submit(upload, b)
-        while cur is not None:
-            try:
-                name, _tar, sha, units = cur.result()
-            except Stop as e:
-                result = "drop: " + e.why
-                break
-            if s.age_h() + len(units) * per_unit / 3600 > a.session_max_h:
-                result = "session-max"
-                inflight.difference_update(u["unit"] for u in units)
-                break
-            try:
+        try:
+            b = plan_batch()
+            if b is None:
+                return "cap: no unit fits under the cap" if (self.led.unclaimed_todo(man) and
+                                                             not a.max_batches) else "done"
+            cur = pool.submit(upload, b)
+            while cur is not None:
+                try:
+                    name, _tar, sha, units = cur.result()
+                except Stop as e:
+                    return "drop: " + e.why
+                if self.halt.is_set():
+                    result = "halt"
+                    break
+                if s.age_h() + len(units) * per_unit / 3600 > a.session_max_h:
+                    result = "session-max"
+                    break
                 self.check_gate()
-            except Stop:
-                inflight.difference_update(u["unit"] for u in units)
-                raise
-            spent, _ = self.led.spent_units()
-            cap_left = a.cap - spent - 0.2
-            timeout = int(min(len(units) * per_unit * 3 + 900, max(600, cap_left / s.rate * 3600)))
-            nxt_b = plan_batch()
-            nxt = self.pool.submit(upload, nxt_b) if nxt_b else None
-            env = {"S12C_MODE": "batch", "S12C_RUN_ID": a.run_id, "S12C_BATCH": name, "S12C_BATCH_SHA256": sha,
-                   "S12C_CAP": f"{max(0.0, cap_left):.3f}", "S12C_RATE": s.rate, "S12C_RPS": a.rps,
-                   "S12C_SOFT": a.soft_tokens, "S12C_TIMEOUT": timeout, "S12C_CLEAN": ",".join(confirmed[-4:]),
-                   "S12C_MAX_LAG_H": a.max_label_lag_h}
-            if a.allow_above_etiquette:
-                env["S12C_ALLOW_ABOVE"] = "1"
-            self.say(f"batch {name}: {len(units)} units, cap left {cap_left:.2f}, exec timeout {timeout}s")
-            rc, out = s.exec_job(env, timeout, tee=self.led.dir / "logs" / f"{name}.log")
+                share = self.batch_share(s)
+                timeout = int(min(len(units) * per_unit * 3 + 900, max(600, share / s.rate * 3600)))
+                nxt_b = plan_batch()
+                nxt = pool.submit(upload, nxt_b) if nxt_b else None
+                env = {"S12C_MODE": "batch", "S12C_RUN_ID": a.run_id, "S12C_BATCH": name, "S12C_BATCH_SHA256": sha,
+                       "S12C_CAP": f"{max(0.0, share):.3f}", "S12C_RATE": s.rate, "S12C_RPS": a.rps,
+                       "S12C_SOFT": a.soft_tokens, "S12C_TIMEOUT": timeout, "S12C_CLEAN": ",".join(st["confirmed"][-4:]),
+                       "S12C_MAX_LAG_H": a.max_label_lag_h, "S12C_TEXT_BS_RUN": a.text_bs, "S12C_MM_BS_RUN": a.mm_bs}
+                if a.allow_above_etiquette:
+                    env["S12C_ALLOW_ABOVE"] = "1"
+                self.say(f"lane {s.lane} batch {name}: {len(units)} units, share {share:.2f} units, exec timeout {timeout}s")
+                rc, out = s.exec_job(env, timeout, tee=self.led.dir / "logs" / f"{name}.log")
+                if pending_dl is not None:
+                    self.finish_download(s, st, *pending_dl)
+                    pending_dl = None
+                line = next((ln for ln in out.splitlines() if f"BATCH {name} RC" in ln), None)
+                if not a.execute:
+                    break
+                if line is None and "[s12c] ERROR" in out and s.alive():
+                    raise Stop(EXIT_JOB, "colab_job error in batch " + name + ": " +
+                               "\n".join(ln for ln in out.splitlines() if "[s12c]" in ln)[-1200:])
+                if line is None:
+                    if nxt is not None:
+                        _wait_quiet(nxt)
+                    return f"drop: exec rc {rc} without a batch result"
+                self.led.renew(s.name, [u["unit"] for u in units], 3600)   # held until verified on the Mac
+                job_rc = int(re.search(r"RC (-?\d+)", line).group(1))
+                pending_dl = (pool.submit(self.fetch_batch, s, name, units, line), name, units)
+                if job_rc != 0:
+                    self.finish_download(s, st, *pending_dl)
+                    pending_dl = None
+                    if nxt is not None:
+                        _wait_quiet(nxt)
+                    codes = {EXIT_CIRCUIT: (EXIT_CIRCUIT, "the job's CDN circuit breaker tripped (429s/errors): stop and look"),
+                             EXIT_STALE: (EXIT_STALE, "the job found the gate bundle stale: refresh it and rerun"),
+                             EXIT_AUDIT: (EXIT_AUDIT, "the no-image-bytes audit failed: stop and look")}
+                    raise Stop(*codes.get(job_rc, (EXIT_SESSION, f"job exit {job_rc} in batch {name}")))
+                if nxt is None:
+                    if not self.led.unclaimed_todo(man):
+                        result = "done"
+                    elif a.max_batches and st["k"] >= a.max_batches:
+                        result = "batch-limit"
+                    else:
+                        result = "cap: next batch would cross the cap"
+                    break
+                cur = nxt
             if pending_dl is not None:
-                self.finish_download(*pending_dl, inflight, confirmed)
-                pending_dl = None
-            line = next((ln for ln in out.splitlines() if f"BATCH {name} RC" in ln), None)
-            if not a.execute:
-                break
-            if line is None and "[s12c] ERROR" in out and s.alive():
-                raise Stop(EXIT_JOB, "colab_job error in batch " + name + ": " +
-                           "\n".join(ln for ln in out.splitlines() if "[s12c]" in ln)[-1200:])
-            if line is None:
-                inflight.difference_update(u["unit"] for u in units)
-                if nxt is not None:
-                    _wait_quiet(nxt)
-                    inflight.difference_update(u["unit"] for u in (nxt_b[3] if nxt_b else []))
-                result = f"drop: exec rc {rc} without a batch result"
-                break
-            job_rc = int(re.search(r"RC (-?\d+)", line).group(1))
-            pending_dl = (self.pool.submit(self.fetch_batch, s, name, units, line), name, units)
-            if job_rc in (EXIT_CIRCUIT, EXIT_STALE, EXIT_AUDIT) or job_rc not in (0,):
-                self.finish_download(*pending_dl, inflight, confirmed)
-                pending_dl = None
-                if nxt is not None:
-                    _wait_quiet(nxt)
-                    inflight.difference_update(u["unit"] for u in (nxt_b[3] if nxt_b else []))
-                codes = {EXIT_CIRCUIT: (EXIT_CIRCUIT, "the job's CDN circuit breaker tripped (429s/errors): stop and look"),
-                         EXIT_STALE: (EXIT_STALE, "the job found the gate bundle stale: refresh it and rerun"),
-                         EXIT_AUDIT: (EXIT_AUDIT, "the no-image-bytes audit failed: stop and look")}
-                raise Stop(*codes.get(job_rc, (EXIT_SESSION, f"job exit {job_rc} in batch {name}")))
-            spent, _ = self.led.spent_units()
-            if nxt is None:
-                if not self.led.todo(man, exclude=inflight):
-                    result = "done"
-                elif a.max_batches and k >= a.max_batches:
-                    result = "batch-limit"
-                else:
-                    result = "cap: next batch would cross the cap"
-                break
-            cur = nxt
-        if pending_dl is not None:
-            self.finish_download(*pending_dl, inflight, confirmed)
-        return result
+                self.finish_download(s, st, *pending_dl)
+            return result
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
-    def finish_download(self, fut, name, units, inflight, confirmed):
+    def finish_download(self, s, st, fut, name, units):
         try:
             ok, _rc, _recs = fut.result()
-        except Exception as e:  # a dropped session mid-download: the units stay to do
+        except Exception as e:  # a dropped session mid-download: the units go back to the pool
             self.say(f"batch {name}: download failed ({type(e).__name__}: {e})")
             ok = []
-        inflight.difference_update(u["unit"] for u in units)
+        self.led.release(s.name, [u["unit"] for u in units])
         if ok:
-            confirmed.append(name)
-            self.empty_batches = 0
+            st["confirmed"].append(name)
+            st["empty"] = 0
         else:
-            self.empty_batches += 1
+            st["empty"] += 1
         self.say(f"batch {name}: {len(ok)} of {len(units)} units verified and in the ledger")
-        if self.empty_batches >= 3:
+        if st["empty"] >= 3:
             raise Stop(EXIT_JOB, "3 batches in a row brought back no verified unit: stop and look")
 
     def reconcile(self):
         """Sessions a crashed earlier driver left open: stop them if Colab still lists them (they are ours, recorded
-        in sessions.tsv), else close their spend at last-seen + grace."""
+        in sessions.tsv), else close their spend at last-seen + grace. Their leases are released either way."""
         opened = self.led.open_sessions()
-        if not opened:
-            return
-        listing = ""
-        if self.a.execute:
-            _rc, listing = self.colab("sessions", timeout=120)
         for name in opened:
+            c = self.colab.for_session(name)
+            listing = ""
+            if self.a.execute:
+                _rc, listing = c("sessions", timeout=120)
             if name in listing:
-                self.colab("stop", "-s", name, timeout=300)
+                c("stop", "-s", name, timeout=300)
                 if self.a.execute:
                     self.led.record(name, "stopped(reconcile)", "-")
                     self.led.spend_update(name, t_stopped=time.time(), ended="stopped(reconcile)")
             elif self.a.execute:
                 self.led.record(name, "ended(unobserved)", "-")
                 self.led.spend_update(name, closed_unobserved=True, ended="unobserved")
+            self.led.release(name)
             self.say(f"reconciled open session {name}")
 
     def status(self):
@@ -795,14 +882,19 @@ def main(argv=None):
     ap.add_argument("--max-drops", type=int, default=3)
     ap.add_argument("--max-sessions", type=int, default=0)
     ap.add_argument("--max-batches", type=int, default=0, help="per session (0: until --session-max-h)")
+    ap.add_argument("--sessions", type=int, default=1, help=f"parallel L4 sessions, 1..{MAX_SESSIONS}")
+    ap.add_argument("--text-bs", type=int, default=64)
+    ap.add_argument("--mm-bs", type=int, default=8)
     ap.add_argument("--rehearsal", action="store_true")
     a = ap.parse_args(argv)
     a.run_dir = a.run_dir or str(LAKE / f"s12mm-colab-{a.run_id}")
     FIXED_CLOCK["on"] = a.rehearsal
     if a.cap is None:
-        a.cap = 3.0 if a.mode == "bench" else 120.0
-    if a.mode == "run" and a.cap > 120:
-        ap.error("S12m's approved Colab cap is 120 units")
+        a.cap = 3.0 if a.mode == "bench" else 220.0
+    if a.mode == "run" and a.cap > 220:
+        ap.error("S12m's approved Colab cap is 220 units")
+    if not 1 <= a.sessions <= MAX_SESSIONS:
+        ap.error(f"--sessions must be 1..{MAX_SESSIONS}")
     if a.mode == "run" and not a.units:
         ap.error("run needs --units (split_units.py output)")
     if a.rps > 50 and not a.allow_above_etiquette:
@@ -825,9 +917,11 @@ def main(argv=None):
         print(f"== STOP ({e.code}): {e.why}", flush=True)
         return e.code
     finally:
-        if drv.session is not None and drv.session.live:   # the exit trap: only our own live session
+        drv.halt.set()
+        if drv.session is not None and drv.session.live:   # the exit trap: only our own live sessions
             drv.session.stop("stopped(trap)")
-        drv.pool.shutdown(wait=False, cancel_futures=True)
+        for s in list(drv.live_sessions):
+            s.stop("stopped(trap)")
 
 
 if __name__ == "__main__":

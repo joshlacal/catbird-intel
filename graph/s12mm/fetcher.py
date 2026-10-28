@@ -111,6 +111,14 @@ class Stats:
                 "latency_ms_p50": q(0.5), "latency_ms_p95": q(0.95), "latency_ms_p99": q(0.99)}
 
 
+def auto_in_flight(rps, latency_s=3.0):
+    """Requests in flight needed to hold `rps` when answers take up to ~latency_s (Little's law). S7g on a Colab
+    L4: MISS p50 0.53 s, p95 2.1 s, p99 6.8 s, so the old fixed 32 capped a 50 req/s fetch at 35 req/s. The token
+    bucket, not this bound, is what limits the request rate."""
+    import math
+    return max(32, min(256, math.ceil(rps * latency_s)))
+
+
 class CircuitOpen(RuntimeError):
     pass
 

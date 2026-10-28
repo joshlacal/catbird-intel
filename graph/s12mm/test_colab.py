@@ -305,7 +305,7 @@ def test_colab_costs_block():
 
 FAKE_COLAB = r'''#!PYTHON
 """Fake Colab CLI: sessions are directories under $FAKE_DIR/vm/<name>; every call is logged to calls.jsonl."""
-import json, os, pathlib, shutil, subprocess, sys
+import fcntl, json, os, pathlib, shutil, subprocess, sys
 D = pathlib.Path(os.environ["FAKE_DIR"])
 argv = sys.argv[1:]
 if argv[:1] == ["--config"]:
@@ -330,9 +330,17 @@ elif cmd == "sessions":
     for s in active():
         print(f"{s}  L4  IDLE")
 elif cmd == "new":
-    if os.environ.get("FAKE_FAIL_NEW") == "1":
-        print("400 no capacity", file=sys.stderr); sys.exit(1)
+    m = os.environ.get("FAKE_FAIL_NEW_MATCH")
+    if os.environ.get("FAKE_FAIL_NEW") == "1" or (m and m in sess):
+        print("[colab] Allocation refused (precondition failed). This can mean too many active sessions", file=sys.stderr)
+        sys.exit(1)
     (vm / "content").mkdir(parents=True)
+    with open(D / "peak.lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        peak = D / "peak_active"
+        n = len(active())
+        if not peak.exists() or int(peak.read_text()) < n:
+            peak.write_text(str(n))
     print("created", sess)
 elif cmd == "stop":
     shutil.rmtree(vm, ignore_errors=True)
@@ -356,10 +364,14 @@ elif cmd == "exec":
         if x == "--env":
             k, v = rest[i + 1].split("=", 1); env[k] = v
     env["S12C_CONTENT"] = str(vm / "content")
+    (vm / "tmp").mkdir(exist_ok=True)
+    env["TMPDIR"] = str(vm / "tmp")          # each VM has its own /tmp (the Mac audit scans work dir + TMPDIR)
     if env.get("S12C_MODE") == "batch":
-        cnt = D / "batch_execs"
-        n = int(cnt.read_text()) + 1 if cnt.exists() else 1
-        cnt.write_text(str(n))
+        with open(D / "count.lock", "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            cnt = D / "batch_execs"
+            n = int(cnt.read_text()) + 1 if cnt.exists() else 1
+            cnt.write_text(str(n))
         if str(n) in os.environ.get("FAKE_DROP_EXEC", "").split(","):
             shutil.rmtree(vm, ignore_errors=True)          # the session dies mid-exec
             print("Kernel connection lost: runtime disconnected", file=sys.stderr); sys.exit(1)
@@ -444,7 +456,7 @@ def test_driver_run_with_session_drop_and_auto_resume(tmp_path, units):
     news = [c for c in calls(fake) if c[0] == "new"]
     assert all("--gpu" in c and c[c.index("--gpu") + 1] == "L4" for c in news)
     up = [c for c in calls(fake) if c[0] == "upload"]
-    mk = [i for i, c in enumerate(calls(fake)) if c[0] == "exec" and c[c.index("-f") + 1].endswith("_mkdir.py")]
+    mk = [i for i, c in enumerate(calls(fake)) if c[0] == "exec" and "/_mkdir-" in c[c.index("-f") + 1]]
     assert mk and min(i for i, c in enumerate(calls(fake)) if c[0] == "upload") > mk[0]      # mkdir before upload
     assert any(c[-1] == "/content/s12mm/gate.tar.gz" for c in up)
     assert len(list((tmp_path / "run/receipts").glob("usage_before_*.txt"))) == 1
@@ -516,8 +528,10 @@ def test_driver_print_only_by_default(tmp_path, units):
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
     assert "dry run: nothing was executed" in p.stdout and "+ " in p.stdout and " new -s s12c-run-dry" in p.stdout
     assert not calls(fake)
-    p = subprocess.run(cmd[:-1] + ["--cap", "121", "--execute"], env=env, capture_output=True, text=True)
-    assert p.returncode == 2 and "120 units" in p.stderr
+    p = subprocess.run(cmd[:-1] + ["--cap", "221", "--execute"], env=env, capture_output=True, text=True)
+    assert p.returncode == 2 and "220 units" in p.stderr
+    p = subprocess.run(cmd[:-1] + ["--sessions", "4", "--execute"], env=env, capture_output=True, text=True)
+    assert p.returncode == 2 and "--sessions" in p.stderr
     p = subprocess.run(cmd + ["--rps", "100", "--execute"], env=env, capture_output=True, text=True)
     assert p.returncode == 2 and "allow-above-etiquette" in p.stderr
 
@@ -572,3 +586,102 @@ def test_driver_bench_with_ramp(tmp_path):
     ev = CL.RunLedger(tmp_path / "run").sessions()
     assert len(ev) == 1 and list(ev.values())[0] == ["created", "stopped"]
     assert not os.listdir(fake / "vm")
+
+
+# --- parallel sessions, leases, fetch concurrency -------------------------------------------------------------
+
+def test_leases_are_disjoint_expire_and_release(tmp_path):
+    clock = [0.0]
+    led = CL.RunLedger(tmp_path / "run", clock=lambda: clock[0])
+    man = {"units": [{"unit": f"u{i}", "rows": 1} for i in range(6)]}
+    a = led.claim("A", man, 2, ttl_s=100)
+    b = led.claim("B", man, 3, ttl_s=100)
+    assert [u["unit"] for u in a] == ["u0", "u1"] and [u["unit"] for u in b] == ["u2", "u3", "u4"]
+    assert [u["unit"] for u in led.unclaimed_todo(man)] == ["u5"]
+    assert [u["unit"] for u in led.claim("A", man, 9, ttl_s=100)] == ["u5"]   # never its own in-flight units again
+    clock[0] = 150                                                    # B's session died silently: leases lapse
+    led.renew("A", ["u0", "u1", "u5"], ttl_s=100)
+    assert [u["unit"] for u in led.unclaimed_todo(man)] == ["u2", "u3", "u4"]
+    assert [u["unit"] for u in led.claim("C", man, 9, ttl_s=100)] == ["u2", "u3", "u4"]
+    assert led.release("C", ["u3"]) == 1 and [u["unit"] for u in led.unclaimed_todo(man)] == ["u3"]
+    led.mark("u0", {"sha256": "x", "rows": 1, "file": "f"})
+    assert led.release("A") == 3                                       # u0 is done, so it left the pool anyway
+    assert "u0" not in [u["unit"] for u in led.claim("D", man, 9, ttl_s=100)]
+
+
+def test_leases_hold_across_threads(tmp_path):
+    import threading
+    led = CL.RunLedger(tmp_path / "run")
+    man = {"units": [{"unit": f"u{i:03d}", "rows": 1} for i in range(300)]}
+    got = {}
+
+    def take(o):
+        mine = []
+        while True:
+            c = [u["unit"] for u in led.claim(o, man, 7, ttl_s=1000)]
+            if not c:
+                break
+            mine += c
+        got[o] = mine
+    ts = [threading.Thread(target=take, args=(f"L{i}",)) for i in range(3)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    allu = [u for v in got.values() for u in v]
+    assert len(allu) == 300 and len(set(allu)) == 300
+
+
+def test_fetcher_auto_in_flight_reaches_rps_at_slow_latency():
+    assert F.auto_in_flight(50) == 150 and F.auto_in_flight(5) == 32 and F.auto_in_flight(500) == 256
+    did = synth.synthetic_did(6)
+    items = [(i, f"https://cdn.bsky.app/img/feed_thumbnail/plain/{did}/{synth.synthetic_cid(i)}") for i in range(300)]
+    walls = {}
+    with synth.ImageServer(latency_ms=1000, fail404="") as srv:
+        for name, n_inflight, chunk in (("old32", 32, items[:150]), ("auto", F.auto_in_flight(50), items[150:])):
+            f = F.AsyncFetcher(rps=50, max_in_flight=n_inflight, base=srv.base, rehearsal=True, discard_bodies=True)
+            t0 = time.monotonic()
+            f.fetch_sync(chunk)
+            walls[name] = time.monotonic() - t0
+            f.close()
+    # 150 requests at 50 req/s and 1 s per answer: the token bucket alone needs ~3 s (+1 s for the last answer);
+    # 32 in flight caps the rate at 32 req/s (~4.7 s + 1 s), as on Colab (35 req/s achieved at a 50 cap)
+    assert walls["old32"] > 5.2 and walls["auto"] < 4.7, walls
+
+
+def test_driver_three_parallel_sessions_one_drops(tmp_path, units):
+    env, fake, _m = fake_env(tmp_path)
+    env["FAKE_DROP_EXEC"] = "3"                      # the 3rd batch exec (whichever lane) loses its session
+    p = drive(tmp_path, "run", "--units", str(units), "--batch-units", "1", "--sessions", "3", env=env)
+    assert p.returncode == 0, p.stdout[-5000:] + p.stderr[-3000:]
+    man, led = check_run_complete(tmp_path, units, fake)
+    ev = led.sessions()
+    lanes = {n.split("-l")[1][0] for n in ev}
+    assert lanes == {"0", "1", "2"}
+    assert int((fake / "peak_active").read_text()) == 3      # three sessions really ran at the same time
+    dropped = [n for n, e in ev.items() if "dropped" in e]
+    assert len(dropped) == 1 and all(e[-1] in ("stopped", "dropped") for e in ev.values())
+    # every unit was verified once; units of the dropped batch came back and were done by some session
+    done = led.done()
+    assert set(done) == {u["unit"] for u in man["units"]}
+    assert not list((tmp_path / "run/ledger/claims").glob("*.json"))   # no lease left behind
+    seen = {}
+    for bj in (tmp_path / "run/stage/batches").glob("*/batch.json"):
+        for u in json.loads(bj.read_text())["units"]:
+            seen.setdefault(u["unit"], []).append(bj.parent.name)
+    redo = {u: b for u, b in seen.items() if len(b) > 1}
+    assert len(redo) <= 2, redo                       # only the dropped batch (and its pre-uploaded next) redone
+    # each new session got its own CLI state file
+    news = [c for c in calls(fake) if c[0] == "new"]
+    assert len(news) == len(ev) >= 4
+    spend = [json.loads(x.read_text()) for x in (tmp_path / "run/spend").glob("*.json")]
+    assert len(spend) == len(ev) and all(r.get("t_stopped") for r in spend)
+
+
+def test_driver_degrades_when_a_parallel_new_is_refused(tmp_path, units):
+    env, fake, _m = fake_env(tmp_path)
+    env["FAKE_FAIL_NEW_MATCH"] = "-l2-"              # the account refuses a third session
+    p = drive(tmp_path, "run", "--units", str(units), "--batch-units", "2", "--sessions", "3", env=env)
+    assert p.returncode == 0, p.stdout[-4000:] + p.stderr[-2000:]
+    check_run_complete(tmp_path, units, fake)
+    assert "continuing with fewer sessions" in p.stdout
+    ev = CL.RunLedger(tmp_path / "run").sessions()
+    assert {n.split("-l")[1][0] for n in ev} == {"0", "1"}

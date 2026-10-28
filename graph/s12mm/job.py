@@ -1,7 +1,7 @@
 """S12m main run: natively multimodal producer-slab embeddings on one L4 (S1 amendment A2): a GCE VM or a Colab session.
 
   job.py run --posts URL --out URL --gate-bundle DIR --model-dir DIR --work DIR --run-id ID
-             [--sidecar URL] [--soft-tokens 70] [--rps 50] [--max-in-flight 32] [--unit-rows 20000]
+             [--sidecar URL] [--soft-tokens 70] [--rps 50] [--max-in-flight 0=auto] [--unit-rows 20000]
              [--cap-usd C --usd-per-hour R] [--max-label-lag-h 36] [--max-units N]
              [--rehearsal --cdn-base http://127.0.0.1:PORT --now ISO]
 
@@ -62,7 +62,8 @@ def common_args(ap):
     ap.add_argument("--rps", type=float, default=50.0)
     ap.add_argument("--allow-above-etiquette", action="store_true",
                     help="permit up to 200 req/s; only with Josh's written approval and Bluesky's OK")
-    ap.add_argument("--max-in-flight", type=int, default=32)
+    ap.add_argument("--max-in-flight", type=int, default=0,
+                    help="0 (default): fetcher.auto_in_flight(rps), enough for the rate at multi-second MISS latency")
     ap.add_argument("--rehearsal", action="store_true")
     ap.add_argument("--cdn-base", default="https://cdn.bsky.app")
     ap.add_argument("--now", help="rehearsal only: fixed clock for the age rule")
@@ -70,8 +71,8 @@ def common_args(ap):
     ap.add_argument("--usd-per-hour", type=float, default=L.g2_standard_8_spot_usd_per_hour())
     ap.add_argument("--vm-start-epoch", type=float, help="VM creation time (default: now)")
     ap.add_argument("--max-label-lag-h", type=float, default=36.0)
-    ap.add_argument("--text-bs", type=int, default=256)
-    ap.add_argument("--mm-bs", type=int, default=16)
+    ap.add_argument("--text-bs", type=int, default=64)     # S7g L4 sweep: 64 fastest (424 posts/s), 512 OOM
+    ap.add_argument("--mm-bs", type=int, default=8)        # S7g L4 sweep at 70 soft tokens: 8 ~ 16 > 32
     ap.add_argument("--device")
     ap.add_argument("--mps-gb", type=float, default=7.0)
     ap.add_argument("--rate-unit", choices=["usd", "colab_units"], default="usd",
@@ -80,7 +81,8 @@ def common_args(ap):
 
 
 def make_fetcher(a):
-    return AsyncFetcher(rps=a.rps, max_in_flight=a.max_in_flight, base=a.cdn_base, rehearsal=a.rehearsal,
+    from fetcher import auto_in_flight
+    return AsyncFetcher(rps=a.rps, max_in_flight=a.max_in_flight or auto_in_flight(a.rps), base=a.cdn_base, rehearsal=a.rehearsal,
                         allow_above_etiquette=a.allow_above_etiquette)
 
 

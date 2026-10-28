@@ -95,7 +95,7 @@ function header() {
   const c = DATA.counts;
   if (DATA.dry_run) { $("#banner").textContent = "baseline, not evaluated · DRY RUN (S5 live checks absent or unverified)"; $("#banner").classList.add("bad"); }
   const ex = Object.entries(c.excluded).map(([k, v]) => `${k.replaceAll("_", " ")} ${v}`).join(", ");
-  $("#sub").innerHTML = `Internal review for Josh only (127.0.0.1, never published). cand1 communities as cards, grouped by scene; ` +
+  $("#sub").innerHTML = `Internal review for Josh only (127.0.0.1, never published). ${esc(DATA.partition || "cand1")} communities as cards, grouped by scene; ` +
     `labels are the community's most common A-half curated-list names, with Claude's label as a second line. ` +
     `Each bundle is 25 accounts from provisional eligibility (unflagged, on an A-half list, passed S5's live check). ` +
     `Cards whose list names match the S1 sensitive-class keywords, or that Claude marks sensitive, show no members. ` +

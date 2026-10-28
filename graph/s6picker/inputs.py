@@ -1,7 +1,8 @@
 """Local (offline) inputs for the S6 baseline picker, with the two slow derivations cached.
 
-All paths are the frozen cand1 / S1 artifacts under ~/catbird-lake-local. Nothing here touches the
-network. The cache (OUT/cache) is keyed by the input files' sha256, so a changed input rebuilds it.
+All paths are frozen partition / S1 artifacts under ~/catbird-lake-local. `set_partition` picks the
+partition (cand1, the old working one, or cand5, frozen 2026-10-28; default cand1). Nothing here touches
+the network. The cache (OUT/cache) is keyed by the input files' sha256, so a changed input rebuilds it.
 """
 import collections
 import hashlib
@@ -16,6 +17,16 @@ import pyarrow.parquet as pq
 
 LAKE = pathlib.Path.home() / "catbird-lake-local"
 CAND1 = LAKE / "communities-cand1-hubdemote"
+CAND5 = LAKE / "s3/matched/cand5-full-matched"
+# Per partition: graph dir, its Claude community labels (None until labelled; community ids don't transfer),
+# whether S5's card_packs.tsv (keyed by that partition's community ids) applies, and the profile snapshot.
+PARTITIONS = {
+    "cand1": {"dir": CAND1, "claude_community": LAKE / "claude-labels-20261027/community_labels_v2.parquet",
+              "s5_card_packs": True, "profile_snapshot": LAKE / "claude-labels-20261027/top_profiles_all.parquet"},
+    "cand5": {"dir": CAND5, "claude_community": None, "s5_card_packs": False,
+              "profile_snapshot": LAKE / "claude-labels-cand5-20261028/top_profiles_all.parquet"},
+}
+PARTITION = {"name": "cand1", "s5_card_packs": True}
 PATHS = {
     "communities": CAND1 / "communities.parquet",
     "known_for": CAND1 / "known_for.parquet",
@@ -37,6 +48,29 @@ FEEDGEN_DAYS = sorted((LAKE / "netcup-export").glob("2026-10-*/feedgens.parquet"
 PACK_DAYS = sorted((LAKE / "netcup-export").glob("2026-10-*/starterpacks.parquet"))
 
 
+def set_partition(name, claude_community=None):
+    """Point PATHS at one partition's artifacts. claude_community overrides that partition's label file."""
+    cfg = PARTITIONS[name]
+    d = cfg["dir"]
+    PATHS.update({
+        "communities": d / "communities.parquet",
+        "known_for": d / "known_for.parquet",
+        "membership": d / "membership.npy",
+        "flags": d / "community_flags.npz",
+        "producer_quality": d / "audit-quality/producer_quality.parquet",
+        "list_names_all": d / "audit-quality/community_list_names.tsv",
+        "packs": d / "audit-mass-followers/packs.pkl",
+        "profile_snapshot": cfg["profile_snapshot"],
+    })
+    label = pathlib.Path(claude_community).expanduser() if claude_community else cfg["claude_community"]
+    if label is None:
+        PATHS.pop("claude_community", None)
+    else:
+        PATHS["claude_community"] = label
+    PARTITION.update(name=name, s5_card_packs=cfg["s5_card_packs"])
+    return PATHS
+
+
 def sha256(path, _memo={}):
     path = pathlib.Path(path).resolve()
     if path not in _memo:
@@ -49,9 +83,9 @@ def sha256(path, _memo={}):
 
 
 def load_graph():
-    """cand1 communities, rank-0 homes, and follow-back/follow-train flags mapped to community ids.
+    """The partition's communities, rank-0 homes, and follow-back/follow-train flags mapped to community ids.
 
-    community_flags.npz is keyed by raw Leiden label (membership.npy). Each cand1 community maps to
+    community_flags.npz is keyed by raw Leiden label (membership.npy). Each community maps to
     the raw label held by the majority of its top_dids (DECISIONS: the same mapping eval_temporal uses).
     """
     comm = pq.read_table(PATHS["communities"], columns=["community", "scene_id", "size", "top_dids"]).to_pylist()
@@ -96,7 +130,7 @@ def a_lists(cache, home):
     Names follow list_purity.py: >=3 producer members, identical member sets deduped, <=3 lists per
     owner (default_rng(7)), a list counts for community c when >=3 of its members have c as home.
     """
-    key = sha256(PATHS["lists_A"])[:16]
+    key = sha256(PATHS["lists_A"])[:16] + "_" + sha256(PATHS["known_for"])[:12]
     f = pathlib.Path(cache) / f"a_lists_{key}.json"
     if f.exists():
         d = json.loads(f.read_text())
@@ -142,7 +176,11 @@ def all_list_names():
 
 
 def s5_card_packs(s5_dir):
-    """S5's offer set: universe/card_packs.tsv (community, pack uri, share of members in the card, members)."""
+    """S5's offer set: universe/card_packs.tsv (community, pack uri, share of members in the card, members).
+
+    It is keyed by the community ids of the partition S5 swept (cand1), so it is skipped for another one."""
+    if not PARTITION["s5_card_packs"]:
+        return None, None
     root = pathlib.Path(s5_dir).expanduser()
     f = root / "card_packs.tsv" if (root / "card_packs.tsv").exists() else root / "work/universe/card_packs.tsv"
     if not f.exists():
@@ -161,7 +199,7 @@ def packs_by_community(cache, pid_home, offers=None):
     Without it (dry run), a pack is offered by the community holding >=5 and >=50% of its producer members.
     """
     want = sorted({p["uri"] for v in offers.values() for p in v}) if offers else None
-    key = sha256(PATHS["packs"])[:16] + ("_" + hashlib.sha256("\n".join(want).encode()).hexdigest()[:12] if want else "")
+    key = sha256(PATHS["packs"])[:16] + "_" + sha256(PATHS["known_for"])[:12] + ("_" + hashlib.sha256("\n".join(want).encode()).hexdigest()[:12] if want else "")
     f = pathlib.Path(cache) / f"packs_{key}.json"
     if f.exists():
         return {int(k): v for k, v in json.loads(f.read_text()).items()}
@@ -214,7 +252,9 @@ def feedgens():
 
 
 def claude_labels():
-    comm = {r["community"]: r for r in pq.read_table(PATHS["claude_community"]).to_pylist()}
+    """Community labels for this partition (none if it has no label file yet) and per-DID profile classes."""
+    comm = ({r["community"]: r for r in pq.read_table(PATHS["claude_community"]).to_pylist()}
+            if "claude_community" in PATHS else {})
     prof = {}
     for r in pq.read_table(PATHS["claude_profile"], columns=["did", "haiku_sensitivity", "sonnet_sensitivity"]).to_pylist():
         s = set(r["haiku_sensitivity"] or []) | set(r["sonnet_sensitivity"] or [])

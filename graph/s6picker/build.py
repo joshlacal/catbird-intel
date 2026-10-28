@@ -1,8 +1,9 @@
-"""S6 baseline cold-start picker: build the localhost-only page from cand1 and S5 (i)'s live sweep.
+"""S6 baseline cold-start picker: build the localhost-only page from a partition and S5 (i)'s live sweep.
 
-  build.py [--s5-dir DIR] [--out DIR] [--dry-run-unverified-controls]
+  build.py [--partition cand1|cand5] [--claude-community PARQUET] [--s5-dir DIR] [--out DIR]
+           [--dry-run-unverified-controls]
 
-One command: reads the frozen cand1 artifacts, the S1 A-half lists, the Claude labels and S5 (i)'s
+One command: reads the frozen partition's artifacts (cand1 by default; inputs.PARTITIONS), the S1 A-half lists, the Claude labels and S5 (i)'s
 raw getProfiles responses; writes OUT/index.html (static, no external requests), OUT/cards.json,
 OUT/receipt.json (input hashes, every raw AppView response hash, counts, the bar) and OUT/verify.json.
 Serve it with serve.py (127.0.0.1 only). Plan: docs/execution-plans/2026-10-25-whole-network-signals-plan.md
@@ -14,6 +15,10 @@ list, is not a user-intents opt-out, is not flagged likely_minors or adult by Ha
 passes S5's live check (returned by getProfiles, no label, not !no-unauthenticated, valid handle,
 postsCount >= 3). hide-from-recs accounts stay candidates (amendment A1: posts only). A candidate
 with no live check is never shown; a card with < 25 live-checked eligible candidates is not shown.
+
+A partition without Claude community labels (cand5 until its batch returns) shows list names only, and
+its likely_minors card hiding rests on the list-name keyword screen. S5's card_packs.tsv is keyed by
+cand1 community ids, so other partitions derive their pack offers from packs.pkl (dry-run rule).
 """
 import argparse
 import collections
@@ -177,6 +182,7 @@ def build(s5_dir, out, allow_unverified_controls=False):
 
     shown = [cd for cd in cards]
     data = {
+        "partition": inputs.PARTITION["name"], "claude_community_labels": "claude_community" in inputs.PATHS,
         "generated_at": t0.isoformat(), "dry_run": (not lv.present) or not controls_ok,
         "live_present": lv.present, "controls": lv.controls,
         "scenes": scene_list, "cards": {str(cd["community"]): cd for cd in shown},
@@ -308,6 +314,7 @@ def make_receipt(data, lv, s5_dir, out, stats, drop_member, excluded, ver, t0):
         "step": "S6 baseline cold-start picker (Josh-only, 127.0.0.1, never published)",
         "plan": "docs/execution-plans/2026-10-25-whole-network-signals-plan.md (row S6, §3.3)",
         "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §10 (frozen; A1)",
+        "partition": inputs.PARTITION["name"], "s5_card_packs_used": inputs.PARTITION["s5_card_packs"],
         "started": t0.isoformat(), "finished": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "dry_run": data["dry_run"], "bar": bar, "bar_pass": all(bar.values()),
         "s5": {"dir": str(s5_dir), "present": lv.present, "receipt_sha256": lv.receipt_sha256, "controls": lv.controls,
@@ -339,11 +346,14 @@ def render(data):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--partition", choices=sorted(inputs.PARTITIONS), default="cand1")
+    ap.add_argument("--claude-community", help="community label parquet for this partition (default: inputs.PARTITIONS)")
     ap.add_argument("--s5-dir", default=str(inputs.LAKE / "s5-sweep-20261028"))
     ap.add_argument("--out", default=str(inputs.LAKE / "s6-picker-20261028"))
     ap.add_argument("--dry-run-unverified-controls", action="store_true",
                     help="build even if the S5 receipt does not show every control caught (dry run only)")
     a = ap.parse_args()
+    inputs.set_partition(a.partition, a.claude_community)
     data, ver, receipt = build(a.s5_dir, a.out, a.dry_run_unverified_controls)
     print(json.dumps({"cards": data["counts"], "violations": len(ver["violations"]), "bar": receipt["bar"],
-                      "dry_run": data["dry_run"], "out": a.out}, indent=1))
+                      "dry_run": data["dry_run"], "partition": a.partition, "out": a.out}, indent=1))

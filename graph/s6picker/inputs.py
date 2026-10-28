@@ -228,17 +228,62 @@ def packs_by_community(cache, pid_home, offers=None):
     return top
 
 
-def pack_names():
-    names = {}
+PACK_ARCHIVE_DIRS = [LAKE / "archive-graph/events", LAKE / "gce-archive-graph/events",
+                     *sorted((LAKE / "gce-archive-graph-gcs").glob("*/events"))]
+PACK_SUPPLEMENT_GLOB = (LAKE / "supplement-events", "**/*.parquet")  # repo-supplement events, same schema
+
+
+_TID = "234567abcdefghijklmnopqrstuvwxyz"
+
+
+def _tid_int(rev):
+    """A repo rev TID (13 base32-sortable chars) as the integer the netcup exports store."""
+    return sum(_TID.index(c) << (5 * (12 - i)) for i, c in enumerate(rev)) if isinstance(rev, str) and len(rev) == 13 else 0
+
+
+def _pack_names_in(path):
+    """Latest (rev as int, seq) starterpack record per (did, rkey) in one archive events file: (rev, seq, deleted, name)."""
+    t = pq.read_table(path, columns=["did", "rkey", "rev", "seq", "operation", "name"],
+                      filters=[("collection", "=", "app.bsky.graph.starterpack")])
+    out = {}
+    for did, rkey, rev, seq, op, name in zip(*(t[c].to_pylist() for c in ("did", "rkey", "rev", "seq", "operation", "name"))):
+        v = (_tid_int(rev), seq or 0, op == "delete", name or "")
+        if (did, rkey) not in out or v[:2] > out[(did, rkey)][:2]:
+            out[(did, rkey)] = v
+    return out
+
+
+def pack_names(cache=None):
+    """Starter-pack display names (public record metadata, not a safety input), latest-rev-wins.
+
+    The archive events extract and the repo-supplement events (the record sets packs.pkl was dumped from;
+    their `name` column is the record's name) supply the history; the netcup daily exports are layered on top. A deleted pack has no name.
+    The archive scan is cached in CACHE, keyed by the event files' paths and sizes."""
+    import multiprocessing as mp
+    files = sorted([str(f) for d in PACK_ARCHIVE_DIRS for f in d.glob("*.parquet")] +
+                   [str(f) for f in PACK_SUPPLEMENT_GLOB[0].glob(PACK_SUPPLEMENT_GLOB[1])])
+    key = hashlib.sha256("\n".join(f"{f}\t{pathlib.Path(f).stat().st_size}" for f in files).encode()).hexdigest()[:16]
+    cf = pathlib.Path(cache) / f"pack_names_archive_v2_{key}.json" if cache else None
+    if cf and cf.exists():
+        latest = {tuple(k.split(" ", 1)): tuple(v) for k, v in json.loads(cf.read_text()).items()}
+    else:
+        latest = {}
+        with mp.Pool(14) as pool:
+            for part in pool.imap_unordered(_pack_names_in, files, chunksize=16):
+                for k, v in part.items():
+                    if k not in latest or v[:2] > latest[k][:2]:
+                        latest[k] = v
+        if cf:
+            cf.parent.mkdir(parents=True, exist_ok=True)
+            cf.write_text(json.dumps({f"{d} {r}": v for (d, r), v in latest.items()}, ensure_ascii=False))
     for p in PACK_DAYS:
-        t = pq.read_table(p, columns=["did", "rkey", "is_deleted", "name", "seq"]).to_pylist()
-        for r in sorted(t, key=lambda r: r["seq"]):
-            uri = f"at://{r['did']}/app.bsky.graph.starterpack/{r['rkey']}"
-            if r["is_deleted"]:
-                names.pop(uri, None)
-            else:
-                names[uri] = r["name"]
-    return names
+        for r in pq.read_table(p, columns=["did", "rkey", "rev", "is_deleted", "name", "seq"]).to_pylist():
+            v = (int(r["rev"] or 0), r["seq"] or 0, bool(r["is_deleted"]), r["name"] or "")
+            k = (r["did"], r["rkey"])
+            if k not in latest or v[:2] > tuple(latest[k][:2]):
+                latest[k] = v
+    return {f"at://{d}/app.bsky.graph.starterpack/{r}": " ".join(v[3].split())[:80]
+            for (d, r), v in latest.items() if not v[2] and v[3]}
 
 
 def feedgens():

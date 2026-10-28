@@ -77,7 +77,7 @@ def build(s5_dir, out, allow_unverified_controls=False):
     optout = inputs.did_set(inputs.PATHS["user_intents_optout"])
     offers, offers_sha = inputs.s5_card_packs(s5_dir)
     packs = inputs.packs_by_community(cache, pid_home, offers)
-    pnames = inputs.pack_names()
+    pnames = inputs.pack_names(cache)
     feeds_by_c = collections.defaultdict(list)
     for fg in inputs.feedgens():
         if fg["did"] in home:

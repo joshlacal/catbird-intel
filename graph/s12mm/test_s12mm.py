@@ -262,7 +262,7 @@ def test_launcher_print_only_spot_l4(tmp_path):
     (fake / "gcloud").chmod(0o755)
     env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}", "SESSIONS": str(tmp_path / "s.tsv"),
            "POSTS": "gs://catbird-436600-plan-60d/x/O8", "SIDECAR": "gs://catbird-436600-plan-60d/x/cids"}
-    for mode, maxrun in (("bench", "90m"), ("s12", "24h"), ("resume", "24h")):
+    for mode, maxrun in (("bench", "90m"), ("s12", "112h"), ("resume", "112h")):
         r = subprocess.run(["bash", str(HERE / "launch_s12mm.sh"), mode, "t-run"], capture_output=True, text=True, env=env)
         assert r.returncode == 0, r.stderr
         o = r.stdout

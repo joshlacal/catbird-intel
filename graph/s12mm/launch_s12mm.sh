@@ -7,7 +7,8 @@
 #   launch_s12mm.sh zones                 # read-only: L4 per us-west1 zone, L4/GPU quotas, the DLVM image
 #   launch_s12mm.sh stage-model           # one-time: Mac EG2 weights + SHA256SUMS -> plan-30d/inputs/models/
 #   launch_s12mm.sh bench  RUN_ID         # R-S7g benchmark/smoke: max-run 90 min, cap $1.50
-#   launch_s12mm.sh s12    RUN_ID         # R-S12m main run: max-run 24 h per VM, cap CAP_USD (default $45)
+#   launch_s12mm.sh s12    RUN_ID         # R-S12m main run: cap CAP_USD (default $60) over all VMs of the run;
+#                                         #   max-run = floor(cap / $/h) hours, so one VM alone cannot pass the cap
 #   launch_s12mm.sh resume RUN_ID         # a fresh VM continuing RUN_ID from its shard ledger (same caps)
 #   launch_s12mm.sh status | delete RUN_ID
 #   ... --execute
@@ -116,15 +117,15 @@ case "$MODE" in
   s12)
     need_run_id
     [[ -n "$POSTS" ]] || { echo "POSTS=gs://...O8 prefix is required" >&2; exit 2; }
-    CAP="${CAP_USD:-45}"
-    echo "# R-S12m: cap \$$CAP across all VMs of this run (the job's guard sums earlier VMs' ledger spend); max-run 24 h per VM"
+    CAP="${CAP_USD:-60}"; MAXRUN="$(python3 -c "print(int($CAP / $USD_PER_HOUR))")h"
+    echo "# R-S12m: cap \$$CAP across all VMs of this run (the job's guard sums earlier VMs' ledger spend); max-run $MAXRUN"
     stage_code
-    create_vm s12 24h "$CAP" ;;
+    create_vm s12 "$MAXRUN" "$CAP" ;;
   resume)
     need_run_id
-    CAP="${CAP_USD:-45}"
-    echo "# resume $RUN_ID on a fresh VM: finished units are skipped (ledger), the cap is shared"
-    create_vm s12-resume 24h "$CAP" ;;
+    CAP="${CAP_USD:-60}"; MAXRUN="$(python3 -c "print(int($CAP / $USD_PER_HOUR))")h"
+    echo "# resume $RUN_ID on a fresh VM after a Spot preemption: finished units are skipped (ledger), the cap is shared"
+    create_vm s12-resume "$MAXRUN" "$CAP" ;;
   status)
     run "gcloud compute instances list --project='$PROJECT' --filter='labels.$LABEL_KEY=$LABEL_VAL AND labels.step~^s12mm' --format='table(name,zone.basename(),status,labels.step,labels.run)'" ;;
   delete)

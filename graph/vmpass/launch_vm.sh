@@ -27,8 +27,8 @@ for a in "$@"; do [[ "$a" == "--execute" ]] && EXECUTE=1; done
 PROJECT="${PROJECT:-catbird-436600}"
 REGION="us-west1"
 ZONES="${ZONES:-us-west1-b us-west1-a us-west1-c}"
-MACHINE="n2-highmem-64"
-N_SSD=8
+MACHINE="${MACHINE:-n2-highmem-64}"
+N_SSD="${N_SSD:-8}"
 PLAN30="${PLAN30:-gs://catbird-436600-plan-30d}"
 PLAN60="${PLAN60:-gs://catbird-436600-plan-60d}"
 EXTRACT="gs://catbird-436600-jetstream-buffer-20261020/derived/all-extract-20261024"

@@ -230,3 +230,30 @@ def profile_snapshot():
     """Display names and bios from the Oct 27 local profile-record snapshot (S5 (i) keeps neither)."""
     t = pq.read_table(PATHS["profile_snapshot"], columns=["did", "name", "description"]).to_pylist()
     return {r["did"]: (r["name"] or "", r["description"] or "") for r in t}
+
+
+def s5_extra(s5_dir):
+    """S5's own derived safety outputs, unioned in as extra exclusions (defence in depth) when present:
+    eligibility_rule2_exclude_dids.txt (S5's rule (2) list), status.tsv (relay listRepos: DIDs with
+    active=false, i.e. purge-eligible), and card_packs_filter.tsv (S5's keep/drop per offered pack)."""
+    root = pathlib.Path(s5_dir).expanduser()
+    out = {"rule2": set(), "inactive": set(), "pack_drop": set(), "files": {}}
+    f = root / "eligibility_rule2_exclude_dids.txt"
+    if f.exists():
+        out["rule2"] = did_set(f); out["files"][f.name] = sha256(f)
+    f = root / "status.tsv"
+    if f.exists():
+        with open(f) as fp:
+            for line in fp:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 2 and parts[1] == "false":
+                    out["inactive"].add(parts[0])
+        out["files"][f.name] = sha256(f)
+    f = root / "card_packs_filter.tsv"
+    if f.exists():
+        for line in open(f):
+            parts = line.rstrip("\n").split("\t")
+            if parts[-1] != "keep":
+                out["pack_drop"].add(parts[1])
+        out["files"][f.name] = sha256(f)
+    return out

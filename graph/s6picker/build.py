@@ -67,6 +67,8 @@ def build(s5_dir, out, allow_unverified_controls=False):
     claude_c, claude_p = inputs.claude_labels()
     hfr = inputs.did_set(inputs.PATHS["hide_from_recs_union"])
     snap = inputs.profile_snapshot()
+    s5x = inputs.s5_extra(s5_dir)
+    s5_excl = s5x["rule2"] | s5x["inactive"]
     optout = inputs.did_set(inputs.PATHS["user_intents_optout"])
     offers, offers_sha = inputs.s5_card_packs(s5_dir)
     packs = inputs.packs_by_community(cache, pid_home, offers)
@@ -109,6 +111,8 @@ def build(s5_dir, out, allow_unverified_controls=False):
             if DROP_PROFILE_CLASSES & claude_p.get(d, set()):
                 drop_member["claude_profile_minors_or_adult"] += 1; continue
             pre.append(d)
+            if d in s5_excl:
+                drop_member["s5_rule2_or_inactive"] += 1; continue
             st = lv.status(d)
             if st != "ok":
                 drop_member[f"live_{st}"] += 1; continue
@@ -152,8 +156,8 @@ def build(s5_dir, out, allow_unverified_controls=False):
             "packs": [], "feeds": [],
         }
         if not sensitive:
-            card["packs"], pstat = card_packs(packs.get(c, []), lv, pnames)
-            card["feeds"], fstat = card_feeds(feeds_by_c.get(c, []), lv, hfr)
+            card["packs"], pstat = card_packs(packs.get(c, []), lv, pnames, s5x)
+            card["feeds"], fstat = card_feeds(feeds_by_c.get(c, []), lv, hfr, s5_excl)
             stats.update(pstat); stats.update(fstat)
         cards.append(card)
 
@@ -182,9 +186,12 @@ def build(s5_dir, out, allow_unverified_controls=False):
     }
     (out / "cards.json").write_text(json.dumps(data, ensure_ascii=False))
     (out / "index.html").write_text(render(data))
-    ver = verify(data, lv, hfr, claude_p, claude_c, excluded)
+    ver = verify(data, lv, hfr, claude_p, claude_c, excluded, s5_excl)
     (out / "verify.json").write_text(json.dumps(ver, indent=1))
     receipt = make_receipt(data, lv, s5_dir, out, stats, drop_member, excluded, ver, t0)
+    receipt["s5"]["extra_exclusion_files_sha256"] = s5x["files"]
+    receipt["s5"]["extra_exclusions"] = {"rule2": len(s5x["rule2"]), "inactive": len(s5x["inactive"]),
+                                         "pack_drop": len(s5x["pack_drop"])}
     (out / "receipt.json").write_text(json.dumps(receipt, indent=1, ensure_ascii=False))
     return data, ver, receipt
 
@@ -196,12 +203,16 @@ def acct(p, hide_from_recs, snap=None):
             "posts": p.get("postsCount") or 0, "hfr": hide_from_recs}
 
 
-def card_packs(cands, lv, pnames):
+def card_packs(cands, lv, pnames, s5x):
     """§3.3 / S1 §10 pack filter: drop if any member is taken down, missing, labelled or
     !no-unauthenticated (hide-from-recs members do not drop a pack, A1). Unchecked members drop it too."""
     kept, st = [], collections.Counter()
     for p in cands:
-        statuses = collections.Counter(lv.status(m) for m in p["members"])
+        if p["uri"] in s5x["pack_drop"]:
+            st["packs_dropped_by_s5_filter"] += 1
+            continue
+        statuses = collections.Counter("s5_rule2_or_inactive" if m in s5x["rule2"] or m in s5x["inactive"]
+                                       else lv.status(m) for m in p["members"])
         bad = {k: v for k, v in statuses.items() if k != "ok"}
         if bad:
             st["packs_dropped_" + "_".join(sorted(bad))] += 1
@@ -216,7 +227,7 @@ def card_packs(cands, lv, pnames):
     return kept, st
 
 
-def card_feeds(fgs, lv, hfr):
+def card_feeds(fgs, lv, hfr, s5_excl):
     """Feed filter: drop if the creator is hide-from-recs, !no-unauthenticated, labelled, taken down,
     missing, or has no live check."""
     kept, st = [], collections.Counter()
@@ -224,8 +235,8 @@ def card_feeds(fgs, lv, hfr):
         s = lv.status(f["did"])
         if f["did"] in hfr:
             st["feeds_dropped_creator_hide_from_recs"] += 1; continue
-        if s != "ok":
-            st[f"feeds_dropped_creator_{s}"] += 1; continue
+        if s != "ok" or f["did"] in s5_excl:
+            st[f"feeds_dropped_creator_{s if s != 'ok' else 's5_rule2_or_inactive'}"] += 1; continue
         st["feeds_kept"] += 1
         kept.append({"uri": f"at://{f['did']}/app.bsky.feed.generator/{f['rkey']}", "name": f["display_name"][:60],
                      "description": " ".join(f["description"].split())[:140], "creator": f["did"],
@@ -235,7 +246,7 @@ def card_feeds(fgs, lv, hfr):
     return kept, st
 
 
-def verify(data, lv, hfr, claude_p, claude_c, excluded):
+def verify(data, lv, hfr, claude_p, claude_c, excluded, s5_excl=frozenset()):
     """Independent re-check of everything the page shows. Any entry in `violations` fails the S6 bar."""
     v = []
     for key, cd in data["cards"].items():
@@ -252,6 +263,8 @@ def verify(data, lv, hfr, claude_p, claude_c, excluded):
             s = lv.status(m["did"])
             if s != "ok":
                 v.append(f"card {c}: member {m['did']} live status {s}")
+            if m["did"] in s5_excl:
+                v.append(f"card {c}: member {m['did']} in S5 rule-2/inactive list")
             if DROP_PROFILE_CLASSES & claude_p.get(m["did"], set()):
                 v.append(f"card {c}: member {m['did']} Claude profile minors/adult")
         for p in cd["packs"]:

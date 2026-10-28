@@ -81,7 +81,7 @@ create_vm() {  # $1 step label, $2 max-run duration
  --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-balanced \
  --scopes=storage-rw,compute-rw --labels='$LABEL_KEY=$LABEL_VAL,step=$step,run=$(echo "$RUN_ID" | tr 'A-Z_.' 'a-z--')' \
  --metadata-from-file=startup-script='$HERE/vm_bootstrap.sh' \
- --metadata='vmpass-run-id=$RUN_ID,vmpass-mode=${step%%-*},vmpass-plan30=$PLAN30,vmpass-plan60=$PLAN60,vmpass-extract=$EXTRACT,vmpass-ch-version=$CH_VERSION,vmpass-rules-sha256=$rules_sha'"
+ --metadata='vmpass-run-id=$RUN_ID,vmpass-mode=${step%%-*},vmpass-plan30=$PLAN30,vmpass-plan60=$PLAN60,vmpass-extract=$EXTRACT,vmpass-ch-version=$CH_VERSION,vmpass-rules-sha256=$rules_sha,vmpass-bucket-shards=${BUCKET_SHARDS:-0}'"
     printf '+ %s\n' "$cmd"
     if [[ $EXECUTE -eq 1 ]]; then
       if eval "$cmd"; then
@@ -113,6 +113,14 @@ case "$MODE" in
     echo "# S9 main pass: cap \$32 = (9 h + one 2.75 h restart) x \$2.715/h; a fresh VM re-stages (10-30 min)"
     stage_code
     create_vm s9 9h
+    ;;
+  s8-resume)
+    need_run_id
+    echo "# S8 resumed on a fresh VM, same RUN_ID: inputs, inventory, read_rate, hash check and the DID map are skipped (ledger);"
+    echo "# staging and bucketing rerun. The code tarball is re-uploaded so the VM runs this checkout. BUCKET_SHARDS=K stages and"
+    echo "# buckets only K evenly spaced directories (projection scaled by their row fraction). Max-run \${S8_MAXRUN:-90m}."
+    stage_code
+    create_vm s8-resume "${S8_MAXRUN:-90m}"
     ;;
   resume)
     need_run_id

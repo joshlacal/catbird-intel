@@ -42,6 +42,25 @@ SIDE_OPTIONAL = ("status.tsv", "plc.tsv", "comm_cand1.tsv", "comm_cand5.tsv", "m
 SPOT_PER_HOUR = 2.715  # plan §7.1: n2-highmem-64 Spot + 8 x 375 GiB local SSD + boot
 
 
+def select_shards(dirs: list[str], k: int) -> list[str]:
+    """k evenly spaced staged directories (all when k <= 0): S8's bucketing subset."""
+    dirs = sorted(dirs)
+    if k <= 0 or k >= len(dirs):
+        return dirs
+    return [dirs[(i * len(dirs)) // k] for i in range(k)]
+
+
+def manifest_dirs(manifest: str) -> dict[str, int]:
+    """Rows per top-level extract directory, from the manifest (path = /all|posts/<dir>/...)."""
+    rows: dict[str, int] = {}
+    for line in pathlib.Path(manifest).read_text().splitlines()[1:]:
+        if line.strip():
+            path, _b, n = line.split("\t")
+            d = path.strip("/").split("/")[1]
+            rows[d] = rows.get(d, 0) + int(n)
+    return rows
+
+
 class Pass:
     def __init__(self, a: argparse.Namespace):
         self.a = a
@@ -74,6 +93,17 @@ class Pass:
         self.p2dir = self.work / "p2"
         self.buckets = self.work / "buckets"
         self.have: dict[str, bool] = {}
+        import threading
+        self._log_lock = threading.Lock()
+        self.progress_log = self.work / "progress.log"
+        self._last_log_upload = 0.0
+        self._n_shards = 0
+        self.hb_s = float(os.environ.get("VMPASS_HEARTBEAT_S", "120"))
+        self.subset_fraction = 1.0
+        self.bucket_shards = int(getattr(a, "bucket_shards", 0) or 0)
+        if self.bucket_shards and a.mode != "s8":
+            raise SystemExit("--bucket-shards is an S8 measurement option; S9 buckets every staged file")
+        self.log_upload_s = float(os.environ.get("VMPASS_LOG_UPLOAD_S", "180"))
 
     # ---------- ledger plumbing ----------
     def _key30(self, rel: str) -> str:
@@ -91,6 +121,8 @@ class Pass:
                 rec = json.loads(marker.read_text())
                 if all((self.work / f).exists() for f in rec["files"]):
                     self.stats[name] = {**rec["stats"], "skipped": True}
+                    if name == "bucket":
+                        self.subset_fraction = float(rec["stats"].get("subset_fraction", 1.0))
                     return rec
         else:
             rec = self.ledger.done(name)
@@ -98,7 +130,10 @@ class Pass:
                 self.stats[name] = {**rec["stats"], "skipped": True}
                 return rec
         t0 = time.time()
+        self.log(f"step {name}: start")
         stats = fn() or {}
+        self.log(f"step {name}: done in {time.time() - t0:.0f}s" + (
+            f", peak RSS {stats['peak_rss_bytes'] / 2**30:.1f} GiB" if isinstance(stats.get("peak_rss_bytes"), (int, float)) else ""))
         files = []
         for d in uploads:
             base = self.work / d
@@ -115,6 +150,9 @@ class Pass:
         else:
             self.ledger.mark(name, rec)
         self.stats[name] = stats
+        if self.mode == "s8" and name not in ("projection", "finalize"):
+            self.incremental_projection(after=name)
+        self.flush_log(force=True)
         if self.fail_after and self.fail_after == name:
             raise SystemExit(f"VMPASS_FAIL_AFTER={name}: simulated preemption")
         return rec
@@ -152,9 +190,89 @@ class Pass:
         for st, pairs in by.values():
             st.get_files(pairs)
 
-    def sql(self, name: str, text: str) -> dict:
-        r = chrun.run_script(text, self.work, name)
-        return {"seconds": r["seconds"], "peak_rss_bytes": r["peak_rss_bytes"], "stdout": r["stdout"][-2000:]}
+    def sql(self, name: str, text: str, max_threads: int | None = None) -> dict:
+        r = chrun.run_script(text, self.work, name, heartbeat=self.heartbeat, heartbeat_s=self.hb_s, max_threads=max_threads)
+        return {"seconds": r["seconds"], "peak_rss_bytes": r["peak_rss_bytes"], "mean_cpu_pct": r["mean_cpu_pct"],
+                "clickhouse_progress": r["last_progress"], "stdout": r["stdout"][-2000:]}
+
+    # ---------- progress log (streamed to the 30-day store, so an overrun still shows where time went) ----------
+    def log(self, msg: str) -> None:
+        line = f"[{dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}] +{time.time() - self.t_start:.0f}s {msg}"
+        print(line, file=sys.stderr, flush=True)
+        with self._log_lock:
+            with open(self.progress_log, "a") as fh:
+                fh.write(line + "\n")
+        self.flush_log()
+
+    def heartbeat(self, name: str, info: dict) -> None:
+        extra = ""
+        if name.startswith("bucket"):
+            done = len(list((self.buckets / "_done").glob("*.json"))) if (self.buckets / "_done").exists() else 0
+            extra = f" shards_done={done}/{self._n_shards}"
+        self.log(f"  {name}: {info['elapsed_s']}s rss={info['rss_gb']}GiB cpu={info['cpu_pct']}%{extra} ch: {info['clickhouse_progress'] or '-'}")
+
+    def flush_log(self, force: bool = False) -> None:
+        if not force and time.time() - self._last_log_upload < self.log_upload_s:
+            return
+        self._last_log_upload = time.time()
+        try:
+            self.s30.put(self.progress_log, self._key30("_logs/progress.log"))
+        except Exception as e:  # noqa: BLE001 - logging must never stop the pass
+            print(f"progress-log upload failed: {e}", file=sys.stderr, flush=True)
+
+    def incremental_projection(self, after: str) -> None:
+        """S8: rewrite S8/projection.json after every finished step with what is known
+        so far, so a max-run kill still leaves a partial projection in the store."""
+        import projection
+        try:
+            proj = projection.incremental(self, after)
+            d = self.out30 / "S8"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "projection.json").write_text(json.dumps(proj, indent=1, sort_keys=True, default=str))
+            (d / "projection.txt").write_text(projection.render_partial(proj))
+            self._upload(["out30/S8/projection.json", "out30/S8/projection.txt"])
+        except Exception as e:  # noqa: BLE001
+            self.log(f"incremental projection after {after} failed: {e!r}"[:500])
+
+    # ---------- sharded bucketing ----------
+    def bucket_step(self, actor_filter: str) -> dict:
+        """One clickhouse-local process per top-level staged directory, `jobs` at a time."""
+        staged = sorted({p.relative_to(self.stage).parts[0] for p in self.stage.glob("*/**/*.parquet")})
+        shards = select_shards(staged, self.bucket_shards)
+        if self.a.manifest:
+            per = manifest_dirs(self.a.manifest)
+            self.subset_fraction = sum(per.get(s, 0) for s in shards) / max(1, sum(per.values()))
+        else:
+            self.subset_fraction = len(shards) / max(1, len(staged))
+        if len(shards) < len(staged) or self.subset_fraction < 1:
+            self.log(f"bucket: S8 subset of {len(shards)}/{len(staged)} staged dirs, f = {self.subset_fraction:.4f} of manifest rows")
+        self._n_shards = len(shards)
+        donedir = self.buckets / "_done"
+        donedir.mkdir(parents=True, exist_ok=True)
+        todo = [s for s in shards if not (donedir / f"{s}.json").exists()]
+        ncpu = os.cpu_count() or 8
+        cfg = self.rules.d.get("bucket", {})
+        jobs = int(cfg.get("jobs") or max(1, min(len(todo) or 1, ncpu // int(cfg.get("threads_per_job", 5)))))
+        threads = int(cfg.get("threads_per_job") or max(2, ncpu // jobs))
+        self.log(f"bucket: {len(shards)} shards ({len(todo)} to do), {jobs} parallel x {threads} threads")
+        t0 = time.time()
+
+        def done(name: str, st: dict) -> None:
+            shard = name[len("bucket_"):]
+            (donedir / f"{shard}.json").write_text(json.dumps({k: v for k, v in st.items() if k != "stdout"}))
+            n = len(list(donedir.glob("*.json")))
+            self.log(f"bucket shard {shard} done in {st['seconds']:.0f}s ({n}/{len(shards)} shards, {time.time() - t0:.0f}s elapsed)")
+            if self.mode == "s8" and (n == len(shards) or n % max(1, len(shards) // 8) == 0):
+                self.incremental_projection(after=f"bucket {n}/{len(shards)}")
+
+        dm = str(self.g / "didmap.parquet")
+        sqls = [(f"bucket_{s}", sql_global.bucket(self.rules, str(self.stage), dm, str(self.buckets), actor_filter, shard=s)) for s in todo]
+        res = chrun.run_many(sqls, self.work, jobs, threads, on_done=done, heartbeat=self.heartbeat, heartbeat_s=self.hb_s)
+        per = [json.loads(p.read_text()) for p in donedir.glob("*.json")]
+        return {"seconds": round(time.time() - t0, 3), "shards": len(shards), "jobs": jobs, "threads_per_job": threads,
+                "subset_fraction": self.subset_fraction, "shard_names": shards,
+                "peak_rss_bytes": sum(sorted((x["peak_rss_bytes"] for x in per), reverse=True)[:jobs]),
+                "shard_seconds_sum": round(sum(x["seconds"] for x in per), 1), "ran_now": len(res)}
 
     # ---------- inputs ----------
     def fetch_inputs(self) -> dict:
@@ -202,9 +320,7 @@ class Pass:
         self.ensure("didmap")
         hf = "cityHash64(ifNull(did, ''))"
         actor_filter = f"({hf} % {r['samples']['s8_actor_mod'][0]} = 0 OR {hf} % {N} = 0)" if s8 else "1"
-        self.step("bucket", lambda: self.sql("bucket", sql_global.bucket(r, str(self.stage), str(self.g / 'didmap.parquet'),
-                                                                          str(self.buckets), actor_filter)),
-                  local_only=True, uploads=("buckets",))
+        self.step("bucket", lambda: self.bucket_step(actor_filter), local_only=True, uploads=("buckets",))
         p1opts = {"have_maps": self.have["maps"]}
         if s8:  # O3 sizing: every sampled actor stands in for a fit / M1 user
             p1opts.update(fit_flag="s200", m1_flag="s200")
@@ -214,7 +330,7 @@ class Pass:
             name = f"p1_{i:02d}"
             o = self.p1dir / f"i{i:02d}"
             self.step(name, lambda i=i, o=o: (self._clean(o), self.sql(name, sql_p1.p1(
-                r, i, str(self.buckets / f"ev/p{i}.parquet"), str(self.buckets / f"po/p{i}.parquet"), str(self.g / "didmap.parquet"),
+                r, i, str(self.buckets / f"ev/p{i}/*.parquet"), str(self.buckets / f"po/p{i}/*.parquet"), str(self.g / "didmap.parquet"),
                 str(self.side), str(o), final1, p1opts)))[1],
                 uploads=(f"p1/i{i:02d}", "out30/O5-raw", "out30/O3b", "out30/O3c", "out30/positive-control"))
         for i in range(N):
@@ -399,7 +515,7 @@ CREATE TABLE c ENGINE = Memory AS SELECT * FROM (
 CREATE TABLE dmd ENGINE = Join(ANY, LEFT, uid) AS SELECT uid, did FROM file('{self.g}/didmap.parquet', Parquet, '{sql_global.S['didmap']}')
   WHERE uid IN (SELECT c_a FROM c UNION ALL SELECT x_a FROM c);
 CREATE TABLE tx ENGINE = Join(ANY, LEFT, ph) AS SELECT ph, argMax(text, (rev, seq)) AS text, argMax(rkey, (rev, seq)) AS rkey
-  FROM file('{self.buckets}/po/p*.parquet', Parquet, '{sql_global.S['po']}') WHERE op != 3 AND ph IN (SELECT c_ph FROM c UNION ALL SELECT x_ph FROM c) GROUP BY ph;
+  FROM file('{self.buckets}/po/p*/*.parquet', Parquet, '{sql_global.S['po']}') WHERE op != 3 AND ph IN (SELECT c_ph FROM c UNION ALL SELECT x_ph FROM c) GROUP BY ph;
 {sql_global.out(str(d / 'pairs.parquet'))}
 SELECT transform(stratum, [1, 2, 3, 4, 5], ['detached', 'block_after', 'non_follower', 'follower', 'mutual'], '') AS stratum,
   if(kind = 1, 'reply', 'quote') AS kind,
@@ -415,7 +531,7 @@ WHERE stratum = 6 AND joinGet('tx', 'rkey', c_ph) != '';
     # ---------- S8 projection and finalize ----------
     def projection(self) -> dict:
         import projection
-        proj = projection.project(self)
+        proj = {"partial": False, "after_step": "projection", "known": projection._known(self), **projection.project(self)}
         d = self.out30 / "S8"
         d.mkdir(parents=True, exist_ok=True)
         (d / "projection.json").write_text(json.dumps(proj, indent=1, sort_keys=True))
@@ -444,9 +560,17 @@ def main() -> int:
     p.add_argument("--manifest", default="")
     p.add_argument("--simgraph", default="")
     p.add_argument("--o3b-scales", default="", help="JSON {feature: scale} from S8's projection (S1 R4)")
+    p.add_argument("--bucket-shards", type=int, default=0,
+                   help="S8 only: bucket K evenly spaced staged directories and scale the projection by the row fraction")
     p.add_argument("--stage-seconds", type=float, default=0, help="staging wall time from the bootstrap, for the S8 projection")
     p.add_argument("--test-mode", action="store_true", help="allow a non-16 partition count (tests only)")
+    sp = sub.add_parser("shards", help="print the staged directories --bucket-shards K selects (for the VM bootstrap)")
+    sp.add_argument("--manifest", required=True)
+    sp.add_argument("--k", type=int, required=True)
     a = ap.parse_args()
+    if a.cmd == "shards":
+        print("\n".join(select_shards(list(manifest_dirs(a.manifest)), a.k)))
+        return 0
     stats = Pass(a).run()
     print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "stdout"} for k, v in stats.items()}, indent=1, default=str))
     return 0

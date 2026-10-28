@@ -14,7 +14,7 @@ CR/URf/URn/RH, Qf/Qn/QH, LST, follows), and computes, per cutoff:
 from __future__ import annotations
 
 from rules import A_TYPES, day_start
-from sqlc import NONE, PRELUDE, S, TY, out, settings_sql, src
+from sqlc import NONE, PRELUDE, S, TY, out, settings_sql, split_out, src
 
 TYPES2 = list(A_TYPES) + ["ACK", "RH", "QH"]
 LIKES = ("LO", "LR", "LU")
@@ -324,9 +324,8 @@ SELECT u, p, toUInt8({cidx}) AS cidx, toUInt8(qa_n >= {r['teacher']['min_engagem
 FROM l2_{tag}_{k}
 WHERE (withqn = 1 OR noqn = 1) AND light = 1 AND maint = 0 AND b1own = 0 AND u != p AND joinGet('dmu', 'is_prod', p) = 1
   AND joinGet('dmu', 'synth_no', u) = 0 AND joinGet('dmu', 'hide', p) = 0 AND joinGet('dmu', 'synth_no', p) = 0;
-{out(o + f'/maintd/k{{_partition_id}}_{tag}_{k}.parquet')} PARTITION BY kpart
-SELECT u, p, toUInt8({cidx}) AS cidx, toUInt32(nlk) AS n_up, toUInt32(n_pu) AS n_pu, maint AS flag,
-  toUInt8(cityHash64(least(u, p), greatest(u, p)) % {N}) AS kpart FROM l2_{tag}_{k} WHERE mutual = 1;
+{split_out(o + '/maintd/k{k}_' + f'{tag}_{k}.parquet', 'kpart', N, f"""SELECT u, p, toUInt8({cidx}) AS cidx, toUInt32(nlk) AS n_up, toUInt32(n_pu) AS n_pu, maint AS flag,
+  toUInt8(cityHash64(least(u, p), greatest(u, p)) % {N}) AS kpart FROM l2_{tag}_{k} WHERE mutual = 1""", f'x_maint_{tag}_{k}')}
 INSERT INTO o1 SELECT 'pairs_{tag}', toString({k}), '', '', count() FROM l2_{tag}_{k};
 INSERT INTO o1 SELECT 'aud_pairs_{tag}', toString({k}), '', '', countIf(aud = 1) FROM l2_{tag}_{k};
 DROP TABLE l2_{tag}_{k};
@@ -437,7 +436,7 @@ SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/',
 ) WHERE rn <= 3 AND nl > 0;
 CREATE TABLE ptxt ENGINE = Join(ANY, LEFT, ph) AS
 SELECT ph, argMax(text, (rev, seq)) AS text, argMax(alts, (rev, seq)) AS alts, argMax(labels, (rev, seq)) AS labels
-FROM {src(f'{buckets}/po/p{j}.parquet', 'po')} WHERE op != 3 GROUP BY ph;
+FROM {src(f'{buckets}/po/p{j}/*.parquet', 'po')} WHERE op != 3 GROUP BY ph;
 {out(final['o8'] + f'/j{j:02d}.parquet')}
 SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/', rkey) AS uri,
   formatDateTime(toDateTime(t), '%Y-%m-%dT%H:%i:%SZ') AS created,
@@ -451,7 +450,7 @@ FROM (
 ) WHERE rall <= {o8['max_posts']};
 {out(final['o9'] + f'/j{j:02d}.parquet')}
 SELECT u AS p, argMax(name, (rev, seq)) AS display_name, argMax(descr, (rev, seq)) AS description
-FROM {src(f'{buckets}/ev/p{j}.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'synth_no', u) = 0
+FROM {src(f'{buckets}/ev/p{j}/*.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'synth_no', u) = 0
 GROUP BY u;
 {out(o + '/o12c.parquet')}
 SELECT stratum, kind, c_ph, c_a, x_ph, x_a, hsh FROM (

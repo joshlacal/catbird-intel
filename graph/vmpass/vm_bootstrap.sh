@@ -86,7 +86,17 @@ upload_log
 S0=$(date +%s)
 mkdir -p /mnt/ssd/stage
 gcloud storage cp --quiet "$EXTRACT/manifest.tsv" /mnt/ssd/stage/manifest.tsv
-gcloud storage cp --recursive --quiet "$EXTRACT/v2-*" /mnt/ssd/stage/ || { log "staging failed"; finish 4; exit 0; }
+BUCKET_SHARDS="$(attr vmpass-bucket-shards || true)"; BUCKET_SHARDS="${BUCKET_SHARDS:-0}"
+if [[ "$BUCKET_SHARDS" -gt 0 ]]; then
+  # S8 on a bucketing subset: stage only the K evenly spaced directories passrun will bucket
+  mapfile -t SHARD_DIRS < <(/mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py shards --manifest /mnt/ssd/stage/manifest.tsv --k "$BUCKET_SHARDS")
+  log "staging a $BUCKET_SHARDS-directory subset: ${SHARD_DIRS[*]}"
+  for d in "${SHARD_DIRS[@]}"; do
+    gcloud storage cp --recursive --quiet "$EXTRACT/$d" /mnt/ssd/stage/ || { log "staging $d failed"; finish 4; exit 0; }
+  done
+else
+  gcloud storage cp --recursive --quiet "$EXTRACT/v2-*" /mnt/ssd/stage/ || { log "staging failed"; finish 4; exit 0; }
+fi
 STAGED=$(find /mnt/ssd/stage -name '*.parquet' | wc -l)
 STAGE_S=$(( $(date +%s) - S0 ))
 log "staged $STAGED objects in ${STAGE_S}s"
@@ -104,8 +114,10 @@ if gcloud storage cp --quiet "$PLAN30/inputs/$RUN_ID/o3b_scales.json" /mnt/ssd/o
 elif [[ "$MODE" == "s9" ]]; then
   log "S9 without S8's o3b_scales.json: O3b uses the rules' default scales (S1 R4 expects S8's)"
 fi
-( while sleep 600; do upload_log; done ) &
+( while sleep 180; do upload_log; done ) &   # passrun also streams work/progress.log to _logs/progress.log
+SHARD_ARG=()
+[[ "$BUCKET_SHARDS" -gt 0 ]] && SHARD_ARG=(--bucket-shards "$BUCKET_SHARDS")
 /mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py run --mode "$MODE" --stage /mnt/ssd/stage --work /mnt/ssd/work \
   --store30 "$PLAN30" --store60 "$PLAN60" --run-id "$RUN_ID" --inputs "$PLAN30/inputs/$RUN_ID" \
-  --manifest /mnt/ssd/stage/manifest.tsv --simgraph "$SIMGRAPH" --stage-seconds "$STAGE_S" "${RULES_ARG[@]}"
+  --manifest /mnt/ssd/stage/manifest.tsv --simgraph "$SIMGRAPH" --stage-seconds "$STAGE_S" "${RULES_ARG[@]}" "${SHARD_ARG[@]}"
 finish $?

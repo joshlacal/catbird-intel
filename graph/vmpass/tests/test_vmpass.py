@@ -56,7 +56,8 @@ def run_pass(mode: str, root: pathlib.Path, work: str, run_id: str, rules: str |
     if ENV.get("simgraph"):
         cmd += ["--simgraph", ENV["simgraph"]]
     cmd += extra or []
-    return subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **(env or {})})
+    fast_logs = {"VMPASS_HEARTBEAT_S": "0.5", "VMPASS_LOG_UPLOAD_S": "0"}
+    return subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **fast_logs, **(env or {})})
 
 
 def setUpModule() -> None:  # noqa: N802
@@ -82,6 +83,12 @@ def setUpModule() -> None:  # noqa: N802
     (root / "rules_s8.json").write_text(json.dumps(rules))
     r = run_pass("s8", root, "work8", "s8", rules=str(root / "rules_s8.json"))
     assert r.returncode == 0, r.stderr[-4000:]
+    # S8 on a bucketing subset (2 of the 3 staged directories), as a cheaper rerun would do
+    r = run_pass("s8", root, "work8s", "s8sub", rules=str(root / "rules_s8.json"), extra=["--bucket-shards", "2"])
+    assert r.returncode == 0, r.stderr[-4000:]
+    # S8 killed right after bucketing (a max-run kill): the partial projection must survive
+    r = run_pass("s8", root, "work8k", "s8kill", rules=str(root / "rules_s8.json"), env={"VMPASS_FAIL_AFTER": "bucket"})
+    assert r.returncode != 0
     # killed after p1_05, then resumed on a fresh work dir (a new Spot VM)
     r = run_pass("s9", root, "workk", "kill", env={"VMPASS_FAIL_AFTER": "p1_05"})
     ENV["kill_rc"] = r.returncode
@@ -135,8 +142,10 @@ class HashParity(unittest.TestCase):
 
     def test_buckets_hold_only_their_partition(self):
         for kind in ("ev", "po"):
-            for f in glob.glob(str(ENV["root"] / "work" / "buckets" / kind / "p*.parquet")):
-                k = int(pathlib.Path(f).stem[1:])
+            files = glob.glob(str(ENV["root"] / "work" / "buckets" / kind / "p*" / "*.parquet"))
+            self.assertGreater(len({pathlib.Path(f).name for f in files}), 1)  # one file per staged shard
+            for f in files:
+                k = int(pathlib.Path(f).parent.name[1:])
                 bad = ch(f"SELECT count() FROM file('{f}', Parquet) WHERE part != {k} OR "
                          f"u NOT IN (SELECT uid FROM file('{dm()}') WHERE part = {k})")[0][0]
                 self.assertEqual(int(bad), 0, f)
@@ -306,7 +315,7 @@ class Exclusions(unittest.TestCase):
         ids = self._all_uids()
         for d in (w.purged, w.bulk_no):
             self.assertNotIn(uid(d), ids)
-            n = ch(f"SELECT count() FROM file('{ENV['root']}/work/buckets/ev/*.parquet') WHERE u = {uid(d)} OR subj = {uid(d)}")
+            n = ch(f"SELECT count() FROM file('{ENV['root']}/work/buckets/ev/*/*.parquet') WHERE u = {uid(d)} OR subj = {uid(d)}")
             self.assertEqual(int(n[0][0]), 0)
         for f in (out30() / "O12").glob("*.parquet"):
             text = " ".join(" ".join(r) for r in ch(f"SELECT * FROM file('{f}')"))
@@ -479,7 +488,7 @@ class S8(unittest.TestCase):
 
     def test_sample_bucket_holds_sampled_actors_and_partition_zero(self):
         d = str(ENV["root"] / "work8" / "g" / "didmap.parquet")
-        bad = ch(f"SELECT count() FROM file('{ENV['root']}/work8/buckets/ev/*.parquet', Parquet) WHERE u NOT IN "
+        bad = ch(f"SELECT count() FROM file('{ENV['root']}/work8/buckets/ev/*/*.parquet', Parquet) WHERE u NOT IN "
                  f"(SELECT uid FROM file('{d}') WHERE h % 4 = 0 OR part = 0)")
         self.assertEqual(int(bad[0][0]), 0)
 
@@ -629,6 +638,71 @@ class S1Rules(unittest.TestCase):
         sc = json.loads((out30("s8") / "S8" / "o3b_scales.json").read_text())
         self.assertEqual(sorted(sc), sorted(f["name"] for f in rules_mod.load().features))
         self.assertTrue(all(v > 0 for v in sc.values()))
+
+
+class Progress(unittest.TestCase):
+    """Overrun diagnostics: a streamed progress log and an incremental S8 projection."""
+
+    def test_progress_log_streams_every_step(self):
+        log = (ENV["root"] / "s30" / "intermediates" / "base" / "_logs" / "progress.log").read_text()
+        for step in ("inventory", "didmap", "bucket", "p1_00", "p2_15", "finalize"):
+            self.assertIn(f"step {step}: start", log)
+            self.assertIn(f"step {step}: done", log)
+        self.assertRegex(log, r"bucket shard v2-test-\d done")
+        self.assertIn("ch: ", log)  # heartbeat lines carry ClickHouse's own progress
+
+    def test_partial_projection_survives_a_kill_after_bucketing(self):
+        p = json.loads((out30("s8kill") / "S8" / "projection.json").read_text())
+        self.assertTrue(p["partial"])
+        self.assertEqual(p["after_step"], "bucket")
+        k = p["known"]
+        for s in ("inventory", "read_rate", "didmap", "bucket"):
+            self.assertIn(s, k["steps"])
+        self.assertEqual(k["bucket_progress"]["shards_done"], 3)
+        self.assertGreater(k["s9_bucket_estimate"]["s9_bucket_hours"], 0)
+        self.assertIn("PARTIAL", (out30("s8kill") / "S8" / "projection.txt").read_text())
+
+    def test_full_projection_after_complete_s8(self):
+        p = json.loads((out30("s8") / "S8" / "projection.json").read_text())
+        self.assertFalse(p["partial"])
+        self.assertIn("projected", p)
+
+    def test_split_writes_one_file_per_partition(self):
+        for name in ("eng", "rep", "fol", "blk", "cur", "cand"):
+            files = sorted(pathlib.Path(f).name for f in glob.glob(f"{ENV['root']}/work/p1/i00/{name}/j*.parquet"))
+            self.assertEqual(len(files), 16, name)
+            for f in glob.glob(f"{ENV['root']}/work/p1/i00/{name}/j*.parquet"):
+                k = int(pathlib.Path(f).stem[1:])
+                col = {"eng": "apart", "rep": "tpart"}.get(name, "ppart")
+                self.assertEqual(int(ch(f"SELECT count() FROM file('{f}', Parquet) WHERE {col} != {k}")[0][0]), 0)
+
+
+class BucketSubset(unittest.TestCase):
+    def test_select_shards(self):
+        import passrun
+        dirs = [f"v2-{i:02d}" for i in range(92)]
+        self.assertEqual(passrun.select_shards(dirs, 0), dirs)
+        pick = passrun.select_shards(dirs, 12)
+        self.assertEqual(len(pick), 12)
+        self.assertEqual(pick[0], "v2-00")
+        self.assertEqual(len(set(pick)), 12)
+
+    def test_subset_run_scales_the_projection(self):
+        p = json.loads((out30("s8sub") / "S8" / "projection.json").read_text())
+        self.assertFalse(p["partial"])
+        f = p["measured"]["subset_fraction"]
+        man = {}
+        for line in (ENV["root"] / "stage" / "manifest.tsv").read_text().splitlines()[1:]:
+            path, _b, n = line.split("\t")
+            d = path.strip("/").split("/")[1]
+            man[d] = man.get(d, 0) + int(n)
+        import passrun
+        pick = passrun.select_shards(sorted(man), 2)
+        want = sum(man[d] for d in pick) / sum(man.values())
+        self.assertAlmostEqual(f, want, places=6)
+        self.assertLess(f, 1.0)
+        shards = {pathlib.Path(x).name for x in glob.glob(f"{ENV['root']}/work8s/buckets/ev/*/*.parquet")}
+        self.assertEqual(shards, {d + ".parquet" for d in pick})
 
 
 class Guards(unittest.TestCase):

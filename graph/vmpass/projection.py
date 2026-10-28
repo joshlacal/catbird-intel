@@ -72,27 +72,34 @@ def project(ps) -> dict:
     skew2 = sum(po.values()) / po0
     maxskew2 = max(po.values()) / po0 if po else 1
     total_rows = sum(ev.values()) + sum(po.values())
+    # S8 on a bucketing subset (--bucket-shards): measured work covers a fraction f of the rows;
+    # every row-proportional measurement below is scaled by F = 1/f (memory too, conservatively).
+    f_sub = float(getattr(ps, "subset_fraction", 1.0) or 1.0)
+    F = 1.0 / f_sub
+    man = (_st(ps, "inventory").get("manifest") or {})
+    if man:
+        total_rows = sum(v["rows"] for v in man.values())
 
     # bucketing: read cost + per-row write cost
     b = _st(ps, "bucket")
     rr = _st(ps, "read_rate")
     smp = f"u IN (SELECT uid FROM file('{ps.g}/didmap.parquet') WHERE s200 = 1)"
-    evb, pob = f"file('{ps.buckets}/ev/*.parquet', Parquet, 'u UInt32')", f"file('{ps.buckets}/po/*.parquet', Parquet, 'u UInt32')"
+    evb, pob = f"file('{ps.buckets}/ev/*/*.parquet', Parquet, 'u UInt32')", f"file('{ps.buckets}/po/*/*.parquet', Parquet, 'u UInt32')"
     brows = _q(ps, f"SELECT (SELECT count() FROM {evb}) + (SELECT count() FROM {pob}), "
                    f"(SELECT count() FROM {evb} WHERE {smp}) + (SELECT count() FROM {pob} WHERE {smp})")
     written, sample_rows = (int(brows[0][0]), int(brows[0][1])) if brows else (0, 0)
     t_read = rr.get("seconds", 0) or 0
     t_b = b.get("seconds", 0) or 0
-    per_row = max(0.0, t_b - t_read) / max(1, written)
+    per_row = max(0.0, t_b - t_read * f_sub) / max(1, written)
     bucket_full_s = t_read + per_row * total_rows
 
     # phase 1
     p1_0 = _st(ps, "p1_00")
     p1_s = sum((_st(ps, f"p1_{i:02d}").get("seconds", 0) or 0) for i in range(1, N))
-    p1_full_s = (p1_0.get("seconds", 0) or 0) * skew1
-    p1_from_sample_s = p1_s * r["samples"]["s8_actor_mod"][0] * N / max(1, N - 1)
-    p1_peak = (p1_0.get("peak_rss_bytes", 0) or 0) * maxskew1
-    p1_bytes = _bytes(ps, "p1_00")
+    p1_full_s = (p1_0.get("seconds", 0) or 0) * skew1 * F
+    p1_from_sample_s = p1_s * r["samples"]["s8_actor_mod"][0] * N / max(1, N - 1) * F
+    p1_peak = (p1_0.get("peak_rss_bytes", 0) or 0) * maxskew1 * F
+    p1_bytes = _bytes(ps, "p1_00") * F
 
     # phase 2 at two inbound rates
     r1, r2 = 1 / r["samples"]["s8_actor_mod"][1], 1 / r["samples"]["s8_actor_mod"][0]
@@ -114,12 +121,12 @@ def project(ps) -> dict:
         powr = x2 * (1 / r2) ** bt if x2 > 0 else 0
         return max(lin, powr), lin, powr
 
-    t2, t2lin, t2pow = extrap(a.get("seconds", 0) or 0, c.get("seconds", 0) or 0)
-    m2, m2lin, m2pow = extrap(a.get("peak_rss_bytes", 0) or 0, c.get("peak_rss_bytes", 0) or 0)
+    t2, t2lin, t2pow = (x * F for x in extrap(a.get("seconds", 0) or 0, c.get("seconds", 0) or 0))
+    m2, m2lin, m2pow = (x * F for x in extrap(a.get("peak_rss_bytes", 0) or 0, c.get("peak_rss_bytes", 0) or 0))
     p2_full_s = t2 * skew2
     p2_peak = m2 * maxskew2
     b2a, b2c = _bytes(ps, "p2_s400_00"), _bytes(ps, "p2_s200_00")
-    p2_bytes_1 = extrap(b2a, b2c)[0]
+    p2_bytes_1 = extrap(b2a, b2c)[0] * F
 
     # globals between/after phases, scaled by the phase-1 output growth
     p1_growth = skew1 * 1.0
@@ -128,14 +135,14 @@ def project(ps) -> dict:
     e0g = f"{ps.work}/p2_s200/j00/e0_*.parquet"
     if glob.glob(e0g):
         e0_rows = int(_q(ps, f"SELECT count() FROM file('{e0g}', Parquet)")[0][0])
-    e0_full = e0_rows / r2 * skew2
+    e0_full = e0_rows / r2 * skew2 * F
     teacher_s = 4 * 420 * max(0.05, e0_full / 2.04e9)  # simgraph: 7 min per 2.04B edges, 4 teachers
     sum(_bytes(ps, s) for s in ("maint",))
     maintd = glob.glob(f"{ps.work}/p2_s200/j00/maintd/*.parquet")
     maintd_bytes_full = 0
     if maintd:
         import os
-        maintd_bytes_full = sum(os.path.getsize(f) for f in maintd) / r2 * skew2
+        maintd_bytes_full = sum(os.path.getsize(f) for f in maintd) / r2 * skew2 * F
     didmap_s = _st(ps, "didmap").get("seconds", 0) or 0
     inv_s = _st(ps, "inventory").get("seconds", 0) or 0
     stage_s = float(getattr(ps.a, "stage_seconds", 0) or 0)
@@ -159,12 +166,12 @@ def project(ps) -> dict:
     if glob.glob(o3ag):
         # B' rows exist only for partition-0 producers here: x post skew for all producers, per sampled user
         b_rows = int(_q(ps, f"SELECT countIf(task = 2) FROM file('{o3ag}', Parquet)")[0][0]) * skew2 / max(1, users_s)
-    rpu_a = o3a_rows_s / max(1, users_s) + b_rows
-    rpu_b = o3b_rows_s / max(1, users_s)
+    rpu_a = (o3a_rows_s / max(1, users_s) + b_rows) * F
+    rpu_b = o3b_rows_s / max(1, users_s) * F
     o3c_rows = 0
     o3cf = glob.glob(f"{ps.out30}/O3c/i00.parquet")
     if o3cf:
-        o3c_rows = int(_q(ps, f"SELECT count() FROM file('{o3cf[0]}', Parquet)")[0][0]) * skew1
+        o3c_rows = int(_q(ps, f"SELECT count() FROM file('{o3cf[0]}', Parquet)")[0][0]) * skew1 * F
     _bpr_a, _bpr_b, bpr_c = 2 * nf + 16, nf + 16, 14
 
     def o3(nfit, nm1, nfeat, drop_test):
@@ -227,6 +234,7 @@ def project(ps) -> dict:
             "p2_rate_1_200": {k: c.get(k) for k in ("seconds", "peak_rss_bytes")},
             "bucket_rows_written": written, "sample_rows": sample_rows, "sample_share_of_all_rows": sample_rows / max(1, total_rows),
             "rows_total": total_rows, "partition_sizes": size, "post_partition_sizes": po,
+            "subset_fraction": f_sub, "bucket_shards": getattr(ps, "bucket_shards", None),
             "distinct_key_growth": keys, "sampled_users": users_s,
         },
         "projected": {
@@ -262,7 +270,7 @@ def project(ps) -> dict:
         o13_rows = int(_q(ps, f"SELECT count() FROM file('{o13f}', Parquet)")[0][0])
         o13_bytes = os.path.getsize(o13f)
         n13 = int(_q(ps, f"SELECT countIf(o13m1 = 1) FROM file('{ps.g}/didmap.parquet')")[0][0]) * frac_actor
-        rpu13 = o13_rows * skew2 / max(1, users_s)
+        rpu13 = o13_rows * skew2 / max(1, users_s) * F
         bpr13 = o13_bytes / max(1, o13_rows)
         m2n = int(_q(ps, f"SELECT countIf(m2c = 1) FROM file('{ps.g}/didmap.parquet')")[0][0])
         proj["projected"]["O13"] = {
@@ -311,4 +319,65 @@ def render(p: dict) -> str:
         "  modal-rev share by (src, kind) code on the sample: " + "; ".join(
             f"{k} {v['modal_rev_rows'] / max(1, v['rows']):.3f}" for k, v in p["kind_source_listing"]["sample_probe_by_src_kind_codes"].items()),
     ]
+    return "\n".join(lines) + "\n"
+
+
+def _known(ps) -> dict:
+    """What a partial S8 run already measured (no step depends on another here)."""
+    import datetime as dt
+    steps = {}
+    for name, st in ps.stats.items():
+        if isinstance(st, dict) and "seconds" in st:
+            steps[name] = {k: st.get(k) for k in ("seconds", "peak_rss_bytes", "mean_cpu_pct", "skipped") if k in st}
+    k = {"stage_seconds": float(getattr(ps.a, "stage_seconds", 0) or 0), "steps": steps,
+         "updated_utc": dt.datetime.now(dt.timezone.utc).isoformat()}
+    inv = (ps.stats.get("inventory") or {}).get("staged")
+    if inv:
+        k["staged"] = inv
+    donedir = ps.buckets / "_done"
+    if donedir.exists():
+        per = [json.loads(p.read_text()) for p in donedir.glob("*.json")]
+        k["bucket_progress"] = {"shards_done": len(per), "shards_total": ps._n_shards or None,
+                                "shard_seconds": sorted(round(x["seconds"]) for x in per)}
+    rr = (ps.stats.get("read_rate") or {}).get("seconds")
+    b = ps.stats.get("bucket") or {}
+    if rr and b.get("seconds") and inv:
+        # S9 bucketing writes every row; S8 wrote ~7%. Write throughput from the time S8 spent
+        # beyond a full read (bucketing reads ~1.5x read_rate's columns), applied to all rows.
+        evb, pob = f"file('{ps.buckets}/ev/*/*.parquet', Parquet, 'u UInt32')", f"file('{ps.buckets}/po/*/*.parquet', Parquet, 'u UInt32')"
+        written = int(_q(ps, f"SELECT (SELECT count() FROM {evb}) + (SELECT count() FROM {pob})")[0][0])
+        total = sum(v["rows"] for v in inv.values())
+        read_s = 1.5 * rr
+        write_rate = written / max(60.0, b["seconds"] - read_s)
+        k["s9_bucket_estimate"] = {"rows_written_s8": written, "rows_total": total, "read_component_s": read_s,
+                                   "write_rows_per_s": write_rate, "s9_bucket_hours": (read_s + total / write_rate) / 3600,
+                                   "method": "1.5 x read_rate + all rows / S8's write rate beyond the read (upper-bound style)"}
+    return k
+
+
+def incremental(ps, after: str) -> dict:
+    out = {"partial": True, "after_step": after, "known": _known(ps)}
+    try:
+        full = project(ps)
+        out.update(full)
+        out["partial"] = False
+    except Exception as e:  # noqa: BLE001 - steps not run yet
+        out["full_projection_unavailable"] = repr(e)[:300]
+    return out
+
+
+def render_partial(p: dict) -> str:
+    if not p.get("partial"):
+        return render(p)
+    k = p["known"]
+    lines = [f"S8 PARTIAL projection (after {p['after_step']}, {k['updated_utc']})",
+             f"  staging {k['stage_seconds']:.0f}s"]
+    for name, st in k["steps"].items():
+        lines.append(f"  {name}: {st.get('seconds', 0):.0f}s, peak {((st.get('peak_rss_bytes') or 0) / 2**30):.1f} GiB"
+                     + (" (skipped: done earlier)" if st.get("skipped") else ""))
+    if "bucket_progress" in k:
+        bp = k["bucket_progress"]
+        lines.append(f"  bucketing: {bp['shards_done']}/{bp['shards_total']} shards")
+    if "s9_bucket_estimate" in k:
+        lines.append(f"  S9 bucketing estimate: {k['s9_bucket_estimate']['s9_bucket_hours']:.2f} h")
     return "\n".join(lines) + "\n"

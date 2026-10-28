@@ -11,7 +11,7 @@ O5-raw blocks and follows, the positive-control list) are written here too.
 from __future__ import annotations
 
 from rules import day_start, epoch
-from sqlc import NONE, PRELUDE, S, out, settings_sql, src
+from sqlc import NONE, PRELUDE, S, out, settings_sql, split_out, src
 
 URI_RE = r"at://[^\"\\\\]+"  # SQL literal 'at://[^"\\]+' -> regex at://[^"\]+
 
@@ -236,18 +236,17 @@ ARRAY JOIN {C} AS C, range(5) AS cidx
 WHERE t > C - {W} AND t <= C AND arrayExists(x -> x.1 <= C AND C < x.2, joinGet('fiv', 'iv', u, a)) GROUP BY u, a, cidx;
 
 -- ===== outputs re-keyed by the target's partition (phase 2 inputs) =====
-{out(o + '/eng/j{_partition_id}.parquet')} PARTITION BY apart
-SELECT u, a, ph, t, s_t, typ, fol, m, apart FROM (
+{split_out(o + '/eng/j{k}.parquet', 'apart', r.N, f"""SELECT u, a, ph, t, s_t, typ, fol, m, apart FROM (
   SELECT u, a, ph, t, s_t, toUInt8(1) AS typ, fol, m, apart FROM lk WHERE t > {t12}
-  UNION ALL SELECT u, a, ph, t, s_t, toUInt8(2), fol, m, apart FROM rp WHERE t > {t12});
+  UNION ALL SELECT u, a, ph, t, s_t, toUInt8(2), fol, m, apart FROM rp WHERE t > {t12})""", 'x_eng')}
 {out(o + '/eng_own.parquet')} SELECT u, ph, t FROM lk WHERE t > {t12} AND t >= s_t AND t - s_t <= {cr_w};
-{out(o + '/rep/j{_partition_id}.parquet')} PARTITION BY tpart SELECT * FROM rep;
-{out(o + '/fol/j{_partition_id}.parquet')} PARTITION BY ppart SELECT * FROM fol;
+{split_out(o + '/rep/j{k}.parquet', 'tpart', r.N, 'SELECT * FROM rep', 'x_rep')}
+{split_out(o + '/fol/j{k}.parquet', 'ppart', r.N, 'SELECT * FROM fol', 'x_fol')}
 {out(o + '/fol_own.parquet')} SELECT * FROM fol;
-{out(o + '/blk/j{_partition_id}.parquet')} PARTITION BY ppart SELECT * FROM blk;
+{split_out(o + '/blk/j{k}.parquet', 'ppart', r.N, 'SELECT * FROM blk', 'x_blk')}
 {out(o + '/blk_own.parquet')} SELECT * FROM blk;
-{out(o + '/cur/j{_partition_id}.parquet')} PARTITION BY ppart SELECT * FROM cur;
-{out(o + '/cand/j{_partition_id}.parquet')} PARTITION BY ppart SELECT u, p, cidx, ck, pi, toUInt8(joinGet('dmu', 'part', p)) AS ppart FROM cand;
+{split_out(o + '/cur/j{k}.parquet', 'ppart', r.N, 'SELECT * FROM cur', 'x_cur')}
+{split_out(o + '/cand/j{k}.parquet', 'ppart', r.N, "SELECT u, p, cidx, ck, pi, toUInt8(joinGet('dmu', 'part', p)) AS ppart FROM cand", 'x_cand')}
 {out(o + '/pi.parquet')} SELECT * FROM pi;
 {out(o + '/lk_own_fol.parquet')} SELECT * FROM lkf;
 {out(o + '/gates.parquet')} SELECT * FROM gates;

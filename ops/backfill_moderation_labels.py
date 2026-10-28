@@ -678,8 +678,8 @@ def main():
     parser.add_argument('--max-total-bytes', type=int, default=1024 * 1024 * 1024)
     parser.add_argument('--min-free-bytes', type=int, default=30 * 1024 * 1024 * 1024)
     args = parser.parse_args()
-    if args.max_frames <= 0 or args.max_seconds <= 0 or not 0 < args.frames_per_second <= 1000 or args.max_total_bytes <= MAX_FRAME or args.min_free_bytes < 0:
-        parser.error('positive bounds and rate <=1000 frames/s required; byte budget must exceed max frame')
+    if args.max_frames <= 0 or args.max_seconds <= 0 or not 0 < args.frames_per_second <= 5000 or args.max_total_bytes <= MAX_FRAME or args.min_free_bytes < 0:
+        parser.error('positive bounds and rate <=5000 frames/s required; byte budget must exceed max frame')
     if args.batch_frames <= 0 or args.batch_frames > 20000:
         parser.error('batch frames must be between 1 and 20000')
     (run_packed if args.storage == 'packed' else run_legacy)(args)

@@ -131,7 +131,11 @@ class Pass:
                 return rec
         t0 = time.time()
         self.log(f"step {name}: start")
-        stats = fn() or {}
+        try:
+            stats = fn() or {}
+        except Exception as e:
+            self.report_failure(name, e)
+            raise
         self.log(f"step {name}: done in {time.time() - t0:.0f}s" + (
             f", peak RSS {stats['peak_rss_bytes'] / 2**30:.1f} GiB" if isinstance(stats.get("peak_rss_bytes"), (int, float)) else ""))
         files = []
@@ -191,9 +195,13 @@ class Pass:
             st.get_files(pairs)
 
     def sql(self, name: str, text: str, max_threads: int | None = None) -> dict:
-        r = chrun.run_script(text, self.work, name, heartbeat=self.heartbeat, heartbeat_s=self.hb_s, max_threads=max_threads)
+        r = chrun.run_script(text, self.work, name, heartbeat=self.heartbeat, heartbeat_s=self.hb_s, max_threads=max_threads,
+                             marks=True)
+        slow = sorted(r["statements"], key=lambda x: -x["seconds"])[:8]
+        for st in slow[:5]:
+            self.log(f"  {name} slowest: {st['seconds']:.1f}s stmt {st['i'] + 1}: {st['what'][:80]}")
         return {"seconds": r["seconds"], "peak_rss_bytes": r["peak_rss_bytes"], "mean_cpu_pct": r["mean_cpu_pct"],
-                "clickhouse_progress": r["last_progress"], "stdout": r["stdout"][-2000:]}
+                "clickhouse_progress": r["last_progress"], "slowest_statements": slow, "stdout": r["stdout"][-2000:]}
 
     # ---------- progress log (streamed to the 30-day store, so an overrun still shows where time went) ----------
     def log(self, msg: str) -> None:
@@ -204,12 +212,29 @@ class Pass:
                 fh.write(line + "\n")
         self.flush_log()
 
+    def report_failure(self, name: str, err: Exception) -> None:
+        """A failed step: its error into the progress log, and every ClickHouse stderr it
+        wrote (progress redraws removed, plus the raw tail) to intermediates/<run>/_logs/."""
+        self.log(f"step {name}: FAILED: {str(err)[:6000]}")
+        logs = self.work / "logs"
+        for f in sorted(logs.glob(f"{name}*.stderr")) if logs.exists() else []:
+            try:
+                clean = chrun.stderr_text(f)
+                out = logs / (f.name + ".txt")
+                out.write_text(clean)
+                self.s30.put(out, self._key30(f"_logs/{out.name}"))
+                self.log(f"  {f.name} ({f.stat().st_size} bytes): {clean[-3000:]}")
+            except Exception as e2:  # noqa: BLE001
+                self.log(f"  could not upload {f.name}: {e2!r}")
+        self.flush_log(force=True)
+
     def heartbeat(self, name: str, info: dict) -> None:
         extra = ""
         if name.startswith("bucket"):
             done = len(list((self.buckets / "_done").glob("*.json"))) if (self.buckets / "_done").exists() else 0
             extra = f" shards_done={done}/{self._n_shards}"
-        self.log(f"  {name}: {info['elapsed_s']}s rss={info['rss_gb']}GiB cpu={info['cpu_pct']}%{extra} ch: {info['clickhouse_progress'] or '-'}")
+        self.log(f"  {name}: {info['elapsed_s']}s rss={info['rss_gb']}GiB cpu={info['cpu_pct']}%{extra} "
+                 f"{info.get('statement') or ''} ch: {info['clickhouse_progress'] or '-'}")
 
     def flush_log(self, force: bool = False) -> None:
         if not force and time.time() - self._last_log_upload < self.log_upload_s:
@@ -329,9 +354,7 @@ class Pass:
         for i in range(N):
             name = f"p1_{i:02d}"
             o = self.p1dir / f"i{i:02d}"
-            self.step(name, lambda i=i, o=o: (self._clean(o), self.sql(name, sql_p1.p1(
-                r, i, str(self.buckets / f"ev/p{i}/*.parquet"), str(self.buckets / f"po/p{i}/*.parquet"), str(self.g / "didmap.parquet"),
-                str(self.side), str(o), final1, p1opts)))[1],
+            self.step(name, lambda i=i, o=o, name=name: self._p1(name, i, o, final1, p1opts),
                 uploads=(f"p1/i{i:02d}", "out30/O5-raw", "out30/O3b", "out30/O3c", "out30/positive-control"))
         for i in range(N):
             self.ensure(f"p1_{i:02d}")
@@ -383,6 +406,27 @@ class Pass:
             self.step("projection", lambda: self.projection(), uploads=("out30/S8",))
         self.step("finalize", self.finalize, uploads=("out30",))
         return self.stats
+
+    def p1_chunks(self, i: int) -> tuple[int, int]:
+        """Actor sub-chunks for phase-1 partition i, sized from the machine's RAM: the dedupe
+        GROUP BY measured ~350 B of memory per input row (synthetic, 96M rows -> 33 GiB), so a
+        chunk holds about 15% of RAM worth of rows, under the 20% external-GROUP-BY threshold."""
+        from sqlc import ram_bytes
+        rows = 0
+        for kind in ("ev", "po"):
+            pat = self.buckets / kind / f"p{i}" / "*.parquet"
+            if glob.glob(str(pat)):
+                rows += int(chrun.query(f"SELECT count() FROM file('{pat}', Parquet) FORMAT TSV", self.work, f"p1rows_{i}").strip() or 0)
+        per = int(os.environ.get("VMPASS_P1_ROWS_PER_CHUNK") or max(1_000_000, int(ram_bytes() * 0.15 / 350)))
+        return rows, max(1, -(-rows // per))
+
+    def _p1(self, name: str, i: int, o: pathlib.Path, final1: dict, p1opts: dict) -> dict:
+        self._clean(o)
+        rows, k = self.p1_chunks(i)
+        self.log(f"{name}: {rows} bucket rows -> {k} actor sub-chunk(s)")
+        st = self.sql(name, sql_p1.p1(self.rules, i, str(self.buckets / f"ev/p{i}/*.parquet"), str(self.buckets / f"po/p{i}/*.parquet"),
+                                      str(self.g / "didmap.parquet"), str(self.side), str(o), final1, {**p1opts, "chunks": k}))
+        return {**st, "bucket_rows": rows, "chunks": k}
 
     def _clean(self, d: pathlib.Path) -> None:
         if d.exists():

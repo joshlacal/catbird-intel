@@ -352,6 +352,25 @@ def _known(ps) -> dict:
         k["s9_bucket_estimate"] = {"rows_written_s8": written, "rows_total": total, "read_component_s": read_s,
                                    "write_rows_per_s": write_rate, "s9_bucket_hours": (read_s + total / write_rate) / 3600,
                                    "method": "1.5 x read_rate + all rows / S8's write rate beyond the read (upper-bound style)"}
+    p10 = ps.stats.get("p1_00") or {}
+    if p10.get("seconds") and p10.get("bucket_rows") and not p10.get("skipped"):
+        # S9 phase 1 from this run: partition 0 ran in full, so rows/s at full partition size is measured
+        # directly; S9 runs 16 partitions of the sizes the inventory counted, one after another.
+        sizes = {}
+        try:
+            inv = ps.work / "inv"
+            for part, n in _q(ps, f"SELECT part, sum(rows) FROM (SELECT part, rows FROM file('{inv}/ev_skew.parquet') "
+                                  f"UNION ALL SELECT part, rows FROM file('{inv}/po_skew.parquet')) GROUP BY part"):
+                sizes[int(part)] = int(n)
+        except Exception:  # noqa: BLE001
+            pass
+        rate = p10["bucket_rows"] / p10["seconds"]
+        k["s9_phase1_estimate"] = {
+            "p1_00_rows": p10["bucket_rows"], "p1_00_seconds": p10["seconds"], "p1_00_chunks": p10.get("chunks"),
+            "p1_00_peak_rss_bytes": p10.get("peak_rss_bytes"), "rows_per_s": rate,
+            "s9_phase1_hours": (sum(sizes.values()) / rate / 3600) if sizes else None,
+            "largest_partition_hours": (max(sizes.values()) / rate / 3600) if sizes else None,
+            "method": "full-size partition 0 rows/s x every partition's inventory row count (sequential)"}
     return k
 
 
@@ -378,6 +397,10 @@ def render_partial(p: dict) -> str:
     if "bucket_progress" in k:
         bp = k["bucket_progress"]
         lines.append(f"  bucketing: {bp['shards_done']}/{bp['shards_total']} shards")
+    if "s9_phase1_estimate" in k and k["s9_phase1_estimate"].get("s9_phase1_hours"):
+        e = k["s9_phase1_estimate"]
+        lines.append(f"  S9 phase-1 estimate: {e['s9_phase1_hours']:.2f} h ({e['rows_per_s'] / 1e6:.2f} M rows/s on partition 0, "
+                     f"{e['p1_00_chunks']} sub-chunks)")
     if "s9_bucket_estimate" in k:
         lines.append(f"  S9 bucketing estimate: {k['s9_bucket_estimate']['s9_bucket_hours']:.2f} h")
     return "\n".join(lines) + "\n"

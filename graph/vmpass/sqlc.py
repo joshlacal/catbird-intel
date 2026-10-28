@@ -51,8 +51,28 @@ CREATE OR REPLACE FUNCTION uri_rkey AS (u) -> if(startsWith(u, 'at://'), splitBy
 """
 
 
+def ram_bytes() -> int:
+    """Physical RAM of this machine (VMPASS_RAM_BYTES overrides, for tests)."""
+    if os.environ.get("VMPASS_RAM_BYTES"):
+        return int(os.environ["VMPASS_RAM_BYTES"])
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return 64 << 30
+
+
+def memory_settings(ram: int | None = None) -> dict:
+    """Per-query limits from the machine's RAM, not a fixed 512 GB. clickhouse-local's own
+    server-wide cap is 0.9 x RAM, so a query limit must sit under it; spilling starts early
+    enough that the spill buffers, Join tables and sort runs still fit."""
+    ram = ram or ram_bytes()
+    return {"max_memory_usage": int(ram * 0.70), "max_bytes_before_external_group_by": int(ram * 0.20),
+            "max_bytes_before_external_sort": int(ram * 0.20)}
+
+
 def settings_sql(rules) -> str:
-    ch = rules["clickhouse"]
+    ch = {**memory_settings(), **{k: v for k, v in rules["clickhouse"].items() if k not in ("max_memory_usage",
+          "max_bytes_before_external_group_by", "max_bytes_before_external_sort")}}
     return "\n".join(f"SET {k} = {v};" for k, v in ch.items()) + "\n"
 
 

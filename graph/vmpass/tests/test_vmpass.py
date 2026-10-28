@@ -72,7 +72,9 @@ def setUpModule() -> None:  # noqa: N802
                            env={**os.environ, "CARGO_TARGET_DIR": str(tgt)}, capture_output=True, text=True)
         if b.returncode == 0:
             ENV["simgraph"] = str(tgt / "release" / "simgraph")
-    r = run_pass("s9", root, "work", "base")
+    # the base run splits every phase-1 partition into actor sub-chunks (~1k rows each here); the
+    # "kill" run below does not, and Resume.test_resumed_outputs_equal_uninterrupted compares them
+    r = run_pass("s9", root, "work", "base", env={"VMPASS_P1_ROWS_PER_CHUNK": "400"})
     assert r.returncode == 0, r.stderr[-4000:]
     # the same world under the S1-registered rules (pre-registration §3 feature list, §6 list split)
     r = run_pass("s9", root, "work1", "s1", rules=str(rules_mod.S1))
@@ -666,6 +668,39 @@ class Progress(unittest.TestCase):
         p = json.loads((out30("s8") / "S8" / "projection.json").read_text())
         self.assertFalse(p["partial"])
         self.assertIn("projected", p)
+
+    def test_phase1_actor_subchunks(self):
+        rec = json.loads((ENV["root"] / "s30" / "intermediates" / "base" / "_ledger" / "p1_00.json").read_text())
+        self.assertGreater(rec["stats"]["chunks"], 1)
+        self.assertEqual(rec["stats"]["chunks"], -(-rec["stats"]["bucket_rows"] // 400))
+        log = (ENV["root"] / "s30" / "intermediates" / "base" / "_logs" / "progress.log").read_text()
+        self.assertIn("actor sub-chunk(s)", log)
+        self.assertIn("slowest:", log)
+
+    def test_failed_step_uploads_its_stderr(self):
+        root = ENV["root"]
+        import passrun
+        import types
+        a = types.SimpleNamespace(mode="s9", rules=str(rules_mod.DRAFT), rules_sha256="", allow_draft_rules=True, test_mode=False,
+                                  stage=str(root / "stage"), work=str(root / "wfail"), store30=str(root / "sf30"), store60=str(root / "sf60"),
+                                  run_id="fail", bucket_shards=0, manifest="", stage_seconds=0)
+        ps = passrun.Pass(a)
+        with self.assertRaises(Exception):
+            ps.step("boom", lambda: ps.sql("boom", "SELECT 1; SELECT groupArray(number) FROM numbers(50000000) SETTINGS max_memory_usage = 100000000;"))
+        log = (root / "sf30" / "intermediates" / "fail" / "_logs" / "progress.log").read_text()
+        self.assertIn("step boom: FAILED", log)
+        self.assertIn("MEMORY_LIMIT_EXCEEDED", log)
+        self.assertIn("in statement", log)
+        up = (root / "sf30" / "intermediates" / "fail" / "_logs" / "boom.stderr.txt").read_text()
+        self.assertIn("Code: 241", up)
+
+    def test_s9_phase1_estimate_in_partial_projection(self):
+        p = json.loads((out30("s8kill") / "S8" / "projection.json").read_text())
+        self.assertNotIn("s9_phase1_estimate", p["known"])  # killed before phase 1
+        full = json.loads((out30("s8") / "S8" / "projection.json").read_text())
+        e = full["known"]["s9_phase1_estimate"]
+        self.assertGreater(e["rows_per_s"], 0)
+        self.assertGreater(e["s9_phase1_hours"], 0)
 
     def test_split_writes_one_file_per_partition(self):
         for name in ("eng", "rep", "fol", "blk", "cur", "cand"):

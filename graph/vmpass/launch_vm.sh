@@ -32,7 +32,7 @@ N_SSD=8
 PLAN30="${PLAN30:-gs://catbird-436600-plan-30d}"
 PLAN60="${PLAN60:-gs://catbird-436600-plan-60d}"
 EXTRACT="gs://catbird-436600-jetstream-buffer-20261020/derived/all-extract-20261024"
-LABEL_KEY="catbird-plan"; LABEL_VAL="whole-network-20261025"
+LABEL_KEY="plan"; LABEL_VAL="whole-network-signals"   # the label the D1b "core cap" budget filters on
 CH_VERSION="${CH_VERSION:-26.9.24.8}"
 HERE0="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES="${RULES:-$HERE0/rules_s1.json}"   # the S1 translation (S9 refuses a DRAFT rules file)

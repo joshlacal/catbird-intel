@@ -657,7 +657,7 @@ class Guards(unittest.TestCase):
             self.assertIn(f"--max-run-duration='{maxrun}'", o)
             self.assertIn("--machine-type='n2-highmem-64'", o)
             self.assertEqual(o.count("--local-ssd=interface=NVME"), 8)
-            self.assertIn("catbird-plan=whole-network-20261025", o)
+            self.assertIn("plan=whole-network-signals", o)
             self.assertIn("dry run: nothing was executed", o)
         self.assertFalse((fake / "calls").exists(), "the dry run must not call gcloud")
         r = subprocess.run(["bash", str(VMPASS / "launch_vm.sh"), "delete", "unknown-run"], capture_output=True, text=True, env=env)

@@ -34,7 +34,9 @@ PLAN60="${PLAN60:-gs://catbird-436600-plan-60d}"
 EXTRACT="gs://catbird-436600-jetstream-buffer-20261020/derived/all-extract-20261024"
 LABEL_KEY="catbird-plan"; LABEL_VAL="whole-network-20261025"
 CH_VERSION="${CH_VERSION:-26.9.24.8}"
-RULES="${RULES:-}"                 # local path of the S1-registered rules file (S9 requires it)
+HERE0="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RULES="${RULES:-$HERE0/rules_s1.json}"   # the S1 translation (S9 refuses a DRAFT rules file)
+O3B_SCALES="${O3B_SCALES:-}"             # S9: S8's outputs/<s8 run>/S8/o3b_scales.json (S1 R4)
 SESSIONS="${SESSIONS:-$HOME/catbird-lake-local/vmpass-sessions.tsv}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GRAPH="$(cd "$HERE/.." && pwd)"
@@ -51,6 +53,7 @@ stage_code() {  # code + inputs go up first (free ingress); the VM pulls them
   run "tar -C '$GRAPH' --exclude='simgraph/target' --exclude='__pycache__' --exclude='.venv' -czf '$tarball' vmpass simgraph archive_graph_extract.py post_extract.py gcs_segments.py"
   run "gcloud storage cp '$tarball' '$PLAN30/inputs/$RUN_ID/code.tar.gz'"
   if [[ -n "$RULES" ]]; then run "gcloud storage cp '$RULES' '$PLAN30/inputs/$RUN_ID/rules.json'"; fi
+  if [[ -n "$O3B_SCALES" ]]; then run "gcloud storage cp '$O3B_SCALES' '$PLAN30/inputs/$RUN_ID/o3b_scales.json'"; fi
   # Side inputs (free ingress), so producer-keyed outputs use the edges.bin pids and every exclusion is applied.
   local lake="$HOME/catbird-lake-local"
   local -a inputs=(
@@ -105,7 +108,7 @@ case "$MODE" in
     ;;
   s9)
     need_run_id
-    [[ -n "$RULES" ]] || echo "# WARNING: S9 needs RULES=<S1 rules file>; the VM refuses a draft rules file" >&2
+    [[ -n "$O3B_SCALES" ]] || echo "# WARNING: S9 should get O3B_SCALES=<S8 run>/S8/o3b_scales.json (S1 R4); its sha256 goes in R-S9" >&2
     echo "# S9 main pass: cap \$32 = (9 h + one 2.75 h restart) x \$2.715/h; a fresh VM re-stages (10-30 min)"
     stage_code
     create_vm s9 9h

@@ -73,6 +73,9 @@ def setUpModule() -> None:  # noqa: N802
             ENV["simgraph"] = str(tgt / "release" / "simgraph")
     r = run_pass("s9", root, "work", "base")
     assert r.returncode == 0, r.stderr[-4000:]
+    # the same world under the S1-registered rules (pre-registration §3 feature list, §6 list split)
+    r = run_pass("s9", root, "work1", "s1", rules=str(rules_mod.S1))
+    assert r.returncode == 0, r.stderr[-4000:]
     # S8 with a denser actor sample so the tiny world has sampled users (1/4 and 1/8 instead of 1/200 and 1/400)
     rules = json.loads(rules_mod.DRAFT.read_text())
     rules["samples"]["s8_actor_mod"] = [4, 8]
@@ -310,14 +313,15 @@ class Exclusions(unittest.TestCase):
             self.assertNotIn(w.purged, text)
             self.assertNotIn(w.bulk_no, text)
 
-    def test_hide_from_recs_kept_as_signal_but_no_text_or_node(self):
+    def test_hide_from_recs_kept_as_signal_but_no_post_text_or_node(self):
+        """Amendment A1 (S1, 2026-10-28): the flag governs posts only; bios (O9) stay."""
         w = ENV["world"]
         h = uid(w.hide_prod)
         self.assertEqual(len(ch(f"SELECT p FROM file('{out30()}/O2/prod/*.parquet') WHERE p = {h}")), 1)
         self.assertGreater(int(ch(f"SELECT count() FROM file('{out30()}/O11/*.parquet') WHERE author = {h}")[0][0]), 0)
+        self.assertEqual(int(ch(f"SELECT count() FROM file('{out60()}/O9/*.parquet') WHERE p = {h}")[0][0]), 1)
         for s in (f"SELECT count() FROM file('{out30()}/O6/*.parquet') WHERE p = {h}",
-                  f"SELECT count() FROM file('{out60()}/O8/*.parquet') WHERE p = {h}",
-                  f"SELECT count() FROM file('{out60()}/O9/*.parquet') WHERE p = {h}"):
+                  f"SELECT count() FROM file('{out60()}/O8/*.parquet') WHERE p = {h}"):
             self.assertEqual(int(ch(s)[0][0]), 0, s)
         if ENV.get("simgraph"):
             self.assertEqual(int(ch(f"SELECT count() FROM file('{out30()}/O4/*.parquet') WHERE p = {h} OR q = {h}")[0][0]), 0)
@@ -332,7 +336,8 @@ class Exclusions(unittest.TestCase):
         for q in (f"SELECT count() FROM file('{out30()}/O11/*.parquet') WHERE author = {s} OR liker = {s}",
                   f"SELECT count() FROM file('{ENV['root']}/work/p2/j*/e0_*.parquet') WHERE p = {s} OR u = {s}",
                   f"SELECT count() FROM file('{out30()}/O6/*.parquet') WHERE p = {s}",
-                  f"SELECT count() FROM file('{out60()}/O8/*.parquet') WHERE p = {s}"):
+                  f"SELECT count() FROM file('{out60()}/O8/*.parquet') WHERE p = {s}",
+                  f"SELECT count() FROM file('{out60()}/O9/*.parquet') WHERE p = {s}"):
             self.assertEqual(int(ch(q)[0][0]), 0, q)
 
     def test_b1_owners_out_of_teacher(self):
@@ -377,8 +382,8 @@ class Schemas(unittest.TestCase):
         import pyarrow.parquet as pq
         r = rules_mod.load()
         fa = pq.read_schema(glob.glob(f"{out30()}/O3a/T_fit/*.parquet")[0])
-        self.assertEqual(fa.names[:13], ["u", "p", "cidx", "task", "ck", "pi", "ft", "y_a", "y_b", "y_c", "elig_p", "elig_u", "offset"])
-        self.assertEqual(fa.names[13:], [f["name"] for f in r.features])
+        self.assertEqual(fa.names[:14], ["u", "p", "cidx", "task", "ck", "pi", "ft", "heldout", "y_a", "y_b", "y_c", "elig_p", "elig_u", "offset"])
+        self.assertEqual(fa.names[14:], [f["name"] for f in r.features])
         self.assertEqual(str(fa.field(r.features[0]["name"]).type), "halffloat")
         fb = pq.read_schema(glob.glob(f"{out30()}/O3b/features_*.parquet")[0])
         self.assertEqual(fb.names, ["u", "p"] + [f["name"] for f in r.features])
@@ -513,6 +518,50 @@ class GcsBatching(unittest.TestCase):
         self.assertEqual(len(calls), 3)  # two uploads (one per directory) and one download
         self.assertTrue(all("--custom-time=2026-10-28T00:00:00Z" in c for c in calls[:2]))
         self.assertTrue(calls[0].endswith("gs://b/outputs/r/x/"))
+
+
+class S1Rules(unittest.TestCase):
+    """The pass under rules_s1.json: S1 pre-registration §3's 110 features, §6's list split."""
+
+    def test_s1_feature_list_reaches_o2_and_o3(self):
+        import pyarrow.parquet as pq
+        r = rules_mod.load(rules_mod.S1)
+        self.assertFalse(r.draft)
+        names = [f["name"] for f in r.features]
+        self.assertEqual(len(names), 110)
+        o2 = pq.read_schema(glob.glob(f"{out30('s1')}/O2/prod/*.parquet")[0]).names
+        for n in names:
+            self.assertIn(f"{n}__a05", o2)
+        o3 = pq.read_schema(glob.glob(f"{out30('s1')}/O3a/T_fit/*.parquet")[0]).names
+        self.assertEqual(o3[14:], names)
+
+    def test_s1_feature_values(self):
+        o3 = f"{out30('s1')}/O3a/*/*.parquet"
+        row = ch(f"SELECT min(FOL), max(FOL), max(LO_DSL), max(HEAVY), max(MUT), min(DL_L14), max(PBLKN), max(FBURST) FROM file('{o3}')")[0]
+        fmin, fmax, dsl, heavy, mut, dl, pblkn, fb = (float(x) for x in row)
+        self.assertEqual((fmin, fmax), (0.0, 1.0))
+        self.assertLessEqual(dsl, 90.0)
+        self.assertEqual(heavy, 0.0)  # nobody in the fixture follows >= 3,000 producers
+        self.assertEqual(pblkn, 1.0)
+        self.assertGreaterEqual(dl, 0.0)
+        w = ENV["world"]
+        o2 = f"{out30('s1')}/O2/prod/*.parquet"
+        def one(col, d):
+            return float(ch(f"SELECT {col} FROM file('{o2}') WHERE p = (SELECT uid FROM file('{ENV['root']}/work1/g/didmap.parquet') WHERE did = '{d}')")[0][0])
+        self.assertGreater(one("BLK__a10", w.producers[1]), 0)      # blockers of producers[1] who also engage it
+        self.assertGreater(one("LBLK__a10", w.producers[2]), 0)     # list-block subscribers covering producers[2]
+        self.assertGreater(float(ch(f"SELECT sum(LST_N__a10), sum(DL_L14__a10), sum(MAINT__a10) + 1 FROM file('{o2}')")[0][0]), 0)
+
+    def test_s1_list_split(self):
+        rows = ch(f"SELECT did, ls FROM file('{ENV['root']}/work1/g/didmap.parquet')")
+        code = {0: 1, 1: 1, 4: 1, 5: 1, 2: 2, 6: 3, 3: 4, 7: 4}
+        for d, ls in rows:
+            self.assertEqual(int(ls), code[city_hash64(d) % 8])
+
+    def test_s8_writes_o3b_scales(self):
+        sc = json.loads((out30("s8") / "S8" / "o3b_scales.json").read_text())
+        self.assertEqual(sorted(sc), sorted(f["name"] for f in rules_mod.load().features))
+        self.assertTrue(all(v > 0 for v in sc.values()))
 
 
 class Guards(unittest.TestCase):

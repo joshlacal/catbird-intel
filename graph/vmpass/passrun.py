@@ -232,6 +232,9 @@ class Pass:
         final2 = {"o2": str(self.out30 / "O2"), "o3a": str(self.out30 / "O3a"), "o3b": str(self.out30 / "O3b"), "o6": str(self.out30 / "O6"),
                   "o8": str(self.out60 / "O8"), "o9": str(self.out60 / "O9"), "o11": str(self.out30 / "O11")}
         p2opts = {"fit_flag": p1opts.get("fit_flag", "fit")}
+        if self.a.o3b_scales:  # S1 R4: p99.9 of |x_k| on S8's sample, hashed into R-S9
+            p2opts["o3b_scales"] = json.loads(pathlib.Path(self.a.o3b_scales).read_text())
+            self.stats["o3b_scales"] = {"path": self.a.o3b_scales, "sha256": sha256_file(pathlib.Path(self.a.o3b_scales))}
         if s8:
             runs = [("s400", 0), ("s200", 0)]
         else:
@@ -436,6 +439,7 @@ def main() -> int:
     p.add_argument("--allow-draft-rules", action="store_true")
     p.add_argument("--manifest", default="")
     p.add_argument("--simgraph", default="")
+    p.add_argument("--o3b-scales", default="", help="JSON {feature: scale} from S8's projection (S1 R4)")
     p.add_argument("--stage-seconds", type=float, default=0, help="staging wall time from the bootstrap, for the S8 projection")
     p.add_argument("--test-mode", action="store_true", help="allow a non-16 partition count (tests only)")
     a = ap.parse_args()

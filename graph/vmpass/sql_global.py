@@ -50,8 +50,12 @@ def didmap(rules, stage: str, side: str, o: str, have: dict) -> str:
     fit = halv(f"h % {smp['fit_mod']} = {smp['fit_rem']}", 2, int(smp["fit_halvings"]))
     m1 = f"h % {smp['m1_mod'] * (2 ** int(smp['m1_halvings']))} = {smp['m1_rem']}"
     lsx = f"cityHash64(concat(did, '{ls['salt']}')) % {ls['mod']}"
-    lscode = (f"multiIf({lsx} >= {ls['A'][0]} AND {lsx} < {ls['A'][1]}, 1, {lsx} >= {ls['B1a'][0]} AND {lsx} < {ls['B1a'][1]}, 2, "
-              f"{lsx} >= {ls['B1b'][0]} AND {lsx} < {ls['B1b'][1]}, 3, {lsx} >= {ls['B2'][0]} AND {lsx} < {ls['B2'][1]}, 4, 0)")
+    def _in(vals):
+        return "(" + ", ".join(str(v) for v in vals) + ")"
+    # S1 §6: cityHash64(owner) % 8 -> {0,1,4,5} A, 2 B1a, 6 B1b, {3,7} B2
+    lscode = (f"multiIf({lsx} IN {_in(ls['A'])}, 1, {lsx} IN {_in(ls['B1a'])}, 2, {lsx} IN {_in(ls['B1b'])}, 3, "
+              f"{lsx} IN {_in(ls['B2'])}, 4, 0)")
+    hox = f"cityHash64(concat(did, '{smp['holdout_salt']}')) % {smp['holdout_mod']} = {smp['holdout_rem']}"
     status_join = "LEFT JOIN st ON st.did = a.did" if have.get("status") else ""
     status_cols = "st.did != '' AS in_listing, st.active AS relay_active" if have.get("status") else "0 AS in_listing, 1 AS relay_active"
     complete = 1 if (have.get("status") and rules["status_list_complete"]) else 0
@@ -96,6 +100,7 @@ SELECT did, toUInt32(if(is_prod, pid, (SELECT n FROM np) + rn - 1)) AS uid, is_p
 {out(o + '/didmap.parquet')}
 SELECT did, uid, h, toUInt8(h % {n}) AS part, toUInt8(is_prod) AS is_prod, toUInt8({lscode}) AS ls,
   toUInt8({fit}) AS fit, toUInt8({m1}) AS m1, toUInt8(h % {smp['pc_mod']} < {smp['pc_lt']}) AS pc,
+  toUInt8({hox}) AS ho,
   toUInt8(h % {smp['s8_actor_mod'][0]} = 0) AS s200, toUInt8(h % {smp['s8_actor_mod'][1]} = 0) AS s400,
   toUInt8(joinGet('hide', 'f', did)) AS hide, toUInt8(joinGet('intents', 'synth_no', did)) AS synth_no,
   toUInt8(joinGet('intents', 'bulk_no', did)) AS bulk_no,
@@ -205,19 +210,22 @@ FROM (SELECT *, joinGet('hmap', 'uid1', c_h) AS c1 FROM {src(p1 + '/i*/gates.par
 """
 
 
-def lblk(rules, p1: str, o: str, o5raw: str) -> str:
+def lblk(rules, p1: str, o: str, o5raw: str, dm: str = "") -> str:
     """List-blocks (LBLK): per producer, distinct list-block subscribers whose
     subscribed mod lists cover it at each cutoff, counted once per list [F19];
     plus O5-raw's list-block subscription rows and those lists' members at T."""
     c = rules.cut
     cut_arr = "[" + ", ".join(str(c[k]) for k in rules.cut_names) + "]"
     return PRELUDE + settings_sql(rules) + f"""
+CREATE TABLE dmp ENGINE = Join(ANY, LEFT, uid) AS SELECT uid, part FROM file('{dm or o + "/didmap.parquet"}', Parquet, '{S['didmap']}');
 CREATE TABLE li ENGINE = MergeTree ORDER BY lh AS SELECT * FROM {src(p1 + '/i*/modli.parquet', 'modli')};
 CREATE TABLE sb ENGINE = MergeTree ORDER BY lh AS SELECT * FROM {src(p1 + '/i*/lbsub.parquet', 'lbsub')};
 {out(o + '/lblk.parquet')}
 SELECT member AS p, toUInt8(cidx) AS cidx, uniqExact(sb.u) AS n_sub
 FROM sb INNER JOIN li ON li.lh = sb.lh ARRAY JOIN {cut_arr} AS C, range(5) AS cidx
 WHERE sb.t <= C AND li.t <= C AND sb.u != member GROUP BY p, cidx;
+{out(o + '/modli_by_part/j{_partition_id}.parquet')} PARTITION BY mpart
+SELECT lh, member, t, toUInt8(joinGet('dmp', 'part', member)) AS mpart FROM li WHERE lh IN (SELECT lh FROM sb);
 {out(o5raw + '/listblock_subs.parquet')} SELECT u, lh, t FROM sb;
 {out(o5raw + '/listblock_members_at_T.parquet')} SELECT lh, member, t FROM li WHERE lh IN (SELECT lh FROM sb) AND t <= {c['T']};
 """

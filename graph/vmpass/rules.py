@@ -15,16 +15,26 @@ import pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent
 DRAFT = HERE / "rules_draft.json"
+S1 = HERE / "rules_s1.json"
+S1_DOC = "docs/execution-plans/2026-10-28-whole-network-preregistration.md"
 
 CUTOFF_NAMES = ("T_fit", "T_val", "T", "T_test", "T_now")
 
-# Per-type stats a feature may use (§4.5).
-STATS = ("dec", "nzdays", "nposts", "dsl", "dsf", "n7d", "early", "late", "dl")
-# A+ engagement types that carry per-type stats.
+# Per-type stats a feature may use (§4.5). The first group is the draft's
+# vocabulary; the second is S1's (pre-registration §3: L = log(1+raw) at h,
+# ND/DP/C7 log(1+count), DSL/DSF capped at 90, ES/LS shares).
+STATS = ("dec", "nzdays", "nposts", "dsl", "dsf", "n7d", "early", "late", "dl",
+         "L", "ND", "DP", "DSL", "DSF", "C7", "ES", "LS")
+# A+ engagement types that carry per-type stats; DL (discovery LO/LR/LU/RP events)
+# and the A- types RH/QH are S1 additions.
 A_TYPES = ("LO", "LR", "LU", "RP", "CR", "URf", "URn", "Qf", "Qn")
-PAIR_FEATURES = ("fol", "fol_age", "fol_mbulk", "mutual", "ack_share", "reply_nolike_share", "maint", "lst")
-USER_FEATURES = ("d_u_log", "vol_pct", "light", "missing")
-PROD_FEATURES = ("followers_log", "originals_log", "originals_share", "curators_log", "blockers_1k")
+STAT_TYPES = A_TYPES + ("DL", "RH", "QH")
+PAIR_FEATURES = ("fol", "fol_age", "fol_mbulk", "mutual", "ack_share", "reply_nolike_share", "maint", "lst",
+                 "FOL", "FAGE", "FBURST", "MUT", "ACKS", "RNL", "MAINT", "BLK", "LBLK", "LST_N")
+USER_FEATURES = ("d_u_log", "vol_pct", "light", "missing", "DU", "DVP", "HEAVY", "MISS")
+PROD_FEATURES = ("followers_log", "originals_log", "originals_share", "curators_log", "blockers_1k",
+                 "PFOL", "PORIG", "POSH", "PCUR", "PBLK", "PBLKN")
+LIST_SPLIT_S1 = {"salt": "", "mod": 8, "A": [0, 1, 4, 5], "B1a": [2], "B1b": [6], "B2": [3, 7]}
 
 
 def epoch(day: str) -> int:
@@ -49,13 +59,46 @@ def draft_features() -> list[dict]:
             feats.append({"name": f"{t}_{s}", "type": t, "stat": s})
         if t in ("LO", "LR", "LU", "RP"):
             feats.append({"name": f"{t}_dl", "type": t, "stat": "dl"})
-    for name in PAIR_FEATURES:
+    for name in PAIR_FEATURES[:8]:
         feats.append({"name": name, "level": "pair"})
-    for name in USER_FEATURES:
+    for name in USER_FEATURES[:4]:
         feats.append({"name": name, "level": "user"})
-    for name in PROD_FEATURES:
+    for name in PROD_FEATURES[:5]:
         feats.append({"name": name, "level": "producer"})
     return feats
+
+
+def s1_features() -> list[dict]:
+    """Pre-registration §3, in its order: 110 features."""
+    f: list[dict] = []
+    for t in ("LO", "LR", "RP", "CR", "URf", "URn", "Qf", "Qn"):
+        f += [{"name": f"{t}_L{h}", "type": t, "stat": "L", "h": h} for h in (14, 45, 120)]
+        f += [{"name": f"{t}_{st}", "type": t, "stat": st} for st in ("ND", "DP", "DSL", "DSF", "C7", "ES", "LS")]
+    for t in ("LU", "DL"):
+        f += [{"name": f"{t}_L{h}", "type": t, "stat": "L", "h": h} for h in (14, 45, 120)] + [{"name": f"{t}_ND", "type": t, "stat": "ND"}]
+    f.append({"name": "LST_N", "level": "pair"})
+    f += [{"name": "QH_L45", "type": "QH", "stat": "L", "h": 45}, {"name": "RH_L45", "type": "RH", "stat": "L", "h": 45},
+          {"name": "BLK", "level": "pair"}, {"name": "LBLK", "level": "pair"}]
+    f += [{"name": n, "level": "pair"} for n in ("FOL", "FAGE", "FBURST", "MUT", "ACKS", "RNL", "MAINT")]
+    f += [{"name": n, "level": "user"} for n in ("DU", "DVP", "HEAVY", "MISS")]
+    f += [{"name": n, "level": "producer"} for n in ("PFOL", "PORIG", "POSH", "PCUR", "PBLK", "PBLKN")]
+    return f
+
+
+def s1_rules() -> dict:
+    """The pass's machine-readable translation of the S1 pre-registration."""
+    r = draft_rules()
+    feats = s1_features()
+    names = [x["name"] for x in feats]
+    trim = [n for n in names if n.endswith("_L120")] + [n for n in names if n.endswith("_DSF")] + \
+        [n for n in names if n.endswith("_DP")] + [n for n in names if n.endswith(("_ES", "_LS"))]
+    r.update({
+        "status": f"S1: translation of {S1_DOC} (frozen 2026-10-28, amendment A1). O3b scales come from S8 (R4) via --o3b-scales.",
+        "features": feats,
+        "list_split": LIST_SPLIT_S1,
+    })
+    r["o3"] = {**r["o3"], "trim_order": trim}
+    return r
 
 
 def draft_rules() -> dict:
@@ -97,6 +140,7 @@ def draft_rules() -> dict:
             "fit_mod": 50, "fit_rem": 7, "fit_halvings": 0,
             "m1_mod": 100, "m1_rem": 13, "m1_halvings": 0,
             "pc_mod": 1000, "pc_lt": 20,
+            "holdout_salt": "holdout", "holdout_mod": 5, "holdout_rem": 0,
             "s8_actor_mod": [200, 400],
         },
         "o3": {
@@ -106,9 +150,10 @@ def draft_rules() -> dict:
             "trim_order": [f["name"] for f in feats if f.get("h") == 120],
         },
         "o3b_default_scales": {"dec": 6.0, "nzdays": 90, "nposts": 255, "dsl": 91, "dsf": 91, "n7d": 255,
-                               "early": 1.0, "late": 1.0, "dl": 1.0, "pair": 8.0, "user": 16.0, "producer": 20.0},
+                               "early": 1.0, "late": 1.0, "dl": 1.0, "pair": 8.0, "user": 16.0, "producer": 20.0,
+                               "L": 6.0, "ND": 5.0, "DP": 6.0, "DSL": 90, "DSF": 90, "C7": 6.0, "ES": 1.0, "LS": 1.0},
         "o3b_scales": {},
-        "list_split": {"salt": "|listsplit", "mod": 100, "A": [0, 50], "B1a": [50, 67], "B1b": [67, 84], "B2": [84, 100]},
+        "list_split": LIST_SPLIT_S1,
         "curate": {"max_members": 500, "max_lists_per_owner": 3, "seed": "7"},
         "o6_recent_days": 30,
         "o8": {"max_posts": 64, "per_month": 6},
@@ -150,9 +195,9 @@ class Rules:
             raise ValueError("rules: duplicate feature names")
         for f in self.d["features"]:
             if "type" in f:
-                if f["type"] not in A_TYPES or f["stat"] not in STATS:
+                if f["type"] not in STAT_TYPES or f["stat"] not in STATS:
                     raise ValueError(f"rules: bad feature {f}")
-                if f["stat"] == "dec" and not f.get("h"):
+                if f["stat"] in ("dec", "L") and not f.get("h"):
                     raise ValueError(f"rules: decayed feature needs h: {f}")
             elif f.get("level") == "pair" and f["name"] not in PAIR_FEATURES:
                 raise ValueError(f"rules: unknown pair feature {f}")
@@ -177,6 +222,7 @@ def load(path: str | pathlib.Path | None = None) -> Rules:
     return Rules(json.loads(raw), hashlib.sha256(raw).hexdigest(), str(p))
 
 
-if __name__ == "__main__":  # regenerate the draft file
-    DRAFT.write_text(json.dumps(draft_rules(), indent=1) + "\n")
-    print(DRAFT, hashlib.sha256(DRAFT.read_bytes()).hexdigest())
+if __name__ == "__main__":  # regenerate both rules files
+    for path, data in ((DRAFT, draft_rules()), (S1, s1_rules())):
+        path.write_text(json.dumps(data, indent=1) + "\n")
+        print(path.name, len(data["features"]), "features", hashlib.sha256(path.read_bytes()).hexdigest())

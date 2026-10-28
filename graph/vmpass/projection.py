@@ -254,6 +254,14 @@ def project(ps) -> dict:
     if total_b(o3(n_fit, n_m1, nf, False)) > O3_BUDGET:
         over.append("O3 over 8 GB before the shrink order")
     proj["kind_source_listing"] = kind_source
+    # S1 R4: O3b u8 scales = p99.9 of |x_k| on S8's sample (the S8-s200 O3a rows), written for R-S9
+    if glob.glob(o3ag):
+        names = [f["name"] for f in r.features]
+        q = _q(ps, "SELECT " + ", ".join(f"quantileExact(0.999)(abs(toFloat64(`{n}`)))" for n in names) + f" FROM file('{o3ag}', Parquet)")
+        scales = {n: (float(v) if float(v) > 0 else 1.0) for n, v in zip(names, q[0])}
+        (ps.out30 / "S8").mkdir(parents=True, exist_ok=True)
+        (ps.out30 / "S8" / "o3b_scales.json").write_text(json.dumps(scales, indent=1, sort_keys=True) + "\n")
+        proj["o3b_scales_file"] = "S8/o3b_scales.json (pass to S9 with --o3b-scales; its sha256 goes in R-S9)"
     proj["descoping_triggered"] = over
     proj["descoping_order"] = ["O3 shrink order (above)", "drop T_test from O3a", "cap O8 at 32 posts per producer",
                                "cut O12 to 20k pairs", "drop O11", "split into two Spot sessions (fresh ask)"] if over else []

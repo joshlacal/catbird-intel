@@ -140,7 +140,7 @@ SELECT u, lh, toUInt8(1) AS keep FROM (
 ) WHERE rn <= {cur['max_lists_per_owner']};
 CREATE TABLE cur ENGINE = MergeTree ORDER BY (u, p) AS
 SELECT u, member AS p, min(t) AS t, toUInt8(joinGet('dmu', 'part', member)) AS ppart FROM li
-WHERE joinGet('clsel', 'keep', u, lh) = 1 AND joinGet('dmu', 'ls', u) = 1 AND {prod('member')} AND member != u GROUP BY u, member;
+WHERE joinGet('clsel', 'keep', u, lh) = 1 AND joinGet('dmu', 'ls', u) = 1 AND {prod('member')} AND member != u GROUP BY u, lh, member;
 
 -- threadgate hiddenReplies / postgate detachedEmbeddingUris (labels and outcomes only, P7); extra is cut at 4,000 chars (P8)
 CREATE TABLE g0 ENGINE = Memory AS SELECT u AS p, coll, gph, trunc, extra FROM live WHERE coll IN (11, 12) AND lop != 3;

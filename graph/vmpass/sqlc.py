@@ -57,7 +57,7 @@ def settings_sql(rules) -> str:
 # when a partition produced no rows, and by the schema tests.
 S = {
     "didmap": "did String, uid UInt32, h UInt64, part UInt8, is_prod UInt8, ls UInt8, fit UInt8, m1 UInt8, "
-              "pc UInt8, s200 UInt8, s400 UInt8, hide UInt8, synth_no UInt8, bulk_no UInt8, purge UInt8, "
+              "pc UInt8, ho UInt8, s200 UInt8, s400 UInt8, hide UInt8, synth_no UInt8, bulk_no UInt8, purge UInt8, "
               "purge_reason UInt8, plc_t UInt32, web UInt8, followers UInt32",
     "ev": "u UInt32, part UInt8, kind UInt8, coll UInt8, op UInt8, rk UInt64, t UInt32, tok UInt8, rev UInt64, "
           "seq UInt64, ing UInt32, src UInt8, subj UInt32, spart UInt8, sph UInt64, scoll UInt8, st UInt32, "

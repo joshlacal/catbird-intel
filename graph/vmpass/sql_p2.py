@@ -18,6 +18,7 @@ from sqlc import NONE, PRELUDE, S, TY, out, settings_sql, src
 
 TYPES2 = list(A_TYPES) + ["ACK", "RH", "QH"]
 LIKES = ("LO", "LR", "LU")
+DL_TYPES = ("LO", "LR", "LU", "RP")  # S1 §3 C: discovery likes and reposts
 Q_WITH = ("LO", "LR", "LU", "RP", "CR", "Qf", "Qn")
 Q_NO = ("LO", "LR", "LU", "RP", "CR", "Qf")
 APLUS = list(A_TYPES)
@@ -30,7 +31,7 @@ def _in(types) -> str:
 
 
 def half_lives(rules) -> list[int]:
-    return sorted({int(f["h"]) for f in rules.features if f.get("stat") == "dec"})
+    return sorted({int(f["h"]) for f in rules.features if f.get("stat") in ("dec", "L")})
 
 
 def lvl1(rules, C: int, where: str) -> str:
@@ -41,11 +42,12 @@ def lvl1(rules, C: int, where: str) -> str:
            f"fol = 1, {TY['URf']}, {TY['URn']}), ty = {QUOTE_RAW}, multiIf(hb_t > 0 AND hb_t <= {C}, {TY['QH']}, fol = 1, {TY['Qf']}, {TY['Qn']}), ty)")
     window = (f"((ty IN ({F_ROW}, {RF_ROW}) AND t <= {C} AND {C} < dt) OR (ty = {TY['LST']} AND t <= {C}) "
               f"OR (ty NOT IN ({F_ROW}, {RF_ROW}, {TY['LST']}) AND t > {C - W} AND t <= {C}))")
-    decs = ", ".join(f"sum(m * exp2(-(toInt64({C}) - toInt64(t)) / {h * 86400})) AS s{h}" for h in hl)
+    decs = ", ".join(f"sum(m * exp2(-(toInt64({C}) - toInt64(t)) / {h * 86400})) AS s{h}, "
+                     f"sumIf(m * exp2(-(toInt64({C}) - toInt64(t)) / {h * 86400}), fol = 0) AS sdl{h}" for h in hl)
     return f"""SELECT u, p, toUInt8(tyc) AS tyc, toUInt32(if(tyc IN ({F_ROW}, {RF_ROW}, {TY['LST']}), 0, intDiv(t, 86400))) AS d,
   toUInt32(count()) AS n, {decs}, max(t) AS tmax, min(t) AS tmin, toUInt32(countIf(t > {C - 7 * 86400})) AS n7,
   toUInt32(countIf(lat < {rules['early_s']})) AS ne, toUInt32(countIf(lat >= {rules['late_s']})) AS nl,
-  toUInt32(countIf(fol = 0)) AS ndl, max(m) AS mx
+  toUInt32(countIf(fol = 0)) AS ndl, max(m) AS mx, max(lat) AS mxlat
 FROM (SELECT u, p, {typ} AS tyc, t, m, lat, fol FROM evx WHERE {window} AND ({where}))
 GROUP BY u, p, tyc, d"""
 
@@ -65,7 +67,10 @@ def lvl2_cols(rules) -> list[str]:
           f"maxIf(d, tyc IN {_in(LIKES)} AND ndl > 0) AS dl_dmax",
           f"sumIf(n, tyc IN {_in(Q_WITH)}) AS qa_n", f"minIf(d, tyc IN {_in(Q_WITH)}) AS qa_dmin", f"maxIf(d, tyc IN {_in(Q_WITH)}) AS qa_dmax",
           f"sumIf(n, tyc IN {_in(Q_NO)}) AS qb_n", f"minIf(d, tyc IN {_in(Q_NO)}) AS qb_dmin", f"maxIf(d, tyc IN {_in(Q_NO)}) AS qb_dmax",
-          f"sumIf(n, tyc IN {_in(('LO', 'LR', 'ACK', 'LU'))}) AS nlk", f"sumIf(n, tyc IN {_in(APLUS)}) AS nap"]
+          f"sumIf(n, tyc IN {_in(('LO', 'LR', 'ACK', 'LU'))}) AS nlk", f"sumIf(n, tyc IN {_in(APLUS)}) AS nap",
+          f"maxIf(mxlat, tyc = {F_ROW}) AS f_b",
+          f"uniqExactIf(d, ndl > 0 AND tyc IN {_in(DL_TYPES)}) AS dl_nd"]
+    c += [f"sumIf(sdl{h}, tyc IN {_in(DL_TYPES)}) AS dl_s{h}" for h in hl]
     return c
 
 
@@ -79,7 +84,11 @@ def derived(rules, C: int, cidx: int) -> list[str]:
         f"joinGet('usj', 'b1own', u, toUInt8({cidx})) AS b1own",
         f"joinGet('prodc', 'followers', p, toUInt8({cidx})) AS pc_followers", f"joinGet('prodc', 'orig_w', p, toUInt8({cidx})) AS pc_orig",
         f"joinGet('prodc', 'posts_w', p, toUInt8({cidx})) AS pc_posts", f"joinGet('prodc', 'curators', p, toUInt8({cidx})) AS pc_cur",
-        f"joinGet('prodc', 'blk_1k', p, toUInt8({cidx})) AS pc_blk1k",
+        f"joinGet('prodc', 'blk_1k', p, toUInt8({cidx})) AS pc_blk1k", f"joinGet('prodc', 'blockers', p, toUInt8({cidx})) AS pc_blockers",
+        "joinGet('supj', 'sup', u) AS sup_u",
+        f"toUInt8(arrayExists(x -> x <= {C}, joinGet('bpj', 'ts', u, p))) AS blk_pair",
+        f"toUInt8(hasAny(arrayMap(x -> x.1, arrayFilter(x -> x.2 <= {C}, joinGet('plists', 'ls', p))), "
+        f"arrayMap(x -> x.1, arrayFilter(x -> x.2 <= {C}, joinGet('ulists', 'ls', u))))) AS lblk_pair",
         "toUInt8(f_n > 0) AS fol", "toUInt8(f_n > 0 AND rv_n > 0) AS mutual",
         f"joinGet('lkfj', 'n', u, p, toUInt8({cidx})) AS n_pu",
         f"toUInt8(mutual = 1 AND nlk >= {m['n_min']} AND n_pu >= {m['n_min']} AND least(nlk, n_pu) / greatest(nlk, n_pu) >= {m['recip_min']} "
@@ -88,8 +97,22 @@ def derived(rules, C: int, cidx: int) -> list[str]:
     ]
 
 
+K_MIN = [50]  # set from rules in p2()
+
+
 def fexpr(f: dict, C: int) -> str:
     """SQL for one registered feature, from the level-2 columns and derived()."""
+    if "type" in f and f["type"] == "DL":
+        return {"L": f"log1p(dl_s{f.get('h')})", "ND": "log1p(dl_nd)"}[f["stat"]]
+    if "type" in f and f["stat"] in ("L", "ND", "DP", "DSL", "DSF", "C7", "ES", "LS"):
+        x, s = f["type"], f["stat"]
+        n = f"n_{x}"
+        return {
+            "L": f"log1p(dec_{x}_{f.get('h')})", "ND": f"log1p(nz_{x})", "DP": f"log1p({n})",
+            "DSL": f"if({n} = 0, 90, least(90, ({C} - tmax_{x}) / 86400))",
+            "DSF": f"if({n} = 0, 90, least(90, ({C} - tmin_{x}) / 86400))",
+            "C7": f"log1p(n7_{x})", "ES": f"if({n} = 0, 0, ne_{x} / {n})", "LS": f"if({n} = 0, 0, nl_{x} / {n})",
+        }[s]
     if "type" in f:
         x, s = f["type"], f["stat"]
         n = f"n_{x}"
@@ -113,6 +136,14 @@ def fexpr(f: dict, C: int) -> str:
         "d_u_log": "log1p(d_u)", "vol_pct": "vol_pct", "light": "light", "missing": "missing",
         "followers_log": "log1p(pc_followers)", "originals_log": "log1p(pc_orig)",
         "originals_share": "pc_orig / greatest(1, pc_posts)", "curators_log": "log1p(pc_cur)", "blockers_1k": "pc_blk1k",
+        # S1 §3 D-H
+        "LST_N": "log1p(lst_n)", "BLK": "blk_pair", "LBLK": "lblk_pair",
+        "FOL": "fol", "FAGE": f"if(fol = 1, log1p(({C} - f_tmin) / 86400), 0)", "FBURST": "if(fol = 1, log(greatest(1, f_b)), 0)",
+        "MUT": "mutual", "ACKS": "n_ACK / greatest(1, nlk)",
+        "RNL": "(n_URf + n_URn + n_RH) / greatest(1, n_CR + n_URf + n_URn + n_RH)", "MAINT": "maint",
+        "DU": "log1p(d_u)", "DVP": "vol_pct", "HEAVY": "1 - light", "MISS": "sup_u",
+        "PFOL": "log1p(pc_followers)", "PORIG": "log1p(pc_orig)", "POSH": "pc_orig / greatest(1, pc_posts)",
+        "PCUR": "log1p(pc_cur)", "PBLK": "pc_blk1k", "PBLKN": f"toUInt8(pc_blockers < {K_MIN[0]})",
     }[name]
 
 
@@ -127,6 +158,7 @@ def p2(rules, j: int, P1: str, G: str, buckets: str, o: str, final: dict, opts: 
     thr, div = r["burst_threshold"], r["bulk_div"]
     crw, hw = r["cr_window_s"], r["hostile_window_s"]
     k_min = r["k_min"]
+    K_MIN[0] = k_min
     t12 = day_start(r["twelve_month_start"])
     tn = cut["T_now"]
     LA = r["label_days_A"] * 86400
@@ -137,7 +169,7 @@ def p2(rules, j: int, P1: str, G: str, buckets: str, o: str, final: dict, opts: 
     fn = [f["name"] for f in feats]
     cuts_arr = "[" + ", ".join(str(cut[k]) for k in names) + "]"
     sc = r["o3b_default_scales"]
-    scales = r["o3b_scales"]
+    scales = {**r["o3b_scales"], **(opts.get("o3b_scales") or {})}
 
     def scale(f):
         if f["name"] in scales:
@@ -150,7 +182,7 @@ def p2(rules, j: int, P1: str, G: str, buckets: str, o: str, final: dict, opts: 
     # ---------- shared tables ----------
     sql = PRELUDE + settings_sql(r) + f"""
 CREATE TABLE dmu ENGINE = Join(ANY, LEFT, uid) AS
-SELECT uid, part, is_prod, hide, synth_no, fit, m1, h, ls, s200, s400 FROM file('{G}/didmap.parquet', Parquet, '{S['didmap']}');
+SELECT uid, part, is_prod, hide, synth_no, fit, m1, h, ls, s200, s400, ho FROM file('{G}/didmap.parquet', Parquet, '{S['didmap']}');
 CREATE TABLE dmd ENGINE = Join(ANY, LEFT, uid) AS SELECT uid, did FROM file('{G}/didmap.parquet', Parquet, '{S['didmap']}') WHERE part = {j};
 CREATE TABLE usj ENGINE = Join(ANY, LEFT, u, cidx) AS
 SELECT u, cidx, light, a05, a10, d_u, vol_pct, missing, elig_u, b1own FROM file('{G}/ustats.parquet', Parquet, '{S['ustats_m']}');
@@ -195,10 +227,13 @@ SELECT * FROM (
 SELECT u, a AS p, ty, t, m, lat, fol, toUInt32(0) AS cr_t, toUInt32(0) AS hb_t, toUInt32({NONE}) AS dt FROM te WHERE ty > 0
 UNION ALL SELECT u, a, toUInt8(if(kind = 1, {REPLY_RAW}, {QUOTE_RAW})), t, toFloat32(1), toInt64(t) - toInt64(x_t), fol, cr_t, hb_t, toUInt32({NONE}) FROM tr WHERE gated = 0
 UNION ALL SELECT u, p, toUInt8({TY['LST']}), t, toFloat32(1), toInt64(0), toUInt8(1), toUInt32(0), toUInt32(0), toUInt32({NONE}) FROM {src(i_glob('cur'), 'cur')} WHERE {ins('u')}
-UNION ALL SELECT u, p, toUInt8({F_ROW}), ft, toFloat32(if(b >= {thr}, 1 / (1 + (b - 1) / {div}), 1)), toInt64(0), toUInt8(1), toUInt32(0), toUInt32(0), dt
+UNION ALL SELECT u, p, toUInt8({F_ROW}), ft, toFloat32(if(b >= {thr}, 1 / (1 + (b - 1) / {div}), 1)), toInt64(b), toUInt8(1), toUInt32(0), toUInt32(0), dt
   FROM {src(i_glob('fol'), 'fol')} WHERE {ins('u')}
 UNION ALL SELECT fo.p AS u, fo.u AS p, toUInt8({RF_ROW}), fo.ft, toFloat32(1), toInt64(0), toUInt8(1), toUInt32(0), toUInt32(0), fo.dt FROM {src(f'{P1}/i{j:02d}/fol_own.parquet', 'fol')} AS fo
 ) WHERE joinGet('dmu', 'is_prod', p) = 1 AND u != p;
+CREATE TABLE ulists ENGINE = Join(ANY, LEFT, u) AS SELECT u, groupArray((lh, t)) AS ls FROM {src(f'{P1}/i*/lbsub.parquet', 'lbsub')} GROUP BY u;
+CREATE TABLE plists ENGINE = Join(ANY, LEFT, p) AS
+SELECT member AS p, groupArray((lh, t)) AS ls FROM {src(f'{G}/modli_by_part/j{j}.parquet', 'lh UInt64, member UInt32, t UInt32, mpart UInt8')} GROUP BY member;
 CREATE TABLE lkfj ENGINE = Join(ANY, LEFT, a, u, cidx) AS SELECT a, u, cidx, n FROM {src(f'{P1}/i{j:02d}/lk_own_fol.parquet', 'lk_own_fol')};
 
 -- producer stats per cutoff (window (C-90d, C])
@@ -227,7 +262,7 @@ FROM (
   ARRAY JOIN {cuts_arr} AS C, range(5) AS cidx WHERE t <= C GROUP BY p, cidx
 ) GROUP BY p, cidx;
 CREATE TABLE prodc ENGINE = Join(ANY, LEFT, p, cidx) AS
-SELECT p, cidx, followers, orig_w, posts_w, curators, orig_label,
+SELECT p, cidx, followers, orig_w, posts_w, curators, orig_label, blockers,
   toFloat32(if(blockers >= {k_min}, 1000 * blockers_w / greatest(1, followers), 0)) AS blk_1k FROM pcs;
 CREATE TABLE fown ENGINE = Join(ANY, LEFT, u, p) AS
 SELECT u, p, groupArray((ft, dt)) AS iv FROM {src(f'{P1}/i{j:02d}/fol_own.parquet', 'fol')} GROUP BY u, p;
@@ -368,7 +403,7 @@ SELECT x.*, {der} FROM (
         if cidx in fit_cidx:
             sql += f"""
 {out(final['o3a'] + f'/{cname}/j{j:02d}.parquet')}
-SELECT u, p, toUInt8({cidx}) AS cidx, task, ck, pi, ft,
+SELECT u, p, toUInt8({cidx}) AS cidx, task, ck, pi, ft, joinGet('dmu', 'ho', u) AS heldout,
   if(task = 1, if(arrayExists(e -> e.1 = 9 AND e.2 > {C} AND e.2 <= {lA1}, ev) AND NOT arrayExists(e -> e.1 = 1 AND e.2 > {C} AND e.2 <= {lA1}, ev), NULL,
      toNullable(toUInt8(arrayExists(e -> e.1 = 1 AND e.2 > {C} AND e.2 <= {lA1}, ev)))), NULL) AS y_a,
   if(task = 2, toNullable(toUInt8(arrayExists(e -> e.1 = 1 AND e.2 > ft + {LB0} AND e.2 <= least(ft + {LB1}, {cap}), ev))), NULL) AS y_b,
@@ -414,7 +449,7 @@ FROM (
 ) WHERE rall <= {o8['max_posts']};
 {out(final['o9'] + f'/j{j:02d}.parquet')}
 SELECT u AS p, argMax(name, (rev, seq)) AS display_name, argMax(descr, (rev, seq)) AS description
-FROM {src(f'{buckets}/ev/p{j}.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'hide', u) = 0
+FROM {src(f'{buckets}/ev/p{j}.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'synth_no', u) = 0
 GROUP BY u;
 {out(o + '/o12c.parquet')}
 SELECT stratum, kind, c_ph, c_a, x_ph, x_a, hsh FROM (

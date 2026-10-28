@@ -87,11 +87,16 @@ log "staged $STAGED objects in ${STAGE_S}s"
 upload_log
 
 # 4. the pass (resumes from the ledger if this RUN_ID already has finished steps)
-RULES_ARG=()
+# rules: the uploaded file (sha256 checked against the launcher's metadata), else the
+# committed S1 translation; S9 also takes the O3b scales S8 measured (S1 R4)
+RULES_ARG=(--rules /mnt/ssd/code/vmpass/rules_s1.json)
 if gcloud storage cp --quiet "$PLAN30/inputs/$RUN_ID/rules.json" /mnt/ssd/rules.json 2>/dev/null; then
   RULES_ARG=(--rules /mnt/ssd/rules.json --rules-sha256 "$RULES_SHA")
-elif [[ "$MODE" == "s8" ]]; then
-  RULES_ARG=(--rules /mnt/ssd/code/vmpass/rules_draft.json)
+fi
+if gcloud storage cp --quiet "$PLAN30/inputs/$RUN_ID/o3b_scales.json" /mnt/ssd/o3b_scales.json 2>/dev/null; then
+  RULES_ARG+=(--o3b-scales /mnt/ssd/o3b_scales.json)
+elif [[ "$MODE" == "s9" ]]; then
+  log "S9 without S8's o3b_scales.json: O3b uses the rules' default scales (S1 R4 expects S8's)"
 fi
 ( while sleep 600; do upload_log; done ) &
 /mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py run --mode "$MODE" --stage /mnt/ssd/stage --work /mnt/ssd/work \

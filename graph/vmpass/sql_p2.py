@@ -309,6 +309,9 @@ CREATE TABLE acc_{tag} (p UInt32, k UInt8, {', '.join(f'`{f}__a05` Float32, `{f}
   replies_all UInt64, courtesy_likes UInt64, likes_all UInt64, maint_pairs UInt64) ENGINE = MergeTree ORDER BY p;
 """
         for k in range(K):
+            maint_sel = (f"SELECT u, p, toUInt8({cidx}) AS cidx, toUInt32(nlk) AS n_up, toUInt32(n_pu) AS n_pu, maint AS flag, "
+                         f"toUInt8(cityHash64(least(u, p), greatest(u, p)) % {N}) AS kpart FROM l2_{tag}_{k} WHERE mutual = 1")
+            maint_sw = split_out(o + "/maintd/k{k}_" + f"{tag}_{k}.parquet", "kpart", N, maint_sel, f"x_maint_{tag}_{k}")
             sql += f"""
 CREATE TABLE l2_{tag}_{k} ENGINE = MergeTree ORDER BY (u, p) AS
 SELECT *, {der}
@@ -324,8 +327,7 @@ SELECT u, p, toUInt8({cidx}) AS cidx, toUInt8(qa_n >= {r['teacher']['min_engagem
 FROM l2_{tag}_{k}
 WHERE (withqn = 1 OR noqn = 1) AND light = 1 AND maint = 0 AND b1own = 0 AND u != p AND joinGet('dmu', 'is_prod', p) = 1
   AND joinGet('dmu', 'synth_no', u) = 0 AND joinGet('dmu', 'hide', p) = 0 AND joinGet('dmu', 'synth_no', p) = 0;
-{split_out(o + '/maintd/k{k}_' + f'{tag}_{k}.parquet', 'kpart', N, f"""SELECT u, p, toUInt8({cidx}) AS cidx, toUInt32(nlk) AS n_up, toUInt32(n_pu) AS n_pu, maint AS flag,
-  toUInt8(cityHash64(least(u, p), greatest(u, p)) % {N}) AS kpart FROM l2_{tag}_{k} WHERE mutual = 1""", f'x_maint_{tag}_{k}')}
+{maint_sw}
 INSERT INTO o1 SELECT 'pairs_{tag}', toString({k}), '', '', count() FROM l2_{tag}_{k};
 INSERT INTO o1 SELECT 'aud_pairs_{tag}', toString({k}), '', '', countIf(aud = 1) FROM l2_{tag}_{k};
 DROP TABLE l2_{tag}_{k};

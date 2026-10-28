@@ -81,7 +81,7 @@ create_vm() {  # $1 step label, $2 max-run duration
  --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-balanced \
  --scopes=storage-rw,compute-rw --labels='$LABEL_KEY=$LABEL_VAL,step=$step,run=$(echo "$RUN_ID" | tr 'A-Z_.' 'a-z--')' \
  --metadata-from-file=startup-script='$HERE/vm_bootstrap.sh' \
- --metadata='vmpass-run-id=$RUN_ID,vmpass-mode=${step%%-*},vmpass-plan30=$PLAN30,vmpass-plan60=$PLAN60,vmpass-extract=$EXTRACT,vmpass-ch-version=$CH_VERSION,vmpass-rules-sha256=$rules_sha,vmpass-bucket-shards=${BUCKET_SHARDS:-0}'"
+ --metadata='vmpass-run-id=$RUN_ID,vmpass-mode=${step%%-*},vmpass-plan30=$PLAN30,vmpass-plan60=$PLAN60,vmpass-extract=$EXTRACT,vmpass-ch-version=$CH_VERSION,vmpass-rules-sha256=$rules_sha,vmpass-bucket-shards=${BUCKET_SHARDS:-0},vmpass-python=${VM_PYTHON:-3.14}'"
     printf '+ %s\n' "$cmd"
     if [[ $EXECUTE -eq 1 ]]; then
       if eval "$cmd"; then

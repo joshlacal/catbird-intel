@@ -543,6 +543,36 @@ WHERE stratum = 6 AND joinGet('tx', 'rkey', c_ph) != '';
         return finalize.finalize(self)
 
 
+def selfcheck(a: argparse.Namespace) -> int:
+    """Preflight on the VM's own interpreter, ClickHouse and simgraph: build the synthetic
+    fixture world and run the pass end to end (local stores), so a syntax, import, SQL or
+    tooling error fails in ~1-2 min instead of after 10 min of staging."""
+    t0 = time.time()
+    root = pathlib.Path(a.work).resolve()
+    if root.exists():
+        shutil.rmtree(root)
+    sys.path.insert(0, str(HERE / "tests"))
+    import fixtures  # noqa: E402 - test fixture generator, shipped in the code tarball
+    for mod in ("chrun", "cityhash", "crosscheck_hash", "finalize", "projection", "rules", "sql_global", "sql_p1", "sql_p2", "sqlc", "store"):
+        __import__(mod)
+    fixtures.build(root / "stage", root / "side")
+    cmd = [sys.executable, str(pathlib.Path(__file__).resolve()), "run", "--mode", a.mode, "--stage", str(root / "stage"),
+           "--work", str(root / "work"), "--store30", str(root / "s30"), "--store60", str(root / "s60"), "--run-id", "selfcheck",
+           "--inputs", str(root / "side"), "--manifest", str(root / "stage" / "manifest.tsv"), "--rules", a.rules, "--allow-draft-rules"]
+    if a.bucket_shards:
+        cmd += ["--bucket-shards", str(a.bucket_shards)]
+    if a.simgraph:
+        cmd += ["--simgraph", a.simgraph]
+    r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, "VMPASS_HEARTBEAT_S": "5"})
+    ok = r.returncode == 0
+    want = root / "s30" / "outputs" / "selfcheck" / ("S8/projection.json" if a.mode == "s8" else "receipt/receipt.json")
+    ok = ok and want.exists()
+    print(f"selfcheck {'OK' if ok else 'FAILED'}: python {sys.version.split()[0]}, mode {a.mode}, {time.time() - t0:.0f}s", flush=True)
+    if not ok:
+        print(r.stderr[-6000:], file=sys.stderr, flush=True)
+    return 0 if ok else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -567,10 +597,18 @@ def main() -> int:
     sp = sub.add_parser("shards", help="print the staged directories --bucket-shards K selects (for the VM bootstrap)")
     sp.add_argument("--manifest", required=True)
     sp.add_argument("--k", type=int, required=True)
+    sc = sub.add_parser("selfcheck", help="run the whole pass on the synthetic fixture world (VM preflight, before staging)")
+    sc.add_argument("--work", required=True, help="empty scratch dir")
+    sc.add_argument("--mode", choices=("s8", "s9"), default="s8")
+    sc.add_argument("--rules", default=str(rules_mod.S1))
+    sc.add_argument("--bucket-shards", type=int, default=0)
+    sc.add_argument("--simgraph", default="")
     a = ap.parse_args()
     if a.cmd == "shards":
         print("\n".join(select_shards(list(manifest_dirs(a.manifest)), a.k)))
         return 0
+    if a.cmd == "selfcheck":
+        return selfcheck(a)
     stats = Pass(a).run()
     print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "stdout"} for k, v in stats.items()}, indent=1, default=str))
     return 0

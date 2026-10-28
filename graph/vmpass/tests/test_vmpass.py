@@ -705,6 +705,52 @@ class BucketSubset(unittest.TestCase):
         self.assertEqual(shards, {d + ".parquet" for d in pick})
 
 
+class VmPython(unittest.TestCase):
+    """The VM's interpreter: Debian 12 ships 3.11 (no PEP 701 nested f-strings). The bootstrap pins
+    3.14 via uv, and the code stays 3.11-safe; both are checked here with uv's standalone CPython."""
+
+    FILES = sorted(str(p) for p in list(VMPASS.glob("*.py")) + list((VMPASS / "tests").glob("*.py"))) + \
+        [str(VMPASS.parent / n) for n in ("archive_graph_extract.py", "post_extract.py", "gcs_segments.py")]
+
+    def _py(self, version):
+        uv = shutil.which("uv")
+        if not uv:
+            self.skipTest("uv not installed")
+        r = subprocess.run([uv, "python", "find", version], capture_output=True, text=True)
+        if r.returncode != 0:
+            r = subprocess.run([uv, "python", "install", version], capture_output=True, text=True)
+            r = subprocess.run([uv, "python", "find", version], capture_output=True, text=True)
+        if r.returncode != 0:
+            self.skipTest(f"python {version} unavailable via uv")
+        return r.stdout.strip()
+
+    def test_py_compile_under_3_11_and_3_14(self):
+        for v in ("3.11", "3.14"):
+            py = self._py(v)
+            code = ("import py_compile, sys, tempfile, os\n"
+                    "d = tempfile.mkdtemp()\n"
+                    "for i, f in enumerate(sys.argv[1:]):\n"
+                    "    py_compile.compile(f, cfile=os.path.join(d, f'{i}.pyc'), doraise=True)\n")
+            r = subprocess.run([py, "-c", code, *self.FILES], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, f"python {v}: {r.stderr[-2000:]}")
+
+    def test_selfcheck_under_3_11(self):
+        """The VM preflight (whole pass on the fixture world) on Debian 12's interpreter version."""
+        uv = shutil.which("uv")
+        py = self._py("3.11")
+        venv = ENV["root"] / "venv311"
+        r = subprocess.run([uv, "venv", "--python", py, str(venv), "-q"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = subprocess.run([uv, "pip", "install", "-q", "pyarrow==26.0.0"], capture_output=True, text=True,
+                           env={**os.environ, "VIRTUAL_ENV": str(venv)})
+        if r.returncode != 0:
+            self.skipTest(f"pyarrow for 3.11 unavailable: {r.stderr[-300:]}")
+        r = subprocess.run([str(venv / "bin" / "python"), str(VMPASS / "passrun.py"), "selfcheck", "--work", str(ENV["root"] / "sc311"),
+                            "--mode", "s8"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr[-3000:])
+        self.assertIn("selfcheck OK: python 3.11", r.stdout)
+
+
 class Guards(unittest.TestCase):
     def test_s9_refuses_draft_rules_and_bad_sha(self):
         root = ENV["root"]

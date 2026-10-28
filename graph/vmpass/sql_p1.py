@@ -66,6 +66,19 @@ SELECT u, toInt32(argMaxIf(c1, n1, c1 > 0)) AS cc1, toInt32(argMaxIf(c5, n5, c5 
     else:
         comm_sql = "CREATE TABLE ucomm (u UInt32, cc1 Int32, cc5 Int32) ENGINE = Join(ANY, LEFT, u);"
 
+    # re-keyed outputs, built here because Python 3.11 (Debian 12) has no nested f-strings with the same quotes
+    eng_sel = (f"SELECT u, a, ph, t, s_t, typ, fol, m, apart FROM ("
+               f" SELECT u, a, ph, t, s_t, toUInt8(1) AS typ, fol, m, apart FROM lk WHERE t > {t12}"
+               f" UNION ALL SELECT u, a, ph, t, s_t, toUInt8(2), fol, m, apart FROM rp WHERE t > {t12})")
+    sw = {
+        "eng": split_out(o + "/eng/j{k}.parquet", "apart", r.N, eng_sel, "x_eng"),
+        "rep": split_out(o + "/rep/j{k}.parquet", "tpart", r.N, "SELECT * FROM rep", "x_rep"),
+        "fol": split_out(o + "/fol/j{k}.parquet", "ppart", r.N, "SELECT * FROM fol", "x_fol"),
+        "blk": split_out(o + "/blk/j{k}.parquet", "ppart", r.N, "SELECT * FROM blk", "x_blk"),
+        "cur": split_out(o + "/cur/j{k}.parquet", "ppart", r.N, "SELECT * FROM cur", "x_cur"),
+        "cand": split_out(o + "/cand/j{k}.parquet", "ppart", r.N,
+                          "SELECT u, p, cidx, ck, pi, toUInt8(joinGet('dmu', 'part', p)) AS ppart FROM cand", "x_cand"),
+    }
     return PRELUDE + settings_sql(r) + f"""
 CREATE TABLE dmu ENGINE = Join(ANY, LEFT, uid) AS
 SELECT uid, part, is_prod, ls, fit, m1, pc, h, hide, synth_no, plc_t, web, followers, s200, s400 FROM file('{dm}', Parquet, '{S['didmap']}');
@@ -236,17 +249,15 @@ ARRAY JOIN {C} AS C, range(5) AS cidx
 WHERE t > C - {W} AND t <= C AND arrayExists(x -> x.1 <= C AND C < x.2, joinGet('fiv', 'iv', u, a)) GROUP BY u, a, cidx;
 
 -- ===== outputs re-keyed by the target's partition (phase 2 inputs) =====
-{split_out(o + '/eng/j{k}.parquet', 'apart', r.N, f"""SELECT u, a, ph, t, s_t, typ, fol, m, apart FROM (
-  SELECT u, a, ph, t, s_t, toUInt8(1) AS typ, fol, m, apart FROM lk WHERE t > {t12}
-  UNION ALL SELECT u, a, ph, t, s_t, toUInt8(2), fol, m, apart FROM rp WHERE t > {t12})""", 'x_eng')}
+{sw['eng']}
 {out(o + '/eng_own.parquet')} SELECT u, ph, t FROM lk WHERE t > {t12} AND t >= s_t AND t - s_t <= {cr_w};
-{split_out(o + '/rep/j{k}.parquet', 'tpart', r.N, 'SELECT * FROM rep', 'x_rep')}
-{split_out(o + '/fol/j{k}.parquet', 'ppart', r.N, 'SELECT * FROM fol', 'x_fol')}
+{sw['rep']}
+{sw['fol']}
 {out(o + '/fol_own.parquet')} SELECT * FROM fol;
-{split_out(o + '/blk/j{k}.parquet', 'ppart', r.N, 'SELECT * FROM blk', 'x_blk')}
+{sw['blk']}
 {out(o + '/blk_own.parquet')} SELECT * FROM blk;
-{split_out(o + '/cur/j{k}.parquet', 'ppart', r.N, 'SELECT * FROM cur', 'x_cur')}
-{split_out(o + '/cand/j{k}.parquet', 'ppart', r.N, "SELECT u, p, cidx, ck, pi, toUInt8(joinGet('dmu', 'part', p)) AS ppart FROM cand", 'x_cand')}
+{sw['cur']}
+{sw['cand']}
 {out(o + '/pi.parquet')} SELECT * FROM pi;
 {out(o + '/lk_own_fol.parquet')} SELECT * FROM lkf;
 {out(o + '/gates.parquet')} SELECT * FROM gates;

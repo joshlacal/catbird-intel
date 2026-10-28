@@ -34,6 +34,7 @@ S12C_REHEARSAL_ENV's KEY=VAL;... pairs to every exec; refused with the real CLI)
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import pathlib
@@ -57,6 +58,9 @@ LAKE = pathlib.Path.home() / "catbird-lake-local"
 REAL_COLAB = pathlib.Path.home() / ".local/bin/colab"
 RATES = {"L4": 1.71, "A100": 5.4}
 REMOTE = "/content/s12mm"
+UPLOAD_CHUNK = int(os.environ.get("S12C_UPLOAD_CHUNK", 16 * 1024 * 1024))  # larger single uploads hit a contents-API 500 (2026-10-28)
+REMOTE_ROOT_EXPR = ("os.path.join(os.environ.get('S12C_CONTENT', '/content') if os.environ.get('S12C_REHEARSAL') == '1'"
+                    " else '/content', 's12mm')")
 EXTRA_CODE = ["s7bench/s7lib.py", "s7bench/bench.py", "c4images/gate.py", "c4images/cdn.py", "vmpass/store.py"]
 GATE_FILES = ("gate_manifest.json", "excluded_dids.txt", "labelled_uris.txt")
 BENCH_INPUTS = {"s7_slab.parquet": "s7-bench-20261028/upload/s7_slab.parquet",
@@ -347,6 +351,49 @@ class Driver:
             raise Stop(EXIT_SESSION, f"remote mkdir failed: {out[-300:]}")
 
     def upload(self, s, local, remote):
+        # The contents API answers 500 to large single uploads (an 81.5 MB gate.tar.gz failed on 2026-10-28;
+        # 19 MB files went through), so anything over UPLOAD_CHUNK goes up in parts and is joined remotely.
+        local = pathlib.Path(local)
+        if local.stat().st_size <= UPLOAD_CHUNK:
+            self._upload_one(s, local, remote)
+            return
+        parts_dir = self.stage / "_parts" / remote.replace("/", "__")
+        parts_dir.mkdir(parents=True, exist_ok=True)
+        names = []
+        with open(local, "rb") as f:
+            for i in itertools.count():
+                buf = f.read(UPLOAD_CHUNK)
+                if not buf:
+                    break
+                p = parts_dir / f"part.{i:04d}"
+                p.write_bytes(buf)
+                names.append(p)
+        for p in names:
+            self._upload_one(s, p, f"{remote}.{p.name}")
+        join = self.stage / "_join.py"
+        join.write_text(
+            "import hashlib, os, sys\n"
+            f"dst = os.path.join({REMOTE_ROOT_EXPR}, {remote!r})\n"
+            f"parts = [dst + '.part.%04d' % i for i in range({len(names)})]\n"
+            "h = hashlib.sha256()\n"
+            "with open(dst + '.joining', 'wb') as out:\n"
+            "    for p in parts:\n"
+            "        b = open(p, 'rb').read(); h.update(b); out.write(b)\n"
+            f"if h.hexdigest() != {CL.sha256_file(local)!r}:\n"
+            "    print('join sha256 mismatch'); sys.exit(1)\n"
+            "os.replace(dst + '.joining', dst)\n"
+            "[os.remove(p) for p in parts]\n"
+            "print('join ok')\n")
+        envs = []
+        for k, v in self.rehearsal_env().items():
+            envs += ["--env", f"{k}={v}"]
+        rc, out = self.colab("exec", "-s", s.name, "-f", join, "--timeout", 600, *envs, timeout=900)
+        if self.a.execute and (rc != 0 or "join ok" not in out):
+            raise Stop(EXIT_SESSION, f"upload {remote}: remote join failed: {out[-300:]}")
+        for p in names:
+            p.unlink()
+
+    def _upload_one(self, s, local, remote):
         rc, out = self.colab("upload", "-s", s.name, local, f"{REMOTE}/{remote}", timeout=3600)
         if self.a.execute and rc != 0:
             raise Stop(EXIT_SESSION, f"upload {remote} failed: {out[-300:]}")

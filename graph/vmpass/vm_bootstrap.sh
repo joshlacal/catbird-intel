@@ -11,6 +11,8 @@
 #   5. Write the VM receipt, copy the log, and delete this VM.
 # The VM also deletes itself at --max-run-duration (termination action DELETE).
 set -uo pipefail
+# GCE runs startup scripts as root without HOME; rustup, cargo and gcloud need it.
+export HOME="${HOME:-/root}"
 exec > >(tee -a /var/log/vmpass.log) 2>&1
 
 md() { curl -sf -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/instance/$1"; }
@@ -24,6 +26,7 @@ log() { echo "[$(date -u +%FT%TZ)] $*"; }
 upload_log() { gcloud storage cp --quiet /var/log/vmpass.log "$PLAN30/intermediates/$RUN_ID/_logs/$NAME.log" >/dev/null 2>&1 || true; }
 finish() {
   local rc=$1
+  FINISHED=1
   log "pass exit code $rc"
   cat > /mnt/ssd/vm_receipt.json <<EOF
 {"run_id": "$RUN_ID", "mode": "$MODE", "vm": "$NAME", "zone": "$ZONE", "provisioning": "SPOT",
@@ -37,6 +40,9 @@ EOF
   gcloud compute instances delete "$NAME" --zone="$ZONE" --quiet || poweroff
 }
 
+# Any exit that skips finish (an unset variable, a failed command) still uploads the
+# log and deletes this VM, so a broken bootstrap never sits idle until max-run.
+trap 'rc=$?; [[ -n "${FINISHED:-}" ]] || finish "$(( rc == 0 ? 99 : rc ))"' EXIT
 log "vmpass $MODE $RUN_ID on $NAME ($ZONE)"
 # 1. local SSD RAID-0
 apt-get update -qq && apt-get install -y -qq mdadm python3-venv python3-pip build-essential pkg-config curl >/dev/null

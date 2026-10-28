@@ -108,7 +108,12 @@ case "$MODE" in
   bench)
     need_run_id
     echo "# R-S7g: ~10k text + ~10k image posts; fetch at ${RPS} req/s; 70 and 280 soft tokens; cap \$1.50 = \$${USD_PER_HOUR}/h x 1.5 h + GETs"
-    [[ -n "$POSTS" ]] || echo "# WARNING: POSTS (S12m input prefix with image CIDs) is required for the real image sample" >&2
+    if [[ -n "${IMAGE_POSTS_LOCAL:-}" ]]; then   # bench_input.py output dir: image_posts/ (joined, has image_cids)
+      POSTS="$PLAN30/inputs/$RUN_ID/bench/image_posts"
+      run "gcloud storage cp '$IMAGE_POSTS_LOCAL/image_posts/part-0.parquet' '$POSTS/part-0.parquet'"
+      SIDECAR=""
+    fi
+    [[ -n "$POSTS" ]] || echo "# WARNING: POSTS (or IMAGE_POSTS_LOCAL) is required for the real image sample" >&2
     stage_code
     for f in s7_slab.parquet s7_random.parquet parity_mac.npz; do run "gcloud storage cp '$S7IN/$f' '$PLAN30/inputs/$RUN_ID/bench/$f'"; done
     run "gcloud storage cp '$MM_PARITY' '$PLAN30/inputs/$RUN_ID/bench/mm_parity_mac.npz'"

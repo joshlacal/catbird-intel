@@ -51,8 +51,14 @@ mkdir -p $W && cd $W || exit 1
 upload_log
 
 # 2. Python stack (pinned as in S4/S7; recorded)
-python3 -m venv $W/venv
+# The interpreter is pinned: Ubuntu 24.04's python3.12 (the Mac rehearsal ran 3.12.x; S8 died on Debian 12's 3.11,
+# which rejects PEP 701 f-strings). Anything else stops the VM before a GPU minute is spent on the stack.
+PYSYS=/usr/bin/python3.12
+[[ -x $PYSYS ]] || { log "python3.12 missing on this image"; finish 3; exit 0; }
+$PYSYS -m venv $W/venv 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3.12-venv >/dev/null && $PYSYS -m venv $W/venv; } \
+  || { log "venv creation failed"; finish 3; exit 0; }
 PIP=$W/venv/bin/pip; PY=$W/venv/bin/python
+$PY -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version' || { log "venv is not Python 3.12"; finish 3; exit 0; }
 $PIP install -q --upgrade pip
 $PIP install -q "torch==2.14.1" "torchvision==0.29.1" "transformers==5.21.0" "sentence-transformers==6.2.0" \
   "pillow" "pyarrow" "numpy" "pandas" || { log "pip install failed"; finish 3; exit 0; }
@@ -73,6 +79,7 @@ gcloud storage cp --quiet "$PLAN30/inputs/models/embeddinggemma-2.SHA256SUMS" $W
 # 4. code and inputs
 gcloud storage cp --quiet "$PLAN30/inputs/$RUN_ID/code.tar.gz" $W/code.tar.gz && mkdir -p $W/code && tar -xzf $W/code.tar.gz -C $W/code \
   || { finish 4; exit 0; }
+$PY -m compileall -q $W/code || { log "code does not compile under $($PY --version)"; finish 3; exit 0; }
 ABOVE=(); [[ "$ALLOW_ABOVE" == "1" ]] && ABOVE=(--allow-above-etiquette)
 COMMON=(--model-dir "$W/models/embeddinggemma-2" --work "$W/work" --run-id "$RUN_ID" --out "$OUT" --rps "$RPS" "${ABOVE[@]}"
         --cap-usd "$CAP" --usd-per-hour "$RATE" --vm-start-epoch "$T0")

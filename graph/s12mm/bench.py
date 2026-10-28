@@ -172,8 +172,8 @@ def text_phase(a, enc, gpu, work, res, guard):
 
 
 def image_posts(a, work, now):
-    """Real: gate-passing image posts from the S12m inputs, smallest blake2b('s12mm-bench-image|uri') first,
-    preferring --bench-producers. Rehearsal: synthetic posts with S7 slab texts. Returns (posts, gate counts)."""
+    """Real: gate-passing image posts from the S12m inputs, ordered by (not in --bench-producers, input `tier`
+    (bench_input.py: 0 = S7 slab producer, 1 = S4 corpus, 2 = other), blake2b('s12mm-bench-image|uri')). Rehearsal: synthetic posts with S7 slab texts. Returns (posts, gate counts)."""
     import collections
     import pipeline as P
     if a.synthetic_images:
@@ -196,7 +196,9 @@ def image_posts(a, work, now):
     if a.bench_producers:
         pref = {x.strip() for x in open(fetch_local(a.bench_producers, work)) if x.strip()}
     order = L.hash_order("s12mm-bench-image", [u.uris[i] for i in ok])
-    ranked = sorted(order, key=lambda j: (L.did_rkey(u.uris[ok[j]])[0] not in pref, order.index(j)))
+    tier = {r.get("uri") or L.post_uri(r["did"], r["rkey"]): r.get("tier", 9) for r in rows}   # bench_input.py tiers
+    pos = {j: n for n, j in enumerate(order)}
+    ranked = sorted(order, key=lambda j: (L.did_rkey(u.uris[ok[j]])[0] not in pref, tier.get(u.uris[ok[j]], 9), pos[j]))
     keep = [ok[j] for j in ranked[:a.n_image_posts]]
     sub = P.Unit("bench", [u.uris[i] for i in keep], [u.texts[i] for i in keep], [u.pids[i] for i in keep],
                  [u.n_cids[i] for i in keep], [u.urls[i] for i in keep], [None] * len(keep))

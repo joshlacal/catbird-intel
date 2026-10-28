@@ -49,6 +49,9 @@ run "${COLAB[@]}" new -s "$SESSION" --gpu "$GPU"
 [ $EXEC = 1 ] && printf '%s\t%s\t%s\tcreated\n' "$(date -u +%FT%TZ)" "$SESSION" "$GPU" >> "$RUN/sessions.tsv"
 trap '[ $EXEC = 1 ] && { "${COLAB[@]}" stop -s "$SESSION" || true; printf "%s\t%s\t-\tstopped(trap)\n" "$(date -u +%FT%TZ)" "$SESSION" >> "$RUN/sessions.tsv"; }' EXIT
 ALLOC_T0=$(date +%s)
+# The contents API will not create directories, so make /content/c5 first (the 2026-10-28 first try got a 500).
+printf 'import os\nos.makedirs("/content/c5", exist_ok=True)\nprint("mkdir ok")\n' > "$STAGE/_mkdir.py"
+run "${COLAB[@]}" exec -s "$SESSION" -f "$STAGE/_mkdir.py" --timeout 60
 for rel in c5_manifest.json rules_c5.json c5lib.py train.py colab_job.py \
            c5_pairs.parquet c5_profiles.parquet c5_communities.parquet; do
   run "${COLAB[@]}" upload -s "$SESSION" "$STAGE/$rel" "/content/c5/$rel"

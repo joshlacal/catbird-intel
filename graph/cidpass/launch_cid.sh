@@ -13,10 +13,12 @@
 #   ... --execute                      # actually run the printed commands
 #
 # Why two halves: segments 3671-7392 (3,722 objects, 1,012 GB, Coldline) are in the
-# GCE capture's buffer bucket; segments 0-3670 exist only on Drive and hold about
+# GCE capture's buffer bucket; segments 0-3670 are not in GCS at all and hold about
 # half of all posts (the Oct 24 extract's v2-drive groups: 120 GB of 241.6 GB of
-# post Parquet). Drive downloads are free, and the Mac already has Drive access,
-# so that half runs on the Mac and no Drive credential goes onto a VM.
+# post Parquet). Drive (listed 2026-10-28) holds all of 0-7392 (2,009 GB). Drive
+# downloads are free and the Mac already has Drive access, so the Drive half runs on
+# the Mac and no Drive credential goes onto a VM. MAC_MAX_INDEX=7392 makes the Mac
+# do everything ($0, ~2x the wall time) and the gcs VM is then not needed.
 #
 # VM rules (as graph/vmpass/launch_vm.sh): Spot only (no capacity -> reschedule,
 # never on-demand), us-west1, --max-run-duration with --instance-termination-action
@@ -39,7 +41,7 @@ PLAN30="${PLAN30:-gs://catbird-436600-plan-30d}"
 PLAN60="${PLAN60:-gs://catbird-436600-plan-60d}"
 GCS_SRC="gs://catbird-436600-jetstream-buffer-20261020/sources/gce-selfhost-001/buffer-admission-20261020"
 DRIVE_FOLDER="${DRIVE_FOLDER:-16Zd7n4pwTSDMDsnP9chX2Ci0r0ahEy45}"   # CatbirdCommunity/archives/gce-selfhost-001/segments
-GCS_RANGE="3671-7392"; DRIVE_RANGE="0-3670"; FULL_RANGE="0-7392"
+GCS_RANGE="3671-7392"; FULL_RANGE="0-7392"
 LABEL_KEY="plan"; LABEL_VAL="whole-network-signals"
 CH_VERSION="${CH_VERSION:-26.9.24.8}"
 NODE_VERSION="22.23.1"
@@ -47,7 +49,7 @@ NODE_SHA256="9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578"  
 SESSIONS="${SESSIONS:-$HOME/catbird-lake-local/vmpass-sessions.tsv}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GRAPH="$(cd "$HERE/.." && pwd)"
-PY="${PY:-$GRAPH/.venv/bin/python}"
+PY="${PY:-$GRAPH/.venv/bin/python}"   # needs pyarrow (orjson optional); a jj workspace has no .venv, so pass PY=
 MAC_WORK="${MAC_WORK:-$HOME/catbird-lake-local/cidpass-$RUN_ID}"
 CUSTOM_TIME="${CUSTOM_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
@@ -100,10 +102,10 @@ create_vm() {  # $1 step, $2 machine, $3 n_ssd, $4 max-run, $5 do_segments (0/1)
 case "$MODE" in
   drive-mac)
     need_run_id
-    echo "# Drive half on the Mac: segments $DRIVE_RANGE (~1 TB download from Drive, no fee; parts upload to plan-30d is free ingress)."
+    echo "# Drive half on the Mac: segments 0-${MAC_MAX_INDEX:-3670} (~1 TB download from Drive, no fee; parts upload to plan-30d is free ingress)."
     echo "# Bound by Drive download speed (~35-100 MB/s): ~3-8 h. Resumable: rerun the same command after any stop."
     run "mkdir -p '$MAC_WORK' && bash '$HERE/setup_decoder.sh' '$MAC_WORK/decoder' | tee '$MAC_WORK/decoder.sha256'"
-    run "caffeinate -i '$PY' '$HERE/cidpass.py' segments --source drive --src '$DRIVE_FOLDER' --min-index 0 --max-index 3670 \
+    run "caffeinate -i '$PY' '$HERE/cidpass.py' segments --source drive --src '$DRIVE_FOLDER' --min-index 0 --max-index ${MAC_MAX_INDEX:-3670} \
  --listing-cache '$MAC_WORK/drive-listing.json' --store30 '$PLAN30' --run-id '$RUN_ID' --work '$MAC_WORK/work' \
  --decoder '$MAC_WORK/decoder/decode_segments.mjs' --workers ${MAC_WORKERS:-8} --progress-seconds 180 2>&1 | tee -a '$MAC_WORK/drive-half.log'"
     ;;

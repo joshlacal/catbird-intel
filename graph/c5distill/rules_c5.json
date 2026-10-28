@@ -1,0 +1,71 @@
+{
+  "status": "REGISTERED",
+  "plan_item": "C5 (whole-network plan, DEC 2026-10-28 Batch A D15 overridden); bar = S1 pre-registration section 9.7 (R23)",
+  "registered": "2026-10-28, before any C5 student was scored on a held-out row",
+  "splits": {
+    "test": "ClickHouse cityHash64(key) % 5 == 0  (S1 9.7; key = child_did for pairs, did for profiles, toString(community) for communities)",
+    "val": "not test and cityHash64(concat('c5val|', key)) % 8 == 0",
+    "train": "everything else",
+    "test_use": "scored once, by the final model chosen on val; never used for training, early stopping, threshold or model selection",
+    "sanity_mode": "--sanity drops every test row before anything is read further and carves a pseudo-test from val, so a local smoke run never touches the held-out split"
+  },
+  "exclusions": {
+    "pairs": [
+      "parent or child author in the S5 hide-from-recs union or the user-intents opt-outs (amendment A1: their posts are excluded from the teacher and from training)",
+      "parent or child author flagged likely_minors by Haiku or Sonnet, or whose labelled community carries likely_minors in community_labels_v2 (union rule, DEC 2026-10-28 round-2 entry)",
+      "rows without a Sonnet stance"
+    ],
+    "profiles": [
+      "user-intents opt-outs (posts and bios)",
+      "likely_minors by Haiku or Sonnet, or community carrying likely_minors (minors rule)",
+      "rows without a Claude account type",
+      "hide-from-recs bios are KEPT (amendment A1)"
+    ],
+    "communities": [
+      "communities whose v2 label carries likely_minors",
+      "input = the Opus prompt cut before 'Sample recent original posts by members:' (posts are not attributed to authors in the prompt, so the A1 post filter cannot be applied to them; they are dropped instead)"
+    ]
+  },
+  "labels": {
+    "hostile": "sonnet_stance == 'hostile' (binary); Haiku comparison only where haiku_stance exists (round-1 pairs)",
+    "stance": ["supportive", "neutral", "hostile", "civil_disagreement", "unclear"],
+    "account_type": "Sonnet where present, else Haiku (Sonnet is the teacher wherever both exist)",
+    "account_type_classes": ["person", "creator_or_artist", "adult_creator", "fan_or_roleplay", "brand_or_commercial", "organization", "news_media", "unclear", "bot_or_automated"],
+    "community_type": "Opus community_type from community_labels_v2"
+  },
+  "inputs": {
+    "pairs": "tokenizer text pair: ('reply: ' | 'quote: ') + parent_text, child_text. block_after is never an input",
+    "profiles": "name + newline + description + newline + 'community: ' + community_label",
+    "communities": "Opus prompt up to the posts section"
+  },
+  "model": {
+    "colab": "jhu-clsp/mmBERT-base @ c5955035435e2bf121cde7f3c8863ef52ff35d82 (MIT), pytorch_model.bin sha256 8ea64ec1ea4eb8fca0fc14b69a2ae571de6bfbc25fd214bb932dd4aba6a3a04e",
+    "sanity": "jhu-clsp/mmBERT-small @ abc32620dd4f6ab06f5fbe905dc25f310618e09f (MIT), pytorch_model.bin sha256 be7c9ce2af947fb5bb17a3bc919552f898c5ef4164bf0a7190cf25a0f98f85b6",
+    "head": "mean-pooled last hidden state -> dropout 0.1 -> linear; full fine-tune"
+  },
+  "training": {
+    "seed": 20261028,
+    "optimizer": "AdamW, weight_decay 0.01, linear decay, 6% warmup",
+    "stance":         {"lr": 3e-5, "epochs": 3, "batch": 32, "max_len": 256},
+    "account_type":   {"lr": 5e-5, "epochs": 3, "batch": 64, "max_len": 128},
+    "community_type": {"lr": 5e-5, "epochs": 6, "batch": 8,  "max_len": 1024},
+    "loss": "cross-entropy with inverse-sqrt-frequency class weights (train split)",
+    "selection": "best epoch by val metric: hostile kappa (stance task), macro-F1 (type tasks)",
+    "hostile_threshold": "P(hostile) >= t, t from 0.05..0.95 step 0.05 maximising val kappa"
+  },
+  "metrics": {
+    "bootstrap": "2,000 percentile resamples, numpy default_rng(20261028), 95% CI; resampling unit = child author for pairs (cluster bootstrap), row for profiles and communities",
+    "macro_f1": "over the fixed teacher class list; a class with 2TP+FP+FN = 0 in a resample scores 0"
+  },
+  "bars": {
+    "hostile_learnable": "ALL of: (1) student kappa vs Sonnet on the full held-out split >= 0.6; (2) on the held-out pairs that have a Haiku label, the 95% CI lower bound of the student's kappa > Haiku-vs-Sonnet kappa on those same pairs",
+    "account_type_learnable": "held-out macro-F1 vs the Claude label (Sonnet else Haiku), 95% CI lower bound >= 0.6; Sonnet-only subset and Haiku-vs-Sonnet on it reported alongside",
+    "community_type_learnable": "held-out macro-F1 vs the Opus label, 95% CI lower bound >= 0.6",
+    "c6_gate": "C6 may be asked only if hostile_learnable is true"
+  },
+  "units": {
+    "rates_per_hour": {"T4": 1.19, "L4": 1.71, "A100": 5.4, "G4": 8.71},
+    "cap": 20,
+    "self_stop": "before each epoch, units so far (wall time since the job started + preamble allowance) plus the projected next epoch must stay <= cap; otherwise training stops and the best checkpoint so far is scored"
+  }
+}

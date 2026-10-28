@@ -6,6 +6,7 @@ memory; the server never writes a file. Synthetic DIDs/CIDs are well-formed but 
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import io
 import json
@@ -72,10 +73,14 @@ def parity_images(n=48):
 
 class ImageServer:
     """ThreadingHTTPServer on 127.0.0.1 serving /img/feed_thumbnail/plain/{did}/{cid} from memory.
-    CIDs whose last char is in `fail404` answer 404; `latency_ms` adds a per-request delay."""
+    CIDs whose last char is in `fail404` answer 404; `latency_ms` adds a per-request delay. Like Bunny (the CDN in
+    front of cdn.bsky.app) every 200 carries `cdn-cache: MISS` the first time a CID is served and `HIT` after.
+    `limit_rps` answers 429 (Retry-After 1) whenever more than that many requests arrived in the last second, so
+    the S7g rate ramp's stop rule can be rehearsed."""
 
-    def __init__(self, latency_ms=30, fail404="7"):
+    def __init__(self, latency_ms=30, fail404="7", limit_rps=None):
         self.cache, self.lock, self.requests = {}, threading.Lock(), 0
+        self.recent = collections.deque()
         srv = self
 
         class H(BaseHTTPRequestHandler):
@@ -87,6 +92,13 @@ class ImageServer:
             def do_GET(self):
                 with srv.lock:
                     srv.requests += 1
+                    now = time.monotonic()
+                    srv.recent.append(now)
+                    while srv.recent and srv.recent[0] < now - 1.0:
+                        srv.recent.popleft()
+                    limited = limit_rps is not None and len(srv.recent) > limit_rps
+                if limited:
+                    return self._send(429, b"slow down", "text/plain", {"Retry-After": "1"})
                 parts = self.path.split("/")
                 if len(parts) != 6 or self.path[:len("/img/feed_thumbnail/plain/")] != "/img/feed_thumbnail/plain/":
                     return self._send(404, b"not found", "text/plain")
@@ -96,14 +108,17 @@ class ImageServer:
                     return self._send(404, b"blob not found", "text/plain")
                 with srv.lock:
                     body = srv.cache.get(cid)
+                hit = body is not None
                 if body is None:
                     body = synthetic_jpeg(int(hashlib.sha256(cid.encode()).hexdigest()[:8], 16))
                     with srv.lock:
                         srv.cache[cid] = body
-                self._send(200, body, "image/jpeg")
+                self._send(200, body, "image/jpeg", {"cdn-cache": "HIT" if hit else "MISS"})
 
-            def _send(self, code, body, ctype):
+            def _send(self, code, body, ctype, extra=None):
                 self.send_response(code)
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -172,6 +187,52 @@ def write_shards(rows, out_dir, n_shards=3):
         pq.write_table(pa.Table.from_pylist(side, schema=pa.schema([("did", pa.string()), ("rkey", pa.string()),
                                                                      ("image_cids", pa.list_(pa.string()))])),
                        out / "sidecar" / f"j{j:02d}.parquet")
+
+
+class FakeEncoder:
+    """Rehearsal-only stand-in for encoder.EG2 (job.py --fake-encoder): deterministic random 768-d vectors per
+    input, the same call surface (encode_text / encode_mm / set_soft_tokens / mm_tokens / a tokenizer on `.m`),
+    no model, no torch. Used by the driver rehearsals so a whole Colab session can be exercised in seconds."""
+
+    class _Tok:
+        def __call__(self, texts, add_special_tokens=True, truncation=True, max_length=512):
+            one = isinstance(texts, str)
+            ids = [list(range(min(max_length, 2 + len((t or "").split())))) for t in ([texts] if one else texts)]
+            return {"input_ids": ids[0] if one else ids}
+
+    def __init__(self, model_dir=None, device=None, soft_tokens=70, mps_gb=0.0):
+        self.soft_tokens, self.dev, self.params_m, self.param_dtypes = soft_tokens, "cpu", 438.8, ["torch.bfloat16"]
+        self.prompt, self.mm_calls, self.load_seconds = "task: clustering | query: ", 0, 0.0
+        self.m = type("M", (), {"tokenizer": self._Tok()})()
+
+    def _v(self, keys):
+        import numpy as np
+        return np.stack([np.random.default_rng(int(hashlib.sha256(k.encode()).hexdigest()[:8], 16)).normal(size=768)
+                         for k in keys]).astype(np.float32) if keys else np.zeros((0, 768), np.float32)
+
+    def set_soft_tokens(self, s):
+        self.soft_tokens = s
+
+    def encode_text(self, texts, bs=256):
+        return self._v(list(texts))
+
+    def encode_mm(self, posts, bs=16):
+        from PIL import Image
+        assert all(isinstance(im, Image.Image) for _t, ims in posts for im in ims)
+        self.mm_calls += 1
+        return self._v([f"{t}|{len(ims)}|{self.soft_tokens}" for t, ims in posts])
+
+    def mm_tokens(self, text, images):
+        return 2 + len((text or "").split()) + self.soft_tokens * len(images)
+
+    def sync(self):
+        pass
+
+    def empty_cache(self):
+        pass
+
+    def peak_mem_gb(self):
+        return None
 
 
 def utc(s):

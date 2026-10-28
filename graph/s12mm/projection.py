@@ -79,6 +79,52 @@ def project_from_bench(res, usd_per_hour):
     return p
 
 
+# Colab (2026-10-28): L4 1.71 units/h, A100 5.4 units/h (`colab usage` deltas in C5/S7); $9.99 per 100 units.
+# A100 speed vs L4 is a prior [E] (C5's SPEED_VS_L4 table), never measured here: only the L4 is benchmarked.
+COLAB = {"L4": {"units_per_h": 1.71, "speed_vs_l4": 1.0}, "A100": {"units_per_h": 5.4, "speed_vs_l4": 2.8}}
+COLAB_SESSION_SETUP_H, COLAB_SESSION_H = 0.25, 11.5
+
+
+def colab_costs(res, usd_per_unit=0.0999, posts=POSTS, image_share=IMAGE_SHARE, images_per_post=IMAGES_PER_POST,
+                gate_pass=None):
+    """Units and dollars per 10M posts (the S12m mix) and for the full slab, on a Colab L4 and an A100, at the
+    etiquette rate, 100 and 200 req/s, and the ramp's highest clean achieved rate. Wall = max(fetch, GPU) x 1.10
+    plus 0.25 h setup per 11.5 h session. The A100's GPU speed is a prior; S12m is fetch-bound unless the GPU
+    is slower than the CDN, in which case the A100 is worth it only if it cuts wall time by more than 5.4/1.71."""
+    r, src = rates(res)
+    sel = res.get("image_selection", {}).get("gate_counts", {})
+    if gate_pass is None:
+        n_c = sel.get("posts_with_cids") or 0
+        gate_pass = round(sel.get("gate_pass", 0) / n_c, 3) if n_c else 1.0
+    rps_opts = {"etiquette_50": 50.0, "100": 100.0, "200": 200.0}
+    ramp = res.get("cdn_ramp") or {}
+    if ramp.get("achieved_rps_at_max_clean"):
+        rps_opts["ramp_max_clean_achieved"] = float(ramp["achieved_rps_at_max_clean"])
+    out = {"usd_per_unit": usd_per_unit, "rates_posts_per_s_l4": r, "rate_sources": src, "gate_pass": gate_pass,
+           "gpu_only_units_per_10m_posts": {}, "per_10m_posts": [], "full_slab": []}
+    for g, c in COLAB.items():
+        for k in ("text", "mm70", "mm280"):
+            pps = r[f"{k}_posts_per_s"] * c["speed_vs_l4"]
+            u = 1e7 / pps / 3600 * c["units_per_h"]
+            out["gpu_only_units_per_10m_posts"][f"{g}_{k}"] = {"units": round(u, 2), "usd": round(u * usd_per_unit, 2),
+                                                              "arith": f"1e7 / {pps:,.1f} posts/s / 3600 x {c['units_per_h']}"}
+    for n_posts, key in ((1e7, "per_10m_posts"), (posts, "full_slab")):
+        img_posts = n_posts * image_share * gate_pass
+        for g, c in COLAB.items():
+            text_h = n_posts / (r["text_posts_per_s"] * c["speed_vs_l4"]) / 3600
+            mm_h = img_posts / (r["mm70_posts_per_s"] * c["speed_vs_l4"]) / 3600
+            for name, rps in rps_opts.items():
+                fetch_h = img_posts * images_per_post / rps / 3600
+                busy = max(fetch_h, text_h + mm_h) * OVERHEAD
+                sessions = max(1, math.ceil(busy / COLAB_SESSION_H))
+                wall = busy + sessions * COLAB_SESSION_SETUP_H
+                u = wall * c["units_per_h"]
+                out[key].append({"gpu": g, "rps": name, "fetch_h": round(fetch_h, 2), "gpu_h": round(text_h + mm_h, 2),
+                                 "bound": "fetch" if fetch_h >= text_h + mm_h else "gpu", "wall_h": round(wall, 2),
+                                 "sessions": sessions, "units": round(u, 1), "usd": round(u * usd_per_unit, 2)})
+    return out
+
+
 def table(p):
     lines = ["| soft tokens | req/s | images | fetch h | GPU h (text + mm) | bound | wall h | 24 h sessions | $ |",
              "|---|---|---|---|---|---|---|---|---|"]

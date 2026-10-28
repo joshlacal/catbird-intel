@@ -1,4 +1,4 @@
-"""S12m main run: natively multimodal producer-slab embeddings on one GCE Spot L4 (S1 amendment A2).
+"""S12m main run: natively multimodal producer-slab embeddings on one L4 (S1 amendment A2): a GCE VM or a Colab session.
 
   job.py run --posts URL --out URL --gate-bundle DIR --model-dir DIR --work DIR --run-id ID
              [--sidecar URL] [--soft-tokens 70] [--rps 50] [--max-in-flight 32] [--unit-rows 20000]
@@ -16,6 +16,13 @@ with an output but no marker is redone and overwritten). The fetch of unit k+1 o
 Stops cleanly (exit 0, VM self-deletes) when the dollar guard would cross --cap-usd before the next unit; exits 5
 if the fetch circuit breaker trips (429s/errors), 6 if the label bundle is older than --max-label-lag-h, 7 if
 any output fails the no-image-bytes audit. Progress: one line per unit and a heartbeat every 60 s.
+
+Stores (stores.py): --posts, --sidecar and --out are gs:// prefixes on GCE or plain directories. On Colab
+(colab_job.py) all three are local directories under /content/s12mm: the Mac driver uploads one batch of input
+units (one parquet file per unit, split_units.py) with `colab upload`, the job writes units/, _ledger/ and
+receipt/ to a fresh per-batch --out directory, and the driver takes them back with `colab download`. The money
+guard is unit-agnostic: on Colab --cap-usd/--usd-per-hour carry Colab compute units and units/hour
+(--rate-unit colab_units records that in the receipt).
 """
 from __future__ import annotations
 
@@ -67,6 +74,9 @@ def common_args(ap):
     ap.add_argument("--mm-bs", type=int, default=16)
     ap.add_argument("--device")
     ap.add_argument("--mps-gb", type=float, default=7.0)
+    ap.add_argument("--rate-unit", choices=["usd", "colab_units"], default="usd",
+                    help="what --cap-usd and --usd-per-hour count (Colab: compute units and units/hour)")
+    ap.add_argument("--fake-encoder", action="store_true", help="rehearsal only: synth.FakeEncoder, no model")
 
 
 def make_fetcher(a):
@@ -141,9 +151,21 @@ def unit_rows(src, key, work, side, unit_rows_n):
         yield f"{stem}-{s // unit_rows_n:05d}", t.slice(s, unit_rows_n).to_pylist()
 
 
+def encoder_factory(a, make_encoder=None):
+    if make_encoder:
+        return make_encoder
+    if getattr(a, "fake_encoder", False):
+        if not a.rehearsal:
+            sys.exit("--fake-encoder is rehearsal-only")
+        from synth import FakeEncoder
+        return FakeEncoder
+    from encoder import EG2
+    return EG2
+
+
 def cmd_run(a, make_encoder=None):
     import pyarrow.parquet as pq
-    from encoder import EG2, GpuSampler
+    from encoder import GpuSampler
     check_out(a)
     work = pathlib.Path(a.work)
     (work / "out").mkdir(parents=True, exist_ok=True)
@@ -177,7 +199,7 @@ def cmd_run(a, make_encoder=None):
     log(f"{len(done)} units already done; guard {guard.state()}")
 
     src, keys, side = load_inputs(a, work)
-    enc = (make_encoder or EG2)(a.model_dir, a.device, a.soft_tokens, a.mps_gb)
+    enc = encoder_factory(a, make_encoder)(a.model_dir, a.device, a.soft_tokens, a.mps_gb)
     log(f"EG2 loaded on {enc.dev}: {enc.params_m:.1f}M params, {enc.param_dtypes}, soft tokens {enc.soft_tokens}")
     gpu = GpuSampler()
     fetcher = make_fetcher(a)
@@ -200,7 +222,7 @@ def cmd_run(a, make_encoder=None):
     marker = audit.start_marker(work)   # after model load: everything written from here on is audited
     pool = ThreadPoolExecutor(1, thread_name_prefix="fetch-unit")
     it = todo()
-    rc, n_units = 0, 0
+    rc, n_units, done_this_vm = 0, 0, []
     try:
         cur = next(it, None)
         if cur is None:
@@ -247,6 +269,7 @@ def cmd_run(a, make_encoder=None):
                    "gpu": gpu.window(g1), "vm": vm, "at": L.iso(L.utcnow())}
             S.write_text(out, f"_ledger/u-{cur_u.name}.json", json.dumps(rec, sort_keys=True), work / "tmp")
             local.unlink()   # vectors are in the bucket; the local copy is not kept
+            done_this_vm.append(cur_u.name)
             totals.update(counts)
             n_units += 1
             unit_secs.append(time.time() - t0)
@@ -263,6 +286,7 @@ def cmd_run(a, make_encoder=None):
         gpu.stop()
     rep = audit.finish(work, marker)
     summary = {"run_id": a.run_id, "vm": vm, "exit": rc, "units_this_vm": n_units, "totals": dict(totals),
+               "rate_unit": getattr(a, "rate_unit", "usd"), "units_done": sorted(f"u-{n}" for n in done_this_vm),
                "fetch": fetcher.stats.summary(), "guard": guard.state(), "audit": rep,
                "label_watermark": L.iso(bundle.watermark), "gate_bundle_sha256": bundle.sha256}
     S.write_text(out, f"receipt/vm-{vm}.json", json.dumps(summary, indent=1, default=str), work / "tmp")

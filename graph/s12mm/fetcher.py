@@ -11,6 +11,10 @@ A circuit breaker trips when, over the last `window` answers, 429s exceed 5% or 
 URL policy: only `https://cdn.bsky.app/img/feed_thumbnail/plain/{did}/{cid}`, except that a rehearsal may
 point `base` at a loopback HTTP server (127.0.0.1 / ::1 / localhost); nothing else is ever requested.
 Nothing here opens a file. Callers get {key: (bytes | None, log)}; logs never carry the body.
+
+Per answer the CDN's `cdn-cache` header (HIT / MISS / ...) is counted in `Stats.cache`, so a run or the S7g rate
+ramp can tell cache-miss behaviour from cache hits. `discard_bodies=True` (the ramp) drops each body as soon as
+it is measured; `stop_on_429=True` (the ramp) opens the circuit on the first 429 instead of on a share.
 """
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ class Resp:
     content_type: str = ""
     body: bytes = b""
     retry_after: str = ""
+    cache: str = ""
 
 
 class KeepAliveTransport:
@@ -68,7 +73,8 @@ class KeepAliveTransport:
                 if r.length:            # oversize body: drop the connection rather than drain it
                     c.close()
                     self._tls.c = None
-                return Resp(r.status, r.getheader("content-type", "") or "", body, r.getheader("retry-after", "") or "")
+                return Resp(r.status, r.getheader("content-type", "") or "", body, r.getheader("retry-after", "") or "",
+                            (r.getheader("cdn-cache", "") or "").strip().upper())
             except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError):
                 if attempt == 1:
                     raise
@@ -85,6 +91,7 @@ class Stats:
     bytes: int = 0
     statuses: collections.Counter = field(default_factory=collections.Counter)
     skips: collections.Counter = field(default_factory=collections.Counter)
+    cache: collections.Counter = field(default_factory=collections.Counter)
     pauses: int = 0
     latency_ms: list = field(default_factory=list)
     t_first: float | None = None
@@ -100,6 +107,7 @@ class Stats:
         q = lambda f: round(lat[min(len(lat) - 1, int(f * len(lat)))], 1) if lat else None  # noqa: E731
         return {"requests": self.requests, "ok": self.ok, "bytes": self.bytes, "achieved_rps": self.rate(),
                 "statuses": dict(self.statuses), "skips": dict(self.skips), "pauses": self.pauses,
+                "cdn_cache": dict(self.cache),
                 "latency_ms_p50": q(0.5), "latency_ms_p95": q(0.95), "latency_ms_p99": q(0.99)}
 
 
@@ -110,7 +118,7 @@ class CircuitOpen(RuntimeError):
 class AsyncFetcher:
     def __init__(self, *, rps=ETIQUETTE_RPS, max_in_flight=32, base="https://cdn.bsky.app", rehearsal=False,
                  allow_above_etiquette=False, user_agent=USER_AGENT, transport=None, window=2000,
-                 clock=time.monotonic):
+                 clock=time.monotonic, discard_bodies=False, stop_on_429=False, max_5xx=None):
         if not 0 < rps <= (200.0 if allow_above_etiquette else ETIQUETTE_RPS):
             raise ValueError(f"rps {rps} outside (0, {ETIQUETTE_RPS}] (above needs allow_above_etiquette)")
         if "contact" not in user_agent:
@@ -130,6 +138,7 @@ class AsyncFetcher:
         self._next = 0.0
         self._pause_until = 0.0
         self.tripped: str | None = None
+        self.discard_bodies, self.stop_on_429, self.max_5xx = discard_bodies, stop_on_429, max_5xx
 
     def close(self):
         self.pool.shutdown(wait=True)
@@ -188,13 +197,20 @@ class AsyncFetcher:
                 self.stats.skips[f"net_{err}"] += 1
                 return key, None, {"status": None, "skip": f"net_{err}", "ms": round(ms, 1)}
             self.stats.statuses[r.status] += 1
-            log = {"status": r.status, "content_type": r.content_type, "bytes": len(r.body), "ms": round(ms, 1)}
+            self.stats.cache[r.cache or "absent"] += 1
+            log = {"status": r.status, "content_type": r.content_type, "bytes": len(r.body), "ms": round(ms, 1),
+                   "cache": r.cache}
             if r.status == 429 or r.status >= 500:
                 ra = r.retry_after.strip()
                 delay = min(60.0, float(ra)) if ra.isdigit() else 5.0
                 self._pause_until = max(self._pause_until, self.clock() + delay)
                 self.stats.pauses += 1
                 self._record("429" if r.status == 429 else "err")
+                if r.status == 429 and self.stop_on_429 and not self.tripped:
+                    self.tripped = f"first 429 after {self.stats.requests} requests"
+                n5 = sum(v for k, v in self.stats.statuses.items() if isinstance(k, int) and k >= 500)
+                if self.max_5xx is not None and n5 > self.max_5xx and not self.tripped:
+                    self.tripped = f"{n5} 5xx answers (> {self.max_5xx})"
             else:
                 self._record("ok")
             skip = None
@@ -211,6 +227,8 @@ class AsyncFetcher:
                 return key, None, {**log, "skip": skip}
             self.stats.ok += 1
             self.stats.bytes += len(r.body)
+            if self.discard_bodies:
+                return key, None, {**log, "skip": None, "discarded": True}
             return key, r.body, {**log, "skip": None}
 
     async def fetch(self, items):

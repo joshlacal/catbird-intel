@@ -17,8 +17,13 @@ Phases, each timed and each with nvidia-smi utilisation (None on the Mac):
     the run); tokens/post including soft tokens; text-only companion vectors for the same posts;
   6 dollars per 10M posts each way and the S12m projection (projection.py);
   7 G-img inputs (report-only under A2): per image post, vec_text, vec_mm70, vec_mm280 -> bench/vectors.parquet
-    for gimg_report.py on the Mac; 8 the no-image-bytes audit.
-Writes OUT/bench/bench.json (+ vectors.parquet); exits 3 on any NaN, 7 on a failed audit.
+    for gimg_report.py on the Mac; 8 the no-image-bytes audit;
+  9 (--cdn-ramp 25,50,100,200) the CDN rate ramp (ramp.py) on the gate-passing image posts phase 4 did not use,
+    with cdn-cache HIT/MISS per step; runs last, so a 429 there cannot disturb phases 1-8. Steps above 50 req/s
+    need --cdn-ramp itself (it is the approval to exceed the etiquette cap for the ramp's steps only).
+Writes OUT/bench/bench.json (+ vectors.parquet); exits 3 on any NaN, 7 on a failed audit. With --rate-unit
+colab_units, --usd-per-hour is Colab units/hour and bench.json also gets a `colab` block (units and dollars per
+10M posts at the L4 rate and at A100).
 """
 from __future__ import annotations
 
@@ -54,6 +59,11 @@ def add_args(b):
     b.add_argument("--mm-batch-sizes", default="8,16,32")
     b.add_argument("--sweep-n-mm", type=int, default=512)
     b.add_argument("--parity-only", action="store_true")
+    b.add_argument("--cdn-ramp", default="", help="comma list of target req/s, e.g. 25,50,100,200 (empty: no ramp)")
+    b.add_argument("--ramp-step-s", type=float, default=90.0)
+    b.add_argument("--ramp-min-step-s", type=float, default=30.0)
+    b.add_argument("--usd-per-unit", type=float, default=0.0999, help="Colab: dollars per compute unit")
+    b.add_argument("--synthetic-limit-rps", type=int, help="rehearsal: the loopback server 429s above this rate")
 
 
 def _s7(name):
@@ -202,7 +212,15 @@ def image_posts(a, work, now):
     keep = [ok[j] for j in ranked[:a.n_image_posts]]
     sub = P.Unit("bench", [u.uris[i] for i in keep], [u.texts[i] for i in keep], [u.pids[i] for i in keep],
                  [u.n_cids[i] for i in keep], [u.urls[i] for i in keep], [None] * len(keep))
-    return sub, dict(collections.Counter({k: v for k, v in u.counts.items()})), len(pref)
+    used = {x for i in keep for x in u.urls[i]}
+    rest = [ok[j] for j in order if ok[j] not in set(keep)]   # hash order, not the producer preference
+    ramp_items, seen = [], set(used)
+    for i in rest:
+        for x in u.urls[i]:
+            if x not in seen:
+                seen.add(x)
+                ramp_items.append((len(ramp_items), x))
+    return sub, dict(collections.Counter({k: v for k, v in u.counts.items()})), len(pref), ramp_items
 
 
 def argparse_ns(**kw):
@@ -284,6 +302,25 @@ def mm_phase(a, enc, gpu, unit, fetched, res, guard, softs):
     return good, vecs
 
 
+def cdn_ramp(a, items, guard):
+    """Phase 9 (ramp.py). Every step's fetcher keeps the policy of fetcher.py (URL form, User-Agent, no retries,
+    Retry-After) but drops bodies and opens on the first 429; steps above 50 req/s exist only under --cdn-ramp."""
+    import ramp
+    from fetcher import AsyncFetcher
+    steps = tuple(int(x) for x in a.cdn_ramp.split(",") if x)
+    if max(steps) > 200:
+        sys.exit("--cdn-ramp: 200 req/s is the most this code will ever request")
+    total_s = sum(n / r for r, n, _s in ramp.plan(len(items), steps, a.ramp_step_s, a.ramp_min_step_s))
+    if not guard.allows(total_s + 60):
+        return {"skipped": f"dollar cap: ramp needs ~{total_s:.0f}s", **guard.state()}
+
+    def make(rate, in_flight, max_5xx):
+        return AsyncFetcher(rps=rate, max_in_flight=in_flight, base=a.cdn_base, rehearsal=a.rehearsal,
+                            allow_above_etiquette=rate > 50, discard_bodies=True, stop_on_429=True, max_5xx=max_5xx)
+    return ramp.run(items, make, steps, a.ramp_step_s, a.ramp_min_step_s,
+                    log=lambda *x: print(*[json.dumps(v, default=str) if isinstance(v, dict) else v for v in x], flush=True))
+
+
 def write_vectors(path, unit, good, vecs, softs):
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -299,7 +336,7 @@ def write_vectors(path, unit, good, vecs, softs):
 
 def cmd_bench(a):
     import job
-    from encoder import EG2, GpuSampler
+    from encoder import GpuSampler
     job.check_out(a)
     if a.synthetic_images and not a.rehearsal:
         sys.exit("--synthetic-images is rehearsal-only")
@@ -311,14 +348,18 @@ def cmd_bench(a):
     softs = [int(x) for x in a.soft_tokens_list.split(",")]
     guard = L.DollarGuard(a.cap_usd or float("inf"), a.usd_per_hour, 0.0, t0=a.vm_start_epoch or time.time())
     res = {"run_id": a.run_id, "rehearsal": a.rehearsal, "rps_cap": a.rps}
-    enc = EG2(a.model_dir, a.device, softs[0], a.mps_gb)
-    import torch
-    import sentence_transformers
-    import transformers
-    res["stack"] = {"device": enc.dev, "device_name": torch.cuda.get_device_name(0) if enc.dev == "cuda" else enc.dev,
-                    "torch": torch.__version__, "cuda": torch.version.cuda, "transformers": transformers.__version__,
-                    "sentence_transformers": sentence_transformers.__version__, "params_m": round(enc.params_m, 1),
-                    "dtypes": enc.param_dtypes, "load_seconds": round(enc.load_seconds, 1)}
+    enc = job.encoder_factory(a)(a.model_dir, a.device, softs[0], a.mps_gb)
+    res["stack"] = {"device": enc.dev, "params_m": round(enc.params_m, 1), "dtypes": enc.param_dtypes,
+                    "load_seconds": round(enc.load_seconds, 1), "fake_encoder": bool(a.fake_encoder)}
+    if not a.fake_encoder:
+        import sentence_transformers
+        import torch
+        import transformers
+        res["stack"].update(device_name=torch.cuda.get_device_name(0) if enc.dev == "cuda" else enc.dev,
+                            torch=torch.__version__, cuda=torch.version.cuda, transformers=transformers.__version__,
+                            sentence_transformers=sentence_transformers.__version__)
+    else:
+        res["stack"]["device_name"] = "fake"
     gpu = GpuSampler()
     if a.bench_random:
         parity_text(a, enc, work, res)
@@ -331,16 +372,20 @@ def cmd_bench(a):
     print("[bench] text", json.dumps({k: v for k, v in res["text"].items() if k != "sweep"}), flush=True)
 
     now = job.clock_now(a)
-    unit, gate_counts, n_pref = image_posts(a, work, now)
+    unit, gate_counts, n_pref, ramp_items = image_posts(a, work, now)
     res["image_selection"] = {"gate_counts": gate_counts, "selected_posts": len(unit.uris),
-                              "selected_images": sum(len(x) for x in unit.urls), "bench_producers": n_pref}
+                              "selected_images": sum(len(x) for x in unit.urls), "bench_producers": n_pref,
+                              "ramp_fresh_urls": len(ramp_items)}
+    if audit.swap_active() is True and audit.platform.system() == "Linux":
+        sys.exit("swap is active: refusing to fetch (image bytes must never be paged to disk)")
     marker = audit.start_marker(work)
-    from contextlib import nullcontext
+    from contextlib import ExitStack
     from synth import ImageServer
-    ctx = ImageServer() if a.synthetic_images else nullcontext()
-    with ctx as srv:
-        if srv is not None:
-            a.cdn_base = srv.base
+    stack = ExitStack()
+    srv = stack.enter_context(ImageServer(limit_rps=a.synthetic_limit_rps)) if a.synthetic_images else None
+    if srv is not None:
+        a.cdn_base = srv.base
+    with stack:
         fetcher = job.make_fetcher(a)
         g0 = gpu.mark()
         t0 = time.time()
@@ -352,13 +397,19 @@ def cmd_bench(a):
         res["fetch"] = {**res.get("fetch", {}), "seconds": round(time.time() - t0, 2), **fetcher.stats.summary(),
                         **gpu.window(g0)}
         fetcher.close()
-    print("[bench] fetch", json.dumps(res["fetch"]), flush=True)
-    good, vecs = mm_phase(a, enc, gpu, unit, fetched, res, guard, softs)
-    fetched.clear()
+        print("[bench] fetch", json.dumps(res["fetch"]), flush=True)
+        good, vecs = mm_phase(a, enc, gpu, unit, fetched, res, guard, softs)
+        fetched.clear()
+        if a.cdn_ramp:
+            res["cdn_ramp"] = cdn_ramp(a, ramp_items, guard)
+            print("[bench] ramp", json.dumps({k: v for k, v in res["cdn_ramp"].items() if k != "steps"}), flush=True)
     vpath = work / "out" / "bench_vectors.parquet"
     write_vectors(vpath, unit, good, vecs, softs)
+    res["rate_unit"] = a.rate_unit
     res["dollars"] = projection.dollars_from_bench(res, a.usd_per_hour)
     res["projection"] = projection.project_from_bench(res, a.usd_per_hour)
+    if a.rate_unit == "colab_units":
+        res["colab"] = projection.colab_costs(res, usd_per_unit=a.usd_per_unit)
     res["nan_or_inf_rows_total"] = (res.get("parity_text_nan_rows", 0) + res.get("parity_mm_nan_rows", 0)
                                     + res["text"]["nan_rows"] + sum(res.get(f"mm{s}", {}).get("nan_rows", 0) for s in softs))
     res["guard"] = guard.state()

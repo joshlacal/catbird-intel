@@ -25,12 +25,13 @@ def lab(uri, val, cts, **kw):
     return {"src": SRC, "uri": uri, "val": val, "cts": cts, **kw}
 
 
-def packed_store(root, batches, torn_tail=False):
+def packed_store(root, batches, torn_tail=False, cursor=0):
     root.mkdir(parents=True)
     identity = {"did": SRC, "endpoint": "https://mod.example"}
     (root / "identity.json").write_text(json.dumps(identity))
-    manifest = {"schema": C.PACKED_SCHEMA, "identity": identity, "target_seq": 100, "start_cursor": 0,
-                "base_state": C.compact_initial(), "parent": None}
+    base = {**C.compact_initial(), "cursor": cursor}
+    manifest = {"schema": C.PACKED_SCHEMA, "identity": identity, "target_seq": 100, "start_cursor": cursor,
+                "base_state": base, "parent": None}
     C.immutable(root / "manifest.json", C.json_bytes(manifest))
     store = C.PackedStore(root, manifest)
     state = json.loads(json.dumps(store.state))
@@ -134,6 +135,53 @@ class Labels(unittest.TestCase):
         self.assertEqual(sorted((r[0], r[1], r[3]) for r in rows), [(A, "account", "porn"), (B, "record", "nudity")])
         summary = json.loads((self.tmp / "out.tsv.summary.json").read_text())
         self.assertEqual(summary["active_labels"], 2)
+
+
+class UnionOfSplitStores(unittest.TestCase):
+    """Parallel replay streams (bluesky-v2 + bluesky-v3-s*): overlaps deduped by seq, holes refused."""
+
+    def stores(self, tmp, starts_and_seqs):
+        out = []
+        for i, (cur, seqs) in enumerate(starts_and_seqs):
+            frames = [frame(q, lab(f"did:plc:{chr(97 + i) * 24}", f"v{q}", f"2026-01-01T00:00:{q % 60:02d}Z"))
+                      for q in seqs]
+            out.append(packed_store(tmp / f"s{i}", [frames], cursor=cur))
+        return out
+
+    def test_overlap_dedupe_and_labeler_gaps(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = pathlib.Path(t)
+            # s0 covers 1..12 with labeler gap 5; s1 starts at cursor 10 (overlap 11, 12), gap 15; s2 at 14.
+            st = self.stores(tmp, [(0, [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12]), (10, [11, 12, 13, 14, 16]),
+                                   (14, [16, 17, 18])])
+            per, union = {}, {}
+            seqs = [q for q, _l in labels.union_labels(list(reversed(st)), per, union)]
+            self.assertEqual(seqs, [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18])
+            self.assertEqual(union["duplicate_frames"], 3)       # 11, 12 from s1 and 16 from s2
+            self.assertEqual(union["gap_seqs"], 2)               # 5 and 15: the labeler's own
+            self.assertEqual(union["max_seq"], 18)
+            self.assertTrue(union["gaps_within_store_gaps"])
+            self.assertEqual(union["order"][0], str(st[0]))
+
+    def test_hole_between_streams_is_refused(self):
+        with tempfile.TemporaryDirectory() as t:
+            tmp = pathlib.Path(t)
+            st = self.stores(tmp, [(0, [1, 2, 3]), (5, [6, 7])])   # seqs 4, 5 never requested by anyone
+            with self.assertRaises(labels.StoreError):
+                list(labels.union_labels(st, {}, {}))
+
+    def test_label_root_discovery_and_coverage(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = pathlib.Path(t)
+            packed_store(root / "bluesky-v2", [[frame(1, lab(A, "spam", "2026-01-01T00:00:00Z"))]])
+            packed_store(root / "bluesky-v3-s1", [[frame(2, lab(A, "porn", "2026-01-01T00:00:01Z"))]], cursor=1)
+            packed_store(root / "speed-probe-x", [[frame(1, lab(A, "x", "2026-01-01T00:00:00Z"))]])
+            self.assertEqual([p.name for p in labels.label_stores(root)], ["bluesky-v2", "bluesky-v3-s1"])
+            out = root / "o.tsv"
+            labels.main([str(out), "--label-root", str(root), "--now", NOW, "--coverage-to", "2"])
+            self.assertEqual(len(out.read_text().splitlines()), 2)
+            with self.assertRaises(labels.StoreError):
+                labels.main([str(out), "--label-root", str(root), "--now", NOW, "--coverage-to", "3"])
 
 
 if __name__ == "__main__":

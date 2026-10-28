@@ -13,6 +13,11 @@ collector's own `decode_frame` (which checks the labeler DID). Nothing is writte
 lock is taken, so a running replay is unaffected. Never instantiate `PackedStore` here: on a torn
 journal it renames files in the live directory.
 
+Several stores that split one replay into seq ranges (the parallel bluesky-v3-s* streams, tails) are read
+as one union: in start-cursor order, frames already covered (seq <= the union's max) dropped as duplicates, and
+a store starting beyond the union's max refused as a seq hole (`union_labels`). --label-root reads every
+generation under a root; --coverage-to N fails unless the union reaches seq N.
+
 Resolution (atproto label semantics, strict where they leave room):
   - a label is keyed by (src, uri, val); the newest by (cts, then replay order) wins;
   - a winning `neg: true` removes the label; a winning label whose `exp` is at or before NOW is expired;
@@ -98,34 +103,103 @@ def _packed_frames(directory: pathlib.Path, manifest: dict):
         cursor = entry["after"]["cursor"]
 
 
-def store_labels(directory: pathlib.Path, stats: dict | None = None):
-    """Yield (seq, label dict) for every committed label frame of one store, in replay order."""
-    directory = pathlib.Path(directory).expanduser()
+def _open_frames(directory: pathlib.Path):
     identity = json.loads((directory / "identity.json").read_text())
     manifest_path = directory / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("schema") != collector.PACKED_SCHEMA:
             raise StoreError(f"{directory}: unknown manifest schema {manifest.get('schema')!r}")
-        frames = _packed_frames(directory, manifest)
-    elif (directory / "journal.jsonl").exists():
-        frames = _legacy_frames(directory)
-    else:
-        raise StoreError(f"{directory}: neither a packed nor a legacy label store")
+        return identity, _packed_frames(directory, manifest), int(manifest["base_state"]["cursor"])
+    if (directory / "journal.jsonl").exists():
+        return identity, _legacy_frames(directory), 0
+    raise StoreError(f"{directory}: neither a packed nor a legacy label store")
+
+
+def start_cursor(directory) -> int:
+    """The cursor a store's own stream began after (packed: manifest base_state; legacy: 0)."""
+    return _open_frames(pathlib.Path(directory).expanduser())[2]
+
+
+def store_frames(directory: pathlib.Path, stats: dict | None = None):
+    """Yield (seq, [labels]) for every committed #labels frame of one store, in replay order, with the
+    store's hash chain verified. stats gets frames, labels, first/max seq, the start cursor and the seqs the
+    store's own stream skipped (gap_seqs: the labeler's own holes as this connection saw them)."""
+    directory = pathlib.Path(directory).expanduser()
+    identity, frames, cursor = _open_frames(directory)
     st = stats if stats is not None else {}
-    st.setdefault("frames", 0)
-    st.setdefault("labels", 0)
-    st.setdefault("max_seq", 0)
+    for k in ("frames", "labels", "max_seq", "gap_seqs"):
+        st.setdefault(k, 0)
+    st["start_cursor"] = cursor
+    prev = cursor
     for raw in frames:
         decoded = collector.decode_frame(raw, identity["did"])
         st["frames"] += 1
         if decoded["kind"] != "labels":
             continue
         body = decoded["body"]
-        st["max_seq"] = max(st["max_seq"], body["seq"])
-        for label in body["labels"]:
-            st["labels"] += 1
-            yield body["seq"], label
+        seq = body["seq"]
+        st.setdefault("first_seq", seq)
+        if seq > prev + 1:
+            st["gap_seqs"] += seq - prev - 1
+        prev = max(prev, seq)
+        st["max_seq"] = max(st["max_seq"], seq)
+        st["labels"] += len(body["labels"])
+        yield seq, body["labels"]
+
+
+def store_labels(directory: pathlib.Path, stats: dict | None = None):
+    """Yield (seq, label dict) for every committed label of one store, in replay order."""
+    for seq, labels in store_frames(directory, stats):
+        for label in labels:
+            yield seq, label
+
+
+def union_labels(stores, per_store: dict, union: dict):
+    """(seq, label) over several stores that split one replay into seq ranges (bluesky-v1, -v2, the parallel
+    bluesky-v3-s* streams, tails). Stores are read in start-cursor order; a store may start at or below what
+    the union already covers (overlaps are expected: frames with seq <= the union's max are duplicates and
+    dropped), never above it: a store whose start cursor is beyond the union's max would leave seqs nobody
+    fetched, so that raises StoreError. Seq gaps that remain in the union were therefore skipped by the
+    labeler on a live connection (each lies inside some store's own stream); union["gap_seqs"] counts them
+    for comparison with the stores' own gap counts and the collectors' missing_sequence_count."""
+    order = sorted(((start_cursor(s), i, pathlib.Path(s).expanduser()) for i, s in enumerate(stores)))
+    umax = 0
+    union.update({"order": [str(p) for _c, _i, p in order], "duplicate_frames": 0, "gap_seqs": 0, "frames": 0})
+    for cur, _i, path in order:
+        if cur > umax:
+            raise StoreError(f"seq hole: {path} starts after cursor {cur} but the union only reaches {umax}")
+        st = per_store.setdefault(str(path), {})
+        for seq, labels in store_frames(path, st):
+            if seq <= umax:
+                union["duplicate_frames"] += 1
+                st["duplicate_frames"] = st.get("duplicate_frames", 0) + 1
+                continue
+            union["gap_seqs"] += seq - umax - 1
+            umax = seq
+            union["frames"] += 1
+            for label in labels:
+                yield seq, label
+        cp = path / "checkpoint.json"
+        if cp.exists():
+            st["checkpoint_missing_sequence_count"] = json.loads(cp.read_text()).get("state", {}).get(
+                "missing_sequence_count")
+    union["max_seq"] = umax
+    union["store_gap_seqs_sum"] = sum(v.get("gap_seqs", 0) for v in per_store.values())
+    union["gaps_within_store_gaps"] = union["gap_seqs"] <= union["store_gap_seqs_sum"]
+    if not union["gaps_within_store_gaps"]:
+        raise StoreError(f"union has {union['gap_seqs']} missing seqs, more than the stores' own "
+                         f"{union['store_gap_seqs_sum']}: a range was never fetched")
+
+
+def label_stores(root) -> list[pathlib.Path]:
+    """Every replay generation and tail under a moderation-labels root: bluesky-v1, bluesky-v2, bluesky-v3-s*,
+    recent-tail-* (not smoke or speed-probe stores)."""
+    root = pathlib.Path(root).expanduser()
+    names = ["bluesky-v1", "bluesky-v2"]
+    out = [root / n for n in names if (root / n).exists()]
+    out += sorted(root.glob("bluesky-v3-s*")) + sorted(root.glob("recent-tail-*"))
+    return [p for p in out if (p / "identity.json").exists()]
 
 
 def resolve(labelled, now: str, record_dids: set[str] | None = None):
@@ -167,33 +241,35 @@ def parse_time(value: str) -> datetime:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("out_tsv")
-    ap.add_argument("stores", nargs="+")
+    ap.add_argument("stores", nargs="*")
+    ap.add_argument("--label-root", help="read every store under this root (label_stores) instead of a list")
+    ap.add_argument("--coverage-to", type=int, help="fail unless the union reaches at least this seq")
     ap.add_argument("--record-dids", help="file of subject DIDs whose record-level labels are kept")
     ap.add_argument("--now", default=datetime.now(timezone.utc).isoformat())
     a = ap.parse_args(argv)
+    stores = label_stores(a.label_root) if a.label_root else a.stores
+    if not stores:
+        ap.error("no stores")
     record_dids = None
     if a.record_dids:
         record_dids = {l.strip() for l in open(a.record_dids) if l.strip()}
-    per_store = {}
-
-    def all_labels():
-        for s in a.stores:
-            st = per_store.setdefault(str(s), {})
-            yield from store_labels(pathlib.Path(s), st)
-
-    active = resolve(all_labels(), a.now, record_dids)
+    per_store, union = {}, {}
+    active = resolve(union_labels(stores, per_store, union), a.now, record_dids)
+    if a.coverage_to and union["max_seq"] < a.coverage_to:
+        raise StoreError(f"union reaches seq {union['max_seq']}, short of {a.coverage_to}")
     out = pathlib.Path(a.out_tsv)
     tmp = out.with_name(out.name + ".partial")
     with open(tmp, "w") as f:
         for row in sorted(active.values(), key=lambda r: (r["did"], r["uri"], r["val"], r["src"])):
             f.write("\t".join([row["did"], row["scope"], row["uri"], row["val"], row["src"], row["cts"], row["exp"]]) + "\n")
     tmp.replace(out)
-    summary = {"now": a.now, "stores": per_store, "active_labels": len(active),
+    summary = {"now": a.now, "stores": per_store, "union": union, "coverage_to": a.coverage_to,
+               "active_labels": len(active),
                "active_account_dids": len({r["did"] for r in active.values() if r["scope"] == "account"}),
                "active_record_uris": len({r["uri"] for r in active.values() if r["scope"] == "record"}),
                "record_did_filter": len(record_dids) if record_dids is not None else None}
     out.with_name(out.name + ".summary.json").write_text(json.dumps(summary, indent=1, sort_keys=True) + "\n")
-    print(json.dumps(summary, sort_keys=True))
+    print(json.dumps({k: v for k, v in summary.items() if k != "stores"}, sort_keys=True))
 
 
 if __name__ == "__main__":

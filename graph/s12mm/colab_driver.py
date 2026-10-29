@@ -878,8 +878,8 @@ def main(argv=None):
     FIXED_CLOCK["on"] = a.rehearsal
     if a.cap is None:
         a.cap = 3.0 if a.mode == "bench" else 250.0
-    if a.mode == "run" and a.cap > 700:  # 220 -> 250 -> 700 (Josh, 2026-10-29: move to a faster GPU, spend the new credits)
-        ap.error("S12m's approved Colab cap is 700 units")
+    if a.mode == "run" and a.cap > 950:  # 220 -> 250 -> 700 -> 950 (Josh, 2026-10-29: faster GPU, spend the new credits; then "raise the cap to 950")
+        ap.error("S12m's approved Colab cap is 950 units")
     if not 1 <= a.sessions <= MAX_SESSIONS:
         ap.error(f"--sessions must be 1..{MAX_SESSIONS}")
     if a.mode == "run" and not a.units:

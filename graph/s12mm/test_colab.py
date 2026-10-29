@@ -531,8 +531,8 @@ def test_driver_print_only_by_default(tmp_path, units):
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
     assert "dry run: nothing was executed" in p.stdout and "+ " in p.stdout and " new -s s12c-run-dry" in p.stdout
     assert not calls(fake)
-    p = subprocess.run(cmd[:-1] + ["--cap", "701", "--execute"], env=env, capture_output=True, text=True)
-    assert p.returncode == 2 and "700 units" in p.stderr
+    p = subprocess.run(cmd[:-1] + ["--cap", "951", "--execute"], env=env, capture_output=True, text=True)
+    assert p.returncode == 2 and "950 units" in p.stderr
     p = subprocess.run(cmd[:-1] + ["--sessions", "4", "--execute"], env=env, capture_output=True, text=True)
     assert p.returncode == 2 and "--sessions" in p.stderr
     p = subprocess.run(cmd + ["--rps", "100", "--execute"], env=env, capture_output=True, text=True)

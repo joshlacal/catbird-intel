@@ -73,6 +73,7 @@ def common_args(ap):
     ap.add_argument("--max-label-lag-h", type=float, default=36.0)
     ap.add_argument("--text-bs", type=int, default=64)     # S7g L4 sweep: 64 fastest (424 posts/s), 512 OOM
     ap.add_argument("--mm-bs", type=int, default=8)        # S7g L4 sweep at 70 soft tokens: 8 ~ 16 > 32
+    ap.add_argument("--enc-threads", type=int, default=1)  # >1: overlap image prep with the forward pass
     ap.add_argument("--device")
     ap.add_argument("--mps-gb", type=float, default=7.0)
     ap.add_argument("--rate-unit", choices=["usd", "colab_units"], default="usd",
@@ -256,7 +257,8 @@ def cmd_run(a, make_encoder=None):
                 nxt_u = None
             fut = pool.submit(fetcher.fetch_sync, nxt_u.fetch_items()) if nxt_u else None
             g1 = time.time()
-            cols, counts = P.encode_unit(cur_u, fetched, enc, text_bs=a.text_bs, mm_bs=a.mm_bs)
+            cols, counts = P.encode_unit(cur_u, fetched, enc, text_bs=a.text_bs, mm_bs=a.mm_bs,
+                                           enc_threads=a.enc_threads)
             gpu_s = time.time() - g1
             local = work / "out" / f"u-{cur_u.name}.parquet"
             pq.write_table(P.to_table(cols), local, compression="zstd")

@@ -2,7 +2,7 @@
 
   colab_driver.py bench  --run-id ID [--execute] [--cap 3] [--ramp] [--rps 50]
   colab_driver.py run    --run-id ID --units DIR [--execute] [--cap 250] [--sessions 1..3] [--batch-units 24]
-                         [--rps 50 per session] [--allow-above-etiquette] [--soft-tokens 70] [--text-bs 64] [--mm-bs 8]
+                         [--rps 50 per session] [--allow-above-etiquette] [--soft-tokens 70] [--text-bs 64] [--mm-bs 8] [--enc-threads 1]
                          [--session-max-h 11.5] [--max-drops 3] [--max-sessions 0 per lane] [--max-batches 0]
   colab_driver.py status --run-id ID [--units DIR]
   common: [--gate DIR] [--run-dir DIR] [--gpu L4] [--max-label-lag-h 36]
@@ -61,7 +61,7 @@ import colab_ledger as CL  # noqa: E402
 
 LAKE = pathlib.Path.home() / "catbird-lake-local"
 REAL_COLAB = pathlib.Path.home() / ".local/bin/colab"
-RATES = {"L4": 1.71, "A100": 5.4}
+RATES = {"L4": 1.71, "A100": 5.4, "G4": 8.9}   # G4 (RTX PRO 6000, 48 vCPU) probed 2026-10-29: 8.90/h
 L4_TEXT_PPS, L4_MM70_PPS = 432.0, 31.3      # S7g s7g-colab-20261028a on a Colab L4
 MAX_SESSIONS = 3
 REMOTE = "/content/s12mm"
@@ -738,7 +738,8 @@ class Driver:
                 env = {"S12C_MODE": "batch", "S12C_RUN_ID": a.run_id, "S12C_BATCH": name, "S12C_BATCH_SHA256": sha,
                        "S12C_CAP": f"{max(0.0, share):.3f}", "S12C_RATE": s.rate, "S12C_RPS": a.rps,
                        "S12C_SOFT": a.soft_tokens, "S12C_TIMEOUT": timeout, "S12C_CLEAN": ",".join(st["confirmed"][-4:]),
-                       "S12C_MAX_LAG_H": a.max_label_lag_h, "S12C_TEXT_BS_RUN": a.text_bs, "S12C_MM_BS_RUN": a.mm_bs}
+                       "S12C_MAX_LAG_H": a.max_label_lag_h, "S12C_TEXT_BS_RUN": a.text_bs, "S12C_MM_BS_RUN": a.mm_bs,
+                       "S12C_ENC_THREADS_RUN": a.enc_threads}
                 if a.allow_above_etiquette:
                     env["S12C_ALLOW_ABOVE"] = "1"
                 self.say(f"lane {s.lane} batch {name}: {len(units)} units, share {share:.2f} units, exec timeout {timeout}s")
@@ -870,14 +871,15 @@ def main(argv=None):
     ap.add_argument("--sessions", type=int, default=1, help=f"parallel L4 sessions, 1..{MAX_SESSIONS}")
     ap.add_argument("--text-bs", type=int, default=64)
     ap.add_argument("--mm-bs", type=int, default=8)
+    ap.add_argument("--enc-threads", type=int, default=1)
     ap.add_argument("--rehearsal", action="store_true")
     a = ap.parse_args(argv)
     a.run_dir = a.run_dir or str(LAKE / f"s12mm-colab-{a.run_id}")
     FIXED_CLOCK["on"] = a.rehearsal
     if a.cap is None:
         a.cap = 3.0 if a.mode == "bench" else 250.0
-    if a.mode == "run" and a.cap > 250:  # Josh raised the approval from 220 on 2026-10-29
-        ap.error("S12m's approved Colab cap is 250 units")
+    if a.mode == "run" and a.cap > 700:  # 220 -> 250 -> 700 (Josh, 2026-10-29: move to a faster GPU, spend the new credits)
+        ap.error("S12m's approved Colab cap is 700 units")
     if not 1 <= a.sessions <= MAX_SESSIONS:
         ap.error(f"--sessions must be 1..{MAX_SESSIONS}")
     if a.mode == "run" and not a.units:

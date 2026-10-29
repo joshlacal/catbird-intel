@@ -199,7 +199,7 @@ def _args(tmp, srv, **kw):
     a = dict(model_dir="x", work=str(tmp / "work"), run_id="t-run", out=str(tmp / "bucket" / "vectors"),
              gate_bundle=str(tmp / "gate"), rps=50.0, allow_above_etiquette=False, max_in_flight=16, rehearsal=True,
              cdn_base=srv.base, now=NOW.isoformat(), cap_usd=0.0, usd_per_hour=0.53, vm_start_epoch=None,
-             max_label_lag_h=36.0, text_bs=64, mm_bs=8, device="cpu", mps_gb=1.0, posts=str(tmp / "in" / "posts"),
+             max_label_lag_h=36.0, text_bs=64, mm_bs=8, enc_threads=2, device="cpu", mps_gb=1.0, posts=str(tmp / "in" / "posts"),
              sidecar=str(tmp / "in" / "sidecar"), soft_tokens=70, unit_rows=100, max_units=0)
     a.update(kw)
     import argparse
@@ -241,6 +241,26 @@ def test_job_refuses_stale_labels_and_gcs_rehearsal(tmp_path):
         with pytest.raises(SystemExit):
             job.check_out(_args(tmp_path, srv, rehearsal=False, out="gs://catbird-436600-plan-30d/inputs/x"))
 
+
+
+def test_encode_unit_threads_match_single_thread():
+    """enc_threads > 1 embeds the same batches of posts and gives the same columns as one thread."""
+    rows, excl, lab = _fixture_rows()
+    out = {}
+    for k in (1, 3):
+        u = P.prepare("t", rows, L.GateBundle(excl, lab, NOW), NOW)
+        with synth.ImageServer(latency_ms=0) as srv:
+            f = F.AsyncFetcher(rps=50, base=srv.base, rehearsal=True)
+            fetched = f.fetch_sync(u.fetch_items())
+            f.close()
+        enc, seen = FakeEnc(), []
+        real = enc.encode_mm
+        enc.encode_mm = lambda posts, bs=16: (seen.append(tuple(t for t, _ in posts)), real(posts, bs))[1]
+        cols, c = P.encode_unit(u, fetched, enc, mm_bs=4, enc_threads=k)
+        assert fetched == {}
+        out[k] = (cols, dict(c), sorted(seen))
+    assert out[1][0] == out[3][0] and out[1][1] == out[3][1] and out[1][2] == out[3][2]
+    assert len(out[1][2]) > 1
 
 def test_audit_catches_an_image_file(tmp_path):
     import audit

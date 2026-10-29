@@ -10,6 +10,7 @@ one batch; both are dropped before the next batch. Nothing in this module writes
 from __future__ import annotations
 
 import collections
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -63,7 +64,7 @@ def _batches(idx, bs):
         yield idx[s:s + bs]
 
 
-def encode_unit(unit, fetched, enc, *, text_bs=256, mm_bs=16, decode_threads=6, on_oom=None):
+def encode_unit(unit, fetched, enc, *, text_bs=256, mm_bs=16, decode_threads=6, enc_threads=1, on_oom=None):
     """fetched: {(post, image): (bytes | None, log)}. Returns (columns dict for mmlib.output_schema, counts)."""
     n = len(unit.uris)
     c = unit.counts
@@ -89,37 +90,61 @@ def encode_unit(unit, fetched, enc, *, text_bs=256, mm_bs=16, decode_threads=6, 
 
     mvec = {}
     mm_ready.sort(key=lambda i: len(unit.urls[i]))
-    bs = mm_bs
-    with ThreadPoolExecutor(decode_threads) as pool:
-        queue = list(_batches(mm_ready, bs))
-        while queue:
-            b = queue.pop(0)
-            imgs, ok = {}, []
-            decoded = pool.map(lambda i: _decode_post(i, unit, fetched), b)
-            for i, res in zip(b, decoded):
-                if isinstance(res, str):
-                    reasons[i] = res
+    lock = threading.Lock()
+
+    def run_batch(b, pool):
+        """Decode and embed one batch; on CUDA OOM, halve it and run the halves in turn."""
+        imgs, ok = {}, []
+        for i, res in zip(b, pool.map(lambda i: _decode_post(i, unit, fetched), b)):
+            if isinstance(res, str):
+                reasons[i] = res
+                with lock:
                     c[f"fetch_{res}"] += 1
-                else:
-                    imgs[i] = res
-                    ok.append(i)
-            try:
-                v = L.to_stored(enc.encode_mm([(unit.texts[i], imgs[i]) for i in ok], bs=len(ok) or 1))
-            except Exception as e:
-                if "out of memory" not in str(e).lower() or len(b) == 1:
-                    raise
-                if on_oom:
-                    on_oom()
-                bs = max(1, len(b) // 2)
+            else:
+                imgs[i] = res
+                ok.append(i)
+        try:
+            v = L.to_stored(enc.encode_mm([(unit.texts[i], imgs[i]) for i in ok], bs=len(ok) or 1))
+        except Exception as e:
+            if "out of memory" not in str(e).lower() or len(b) == 1:
+                raise
+            if on_oom:
+                on_oom()
+            with lock:
                 c["mm_oom_halvings"] += 1
-                queue = list(_batches(b, bs)) + queue
-                continue
-            finally:
-                imgs.clear()   # drop decoded pixels
+            imgs.clear()
+            for half in _batches(b, max(1, len(b) // 2)):
+                run_batch(half, pool)
+            return
+        finally:
+            imgs.clear()   # drop decoded pixels
+        with lock:
             mvec.update(zip(ok, L.pack(v)))
-            for i in ok:       # drop this post's bytes as soon as it is embedded
+            for i in ok:   # drop this post's bytes as soon as it is embedded
                 for j in range(len(unit.urls[i])):
                     fetched.pop((i, j), None)
+
+    # enc_threads > 1 overlaps one batch's CPU work (decode, image processor) with another's forward pass on the
+    # same model. Batches are the same lists of posts either way, so each post's input is unchanged.
+    batches = list(_batches(mm_ready, mm_bs))
+    with ThreadPoolExecutor(decode_threads * enc_threads) as pool:
+        if enc_threads <= 1:
+            for b in batches:
+                run_batch(b, pool)
+        else:
+            it = iter(batches)
+
+            def worker():
+                while True:
+                    with lock:
+                        b = next(it, None)
+                    if b is None:
+                        return
+                    run_batch(b, pool)
+
+            with ThreadPoolExecutor(enc_threads, thread_name_prefix="enc") as ew:
+                for f in [ew.submit(worker) for _ in range(enc_threads)]:
+                    f.result()
 
     cols = {k: [] for k in L.output_schema().names}
     for i in range(n):

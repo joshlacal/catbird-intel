@@ -381,7 +381,7 @@ class Driver:
 
     def upload(self, s, local, remote):
         # The contents API answers 500 to large single uploads (an 81.5 MB gate.tar.gz failed on 2026-10-28;
-        # 19 MB files went through), so anything over UPLOAD_CHUNK goes up in parts and is joined remotely.
+        # 19 MB files went through), so anything over UPLOAD_CHUNK goes up in parts; the job joins them.
         local = pathlib.Path(local)
         if local.stat().st_size <= UPLOAD_CHUNK:
             self._upload_one(s, local, remote)
@@ -399,26 +399,8 @@ class Driver:
                 names.append(p)
         for p in names:
             self._upload_one(s, p, f"{remote}.{p.name}")
-        join = parts_dir / "_join.py"
-        join.write_text(
-            "import hashlib, os, sys\n"
-            f"dst = os.path.join({REMOTE_ROOT_EXPR}, {remote!r})\n"
-            f"parts = [dst + '.part.%04d' % i for i in range({len(names)})]\n"
-            "h = hashlib.sha256()\n"
-            "with open(dst + '.joining', 'wb') as out:\n"
-            "    for p in parts:\n"
-            "        b = open(p, 'rb').read(); h.update(b); out.write(b)\n"
-            f"if h.hexdigest() != {CL.sha256_file(local)!r}:\n"
-            "    print('join sha256 mismatch'); sys.exit(1)\n"
-            "os.replace(dst + '.joining', dst)\n"
-            "[os.remove(p) for p in parts]\n"
-            "print('join ok')\n")
-        envs = []
-        for k, v in self.rehearsal_env().items():
-            envs += ["--env", f"{k}={v}"]
-        rc, out = s.c("exec", "-s", s.name, "-f", join, "--timeout", 600, *envs, timeout=900)
-        if self.a.execute and (rc != 0 or "join ok" not in out):
-            raise Stop(EXIT_SESSION, f"upload {remote}: remote join failed: {out[-300:]}")
+        # colab_job.py joins the parts (and checks sha256) when its mode first reads the file: a separate
+        # `colab exec` here would queue behind a running batch on the session's single kernel.
         for p in names:
             p.unlink()
 
@@ -738,6 +720,9 @@ class Driver:
                 try:
                     name, _tar, sha, units = cur.result()
                 except Stop as e:
+                    if pending_dl is not None:       # the batch that just finished comes home before the drop
+                        self.finish_download(s, st, *pending_dl)
+                        pending_dl = None
                     return "drop: " + e.why
                 if self.halt.is_set():
                     result = "halt"

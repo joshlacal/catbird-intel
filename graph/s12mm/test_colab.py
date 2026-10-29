@@ -375,7 +375,9 @@ elif cmd == "exec":
         if str(n) in os.environ.get("FAKE_DROP_EXEC", "").split(","):
             shutil.rmtree(vm, ignore_errors=True)          # the session dies mid-exec
             print("Kernel connection lost: runtime disconnected", file=sys.stderr); sys.exit(1)
-    r = subprocess.run([sys.executable, opt("-f")], env=env, capture_output=True, text=True, cwd=str(vm))
+    with open(D / f"kernel-{sess}.lock", "a") as lk:   # one exec at a time per session, as on a real kernel
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        r = subprocess.run([sys.executable, opt("-f")], env=env, capture_output=True, text=True, cwd=str(vm))
     sys.stdout.write(r.stdout); sys.stderr.write(r.stderr[-4000:])
     sys.exit(0)
 elif cmd == "ls":
@@ -396,6 +398,7 @@ def fake_env(tmp_path):
     (models / "SHA256SUMS").write_text("ab" * 32 + "  ./embeddinggemma-2/model.safetensors\n")
     synth.write_bundle(tmp_path / "gate", set(), set(), NOW - timedelta(hours=2))
     env = {**os.environ, "S12C_COLAB_BIN": str(exe), "FAKE_DIR": str(fake), "S12C_NOW": NOW_S,
+           "S12C_UPLOAD_CHUNK": "65536",                 # batch, code and gate tars go up in parts, joined by the job
            "S12C_REHEARSAL_ENV": f"S12C_FAKE_ENCODER=1;S12C_NOW={NOW_S};S12C_DEVICE=cpu;S12C_FAKE_CDN_MS=0"}
     return env, fake, models
 

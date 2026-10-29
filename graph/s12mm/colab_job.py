@@ -149,6 +149,27 @@ def write_json(p, obj):
 
 # --- setup ----------------------------------------------------------------------------------------------------
 
+def join_parts(dst):
+    """Reassemble a file the driver uploaded as <dst>.part.NNNN. Done here rather than by a separate `colab exec`,
+    because a session runs one exec at a time and a join queued behind a running batch timed out (2026-10-29).
+    Only the caller's own file is joined: another batch's parts may still be arriving. sha256 is checked by
+    the caller."""
+    parts = []
+    while os.path.exists(f"{dst}.part.{len(parts):04d}"):
+        parts.append(f"{dst}.part.{len(parts):04d}")
+    if not parts:
+        return
+    import shutil
+    with open(dst + ".joining", "wb") as out:
+        for q in parts:
+            with open(q, "rb") as f:
+                shutil.copyfileobj(f, out)
+    os.replace(dst + ".joining", dst)
+    for q in parts:
+        os.remove(q)
+    say("joined", os.path.basename(dst), len(parts), "parts")
+
+
 def setup():
     rec = {"started_unix": T0, "rehearsal": REHEARSAL, "python": sys.version.split()[0],
            "nvidia_smi": sh(["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader"])[1],
@@ -160,6 +181,7 @@ def setup():
         return fail("setup", f"python {sys.version.split()[0]} < 3.10", rec)
     man = json.load(open(os.path.join(ROOT, "s12c_manifest.json")))
     for rel, want in man["files"].items():
+        join_parts(os.path.join(ROOT, rel))
         got = sha256(os.path.join(ROOT, rel))
         if got != want:
             return fail("setup", f"sha256 mismatch for {rel}", rec)
@@ -305,7 +327,8 @@ def batch():
     import shutil
     name = os.environ["S12C_BATCH"]
     tar = os.path.join(ROOT, "batches", f"{name}.tar")
-    if sha256(tar) != os.environ["S12C_BATCH_SHA256"]:
+    join_parts(tar)
+    if not os.path.exists(tar) or sha256(tar) != os.environ["S12C_BATCH_SHA256"]:
         say("BATCH", name, "RC", 90, "UNITS", 0, "TAR", "-", 0, "-", "(input tar sha256 mismatch)")
         return 90
     for old in [x for x in os.environ.get("S12C_CLEAN", "").split(",") if x]:

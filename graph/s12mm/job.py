@@ -286,7 +286,7 @@ def cmd_run(a, make_encoder=None):
         pool.shutdown(wait=True)
         fetcher.close()
         gpu.stop()
-    rep = audit.finish(work, marker)
+    rep = audit.finish(work, marker, input_dirs=os.environ.get("S12C_AUDIT_INPUT_DIRS", "").split(os.pathsep))
     summary = {"run_id": a.run_id, "vm": vm, "exit": rc, "units_this_vm": n_units, "totals": dict(totals),
                "rate_unit": getattr(a, "rate_unit", "usd"), "units_done": sorted(f"u-{n}" for n in done_this_vm),
                "fetch": fetcher.stats.summary(), "guard": guard.state(), "audit": rep,

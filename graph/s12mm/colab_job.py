@@ -270,7 +270,8 @@ def run_job(args, timeout, log_path):
     say("job", " ".join(cmd[2:4]), "timeout", int(timeout))
     with open(log_path, "w") as log:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=CODE,
-                             env={**os.environ, "TOKENIZERS_PARALLELISM": "false"})
+                             env={**os.environ, "TOKENIZERS_PARALLELISM": "false",   # prefetched batch tars: inputs
+                                  "S12C_AUDIT_INPUT_DIRS": os.pathsep.join([os.path.join(ROOT, "batches"), os.path.join(ROOT, "in")])})
         killer = threading.Timer(max(30.0, timeout), p.kill)
         killer.start()
         try:

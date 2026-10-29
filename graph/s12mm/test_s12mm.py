@@ -253,6 +253,21 @@ def test_audit_catches_an_image_file(tmp_path):
     assert any("embedded.log" in p for p in rep["scan"]["image_signature"])
 
 
+
+def test_audit_input_dirs_header_only(tmp_path):
+    """A prefetched input tar part with a chance JPEG marker passes; a real image file there still fails."""
+    import audit
+    inputs = tmp_path / "batches"
+    inputs.mkdir()
+    m = audit.start_marker(tmp_path / "work")
+    (inputs / "b003.tar.part.0001").write_bytes(b"parquet bytes \xff\xd8\xff more bytes")
+    rep = audit.finish(tmp_path / "work", m, input_dirs=[str(inputs)])
+    assert any("b003.tar.part.0001" in f for f in rep["listing_head"]) and rep["scan"]["ok"]
+    assert not audit.finish(tmp_path / "work", m)["scan"]["ok"]   # without the input dirs: the full scan trips
+    (inputs / "leak.jpg").write_bytes(synth.synthetic_jpeg(3))
+    rep = audit.finish(tmp_path / "work", m, input_dirs=[str(inputs)])
+    assert not rep["ok"]
+
 # --- launcher -------------------------------------------------------------------------------------------------
 
 def test_launcher_print_only_spot_l4(tmp_path):

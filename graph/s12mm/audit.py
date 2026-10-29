@@ -104,7 +104,7 @@ def changed_files(work, marker, report=None):
     return res
 
 
-def finish(work, marker, extra_outputs=()):
+def finish(work, marker, extra_outputs=(), input_dirs=()):
     where = {}
     files = [f for f in changed_files(work, marker, where) if f != marker["path"]]
     outputs = [f for f in files if f.endswith(".parquet") and "/out/" in f] + list(extra_outputs)
@@ -114,7 +114,10 @@ def finish(work, marker, extra_outputs=()):
     # a 3-byte JPEG marker by chance. A whole image file anywhere is caught by its header.
     full = tuple(str(pathlib.Path(x).resolve()) for x in (work, tempfile.gettempdir(), "/tmp", "/root", "/home",
                                                            "/content", "/dev/shm", "/var/log/s12mm.log"))
-    inputs = tuple(str((pathlib.Path(work) / d).resolve()) + "/" for d in ("in", "sidecar", "bench_in"))
+    # Mac-built text inputs get the header check only: compressed parquet matches a 3-byte JPEG marker by chance
+    # (2026-10-29: a next-batch tar part prefetched during a batch failed the full scan on two random bytes).
+    inputs = tuple(str((pathlib.Path(work) / d).resolve()) + "/" for d in ("in", "sidecar", "bench_in")) + tuple(
+        str(pathlib.Path(d).resolve()) + "/" for d in input_dirs if d)
     header_only = [f for f in files if not str(pathlib.Path(f).resolve()).startswith(full)
                    or str(pathlib.Path(f).resolve()).startswith(inputs)]   # downloaded text inputs: header check
     scan = L.audit_files(files, structured=frozenset(outputs) | frozenset(header_only))

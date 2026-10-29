@@ -1,7 +1,7 @@
 """S7g benchmark and S12m main run on Colab L4 sessions (GCE had no L4 capacity). PRINT-ONLY unless --execute.
 
   colab_driver.py bench  --run-id ID [--execute] [--cap 3] [--ramp] [--rps 50]
-  colab_driver.py run    --run-id ID --units DIR [--execute] [--cap 220] [--sessions 1..3] [--batch-units 24]
+  colab_driver.py run    --run-id ID --units DIR [--execute] [--cap 250] [--sessions 1..3] [--batch-units 24]
                          [--rps 50 per session] [--allow-above-etiquette] [--soft-tokens 70] [--text-bs 64] [--mm-bs 8]
                          [--session-max-h 11.5] [--max-drops 3] [--max-sessions 0 per lane] [--max-batches 0]
   colab_driver.py status --run-id ID [--units DIR]
@@ -875,9 +875,9 @@ def main(argv=None):
     a.run_dir = a.run_dir or str(LAKE / f"s12mm-colab-{a.run_id}")
     FIXED_CLOCK["on"] = a.rehearsal
     if a.cap is None:
-        a.cap = 3.0 if a.mode == "bench" else 220.0
-    if a.mode == "run" and a.cap > 220:
-        ap.error("S12m's approved Colab cap is 220 units")
+        a.cap = 3.0 if a.mode == "bench" else 250.0
+    if a.mode == "run" and a.cap > 250:  # Josh raised the approval from 220 on 2026-10-29
+        ap.error("S12m's approved Colab cap is 250 units")
     if not 1 <= a.sessions <= MAX_SESSIONS:
         ap.error(f"--sessions must be 1..{MAX_SESSIONS}")
     if a.mode == "run" and not a.units:

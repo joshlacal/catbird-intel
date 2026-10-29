@@ -60,6 +60,7 @@ class EG2:
         self.params_m = sum(p.numel() for p in self.m.parameters()) / 1e6
         self.prompt = self.m.prompts[PROMPT_NAME]
         self.proc = self.m[0].processor
+        self.prompt_tokens = len(self.proc.tokenizer(self.prompt, add_special_tokens=False)["input_ids"]) + 2
         self.set_soft_tokens(soft_tokens)
 
     def set_soft_tokens(self, s):
@@ -86,10 +87,23 @@ class EG2:
         self.m.max_seq_length = TEXT_MAX_SEQ
         return self._encode(list(texts), bs, prompt=self.prompt)
 
+    def clip_mm_text(self, text, n_images):
+        """Cap the text part of an interleaved input so truncation at MM_MAX_SEQ can never reach image tokens
+        (the processor raises on a partly truncated image). Each image is reserved soft_tokens + 8 for its
+        begin/end markers; text that already fits is returned unchanged, so earlier vectors stay valid."""
+        t = text or ""
+        budget = MM_MAX_SEQ - self.prompt_tokens - n_images * (self.soft_tokens + 8) - 8
+        if len(t.encode()) <= budget:
+            return t
+        tok = self.proc.tokenizer
+        ids = tok(t, add_special_tokens=False)["input_ids"]
+        return t if len(ids) <= budget else tok.decode(ids[:budget])
+
     def encode_mm(self, posts, bs=16):
         """posts: [(text, [PIL images])]; one interleaved forward input per post."""
         self.m.max_seq_length = MM_MAX_SEQ
-        inputs = [{"text": mm_text(self.prompt, t, len(ims)), "image": list(ims)} for t, ims in posts]
+        inputs = [{"text": mm_text(self.prompt, self.clip_mm_text(t, len(ims)), len(ims)), "image": list(ims)}
+                  for t, ims in posts]
         return self._encode(inputs, bs)
 
     def mm_tokens(self, text, images):

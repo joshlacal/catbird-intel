@@ -113,7 +113,7 @@ def gate_images(did, rkey, cids, self_labels, bundle: GateBundle, now: datetime,
 
 def mm_text(prompt: str, text: str, n_images: int) -> str:
     """One interleaved input: prompt, the slab text, then one placeholder per image (C4's layout)."""
-    body = (text or "").strip()
+    body = (text or "").replace(IMAGE_TOKEN, " ").strip()  # a literal placeholder in a post would add an image slot
     tags = " ".join([IMAGE_TOKEN] * n_images)
     return prompt + (f"{body} {tags}" if body else tags)
 

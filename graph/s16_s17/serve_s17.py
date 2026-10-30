@@ -2,13 +2,14 @@
 """Localhost-only server for S17 Harness v1 (`127.0.0.1:8765`, never 0.0.0.0, never published).
 
 Endpoints:
-- GET  /                   -> page_s17.html
-- GET  /cards_v1.json      -> verified <=2 MB v0 catalog
-- GET  /api/pack?uri=...   -> inspect-only starter pack members from packs_members.json
-- GET  /api/preview?cards= -> live-hydrated "Preview from Oct 22 data" (<=2/author, <=5% high-H, 0 deleted/labelled/hfr)
-- GET  /api/medoids?uris=  -> live-hydrated medoid sample posts (text only, 0 image bytes)
-- GET  /api/ratings        -> saved blind S17 review ratings (+ ?reveal=1 scored against blind_review_key.json)
-- POST /api/ratings        -> atomically save blind S17 review ratings to ratings.json
+- GET  /                        -> page_s17.html
+- GET  /cards_v1.json           -> verified <=2 MB v0 catalog
+- GET  /cards_descriptions.json -> full uncut scene descriptions & organic quality metadata
+- GET  /api/pack?uri=...        -> inspect-only starter pack members from packs_members.json
+- GET  /api/preview?cards=      -> live-hydrated "Preview from Oct 22 data" (<=2/author, <=5% high-H, 0 deleted/labelled/hfr/bot)
+- GET  /api/medoids?uris=       -> live-hydrated medoid sample posts (text only, 0 image bytes)
+- GET  /api/ratings             -> saved blind S17 review ratings (+ ?reveal=1 scored against blind_review_key.json)
+- POST /api/ratings             -> atomically save blind S17 review ratings to ratings.json (CSRF-protected same-origin JSON only)
 """
 from __future__ import annotations
 
@@ -39,8 +40,22 @@ POL_RE = re.compile(
 )
 
 
+LIVE_RAW_ADULT_RE = re.compile(
+    r"(?:🔞|(?<!\w)18\+|(?<!\w)21\+|(?<!\w)r-?18\b|\bmdni\b|\bminors?\s+dni\b|\badults?\s+only\b)",
+    re.I,
+)
+LIVE_HDL_BOT_RE = re.compile(
+    r"(?:\.bot$|\.ap\.brid\.gy$|(?:^|[.-])(?:bot|rss|feed|mirror|alerts?)(?:$|[.-]))",
+    re.I,
+)
+LIVE_NAME_BOT_RE = re.compile(
+    r"(?:\[bot\]|\(bot\)|\b(?:unofficial|automated|mirror|rss|repost)\s+bot\b|\[twitter/x\s*mirror\]|\(mirror\)|#(?:f4f|bluecrew|ifb|fbr)\b|@f4f\b)",
+    re.I,
+)
+
+
 def hydrate_posts_live(uris: list[str], hfr_dids: set[str], hard_excl: set[str]) -> list[dict]:
-    """Hydrate up to 100 AT-URIs in batches of 25 via public.api.bsky.app getPosts; drop deleted/labelled/hfr."""
+    """Hydrate up to 100 AT-URIs in batches of 25 via public.api.bsky.app getPosts; drop deleted/labelled/hfr/bots."""
     clean_out: list[dict] = []
     for s in range(0, min(len(uris), 100), 25):
         batch = [u for u in uris[s : s + 25] if u.startswith("at://")]
@@ -62,7 +77,10 @@ def hydrate_posts_live(uris: list[str], hfr_dids: set[str], hard_excl: set[str])
             au = pv.get("author") or {}
             adid = au.get("did") or ""
             ahandle = au.get("handle") or ""
+            aname = au.get("displayName") or ""
             if not adid or adid in hfr_dids or adid in hard_excl or ahandle == "handle.invalid":
+                continue
+            if LIVE_RAW_ADULT_RE.search(aname) or LIVE_HDL_BOT_RE.search(ahandle) or LIVE_NAME_BOT_RE.search(aname):
                 continue
             alabels = [l.get("val", "") for l in (au.get("labels") or []) if isinstance(l, dict) and not l.get("neg")]
             plabels = [l.get("val", "") for l in (pv.get("labels") or []) if isinstance(l, dict) and not l.get("neg")]
@@ -104,16 +122,20 @@ def main() -> None:
     s16_dir = pathlib.Path(args.s16_dir).expanduser()
     page_path = pathlib.Path(__file__).resolve().parent / "page_s17.html"
     cards_path = out_dir / "cards_v1.json"
+    descs_path = out_dir / "cards_descriptions.json"
     packs_path = out_dir / "packs_members.json"
     blind_key_path = out_dir / "blind_review_key.json"
     ratings_path = out_dir / "ratings.json"
+    non_org_path = out_dir / "non_organic_exclude_dids.txt"
 
     cards_bytes = cards_path.read_bytes()
+    descs_bytes = descs_path.read_bytes() if descs_path.exists() else b"{}"
     cards_obj = json.loads(cards_bytes)
     packs_map = json.loads(packs_path.read_text()) if packs_path.exists() else {}
     blind_key = json.loads(blind_key_path.read_text()) if blind_key_path.exists() else {}
+    allowed_origins = {f"http://127.0.0.1:{args.port}", f"http://localhost:{args.port}"}
 
-    # Load safety sets for live hydration defense-in-depth
+    # Load safety + organic exclusion sets for live hydration defense-in-depth
     s5_dir = lake / "s5-sweep-20261030"
     s13_dir = lake / "s13-elig-20261030"
     hfr_dids = {
@@ -126,6 +148,8 @@ def main() -> None:
         | {ln.strip() for ln in open(s13_dir / "base_safety_exclude_dids.txt") if ln.startswith("did:")}
         | {ln.strip() for ln in open(s5_dir / "eligibility_rule2_exclude_dids.txt") if ln.startswith("did:")}
     )
+    if non_org_path.exists():
+        hard_excl |= {ln.split("\t")[0].strip() for ln in open(non_org_path) if ln.startswith("did:")}
 
     # Load high-H pairs
     high_h_by_actor: dict[int, set[int]] = collections.defaultdict(set)
@@ -242,6 +266,10 @@ def main() -> None:
 
             if path == "/cards_v1.json":
                 self._send_json(cards_bytes)
+                return
+
+            if path == "/cards_descriptions.json":
+                self._send_json(descs_bytes)
                 return
 
             if path == "/api/pack":
@@ -381,6 +409,18 @@ def main() -> None:
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path != "/api/ratings":
                 self.send_error(404)
+                return
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            origin = (self.headers.get("Origin") or "").strip()
+            sfs = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            xs17 = (self.headers.get("X-S17-Client") or "").strip()
+            if (
+                ctype != "application/json"
+                or xs17 != "same-origin"
+                or origin not in allowed_origins
+                or (sfs and sfs != "same-origin")
+            ):
+                self._send_json({"error": "csrf_rejected"}, status=403)
                 return
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0 or length > 2_000_000:

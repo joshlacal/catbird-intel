@@ -214,7 +214,7 @@ let DATA = null;
 let HIGH_H = new Set();
 let RATINGS = {cards: {}, accounts: {}, comparator: {}};
 const picked = [];
-const POP_LIMIT = 500000, POP_MAX = 2, PICK_MAX = 5;
+const POP_LIMIT = 500000, POP_MAX = 2, SUP_MAX = 2, PICK_MAX = 5;
 
 function acct(aid) {
   const r = DATA.accts[aid];
@@ -262,6 +262,7 @@ function solveBundle(picks, targetSize) {
   const seen = new Set();
   const counts = {};
   let big = 0;
+  let sup = 0;
 
   for (let i = 0; i < k; i++) {
     const cid = picks[i], cd = DATA.cards[cid];
@@ -271,7 +272,10 @@ function solveBundle(picks, targetSize) {
       if (got >= quotas[i] || chosen.length >= targetSize) break;
       const m = acct(aid);
       if (seen.has(m.did)) continue;
-      if (m.followers > POP_LIMIT) { if (big >= POP_MAX) continue; big++; }
+      if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
+      if (m.sup && sup >= SUP_MAX) continue;
+      if (m.followers > POP_LIMIT) big++;
+      if (m.sup) sup++;
       seen.add(m.did);
       counts[cid] = (counts[cid] || 0) + 1;
       chosen.push({...m, srcCard: cid, viaFill: false});
@@ -288,7 +292,10 @@ function solveBundle(picks, targetSize) {
         if (chosen.length >= targetSize || (counts[cid] || 0) >= perCardCap) break;
         const m = acct(aid);
         if (seen.has(m.did)) continue;
-        if (m.followers > POP_LIMIT) { if (big >= POP_MAX) continue; big++; }
+        if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
+        if (m.sup && sup >= SUP_MAX) continue;
+        if (m.followers > POP_LIMIT) big++;
+        if (m.sup) sup++;
         seen.add(m.did);
         counts[cid] = (counts[cid] || 0) + 1;
         chosen.push({...m, srcCard: cid, viaFill: false});
@@ -319,7 +326,10 @@ function solveBundle(picks, targetSize) {
         if (chosen.length >= targetSize) break;
         const m = acct(aid);
         if (seen.has(m.did)) continue;
-        if (m.followers > POP_LIMIT) { if (big >= POP_MAX) continue; big++; }
+        if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
+        if (m.sup && sup >= SUP_MAX) continue;
+        if (m.followers > POP_LIMIT) big++;
+        if (m.sup) sup++;
         seen.add(m.did);
         counts[nb] = (counts[nb] || 0) + 1;
         chosen.push({...m, srcCard: nb, viaFill: true});
@@ -490,6 +500,7 @@ function renderBlindReview() {
     if (!cd) return "";
     const cr = (RATINGS.cards || {})[item.c] || {};
     const samples = cd.m.slice(0, 8).map((aid) => { const m = acct(aid); return `${m.name ? esc(m.name)+" " : ""}<span class="hd">@${esc(m.handle)} (${fmt(m.followers)})</span>`; }).join(" · ");
+    const lists = (cd.ln || []).map(([n, k]) => `${esc(n)} (${k})`).join(", ");
     return `<div class="review-card" id="rev-${item.c}">
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
         <b>Card #${item.slot} of 30 · Community c${item.c} (${num(cd.sz)} members, ${esc(cd.lg)})</b>
@@ -497,10 +508,12 @@ function renderBlindReview() {
       </div>
       <div class="med-slot"></div>
       <p class="meta" style="margin:6px 0;">Top ranked accounts: ${samples}</p>
+      ${lists ? `<p class="meta" style="margin:4px 0;">A-half curated lists: ${lists}</p>` : ""}
       <div class="ab-box">
         <div class="ab-opt"><b>Title Option A:</b><div>${esc(item.option_a)}</div></div>
         <div class="ab-opt"><b>Title Option B:</b><div>${esc(item.option_b)}</div></div>
       </div>
+      ${cd.d ? `<details class="more" style="margin:4px 0 8px;"><summary>Show full uncut scene summary (inspect after picking A/B)</summary><p class="desc" style="margin-top:6px;">${esc(cd.d)}</p></details>` : ""}
       <div class="rate-row">
         <span>1. Real scene I recognise?</span>
         <button class="btn-sm${cr.recognise==="yes"?" sel":""}" data-rc="${item.c}" data-k="recognise" data-v="yes">Yes</button>
@@ -545,7 +558,11 @@ function renderComparator() {
 
 async function saveRatings(patch) {
   $("#save-status").textContent = "Saving…";
-  const r = await fetch("/api/ratings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(patch)});
+  const r = await fetch("/api/ratings", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-S17-Client": "same-origin"},
+    body: JSON.stringify(patch),
+  });
   const d = await r.json();
   $("#save-status").textContent = d.ok ? `Saved ${d.updated_utc.slice(11, 19)}Z` : "Save error";
 }
@@ -639,12 +656,25 @@ $("#jump").addEventListener("change", (e) => {
 });
 
 (async function init() {
-  const [cRes, rRes] = await Promise.all([fetch("/cards_v1.json"), fetch("/api/ratings")]);
+  const [cRes, dRes, rRes] = await Promise.all([
+    fetch("/cards_v1.json"),
+    fetch("/cards_descriptions.json"),
+    fetch("/api/ratings"),
+  ]);
   DATA = await cRes.json();
+  const DESCS = dRes.ok ? await dRes.json() : {};
   RATINGS = await rRes.json();
-  for (const [k, cd] of Object.entries(DATA.cards)) { cd.c = Number(k); cd.lg = cd.lg || "en"; }
+  for (const [k, cd] of Object.entries(DATA.cards)) {
+    cd.c = Number(k);
+    cd.lg = cd.lg || "en";
+    const dm = DESCS[k] || {};
+    if (dm.d) cd.d = dm.d;
+    if (dm.ct) cd.ct = dm.ct;
+    if (dm.fit) cd.fit = dm.fit;
+    if (dm.cf) cd.cf = dm.cf;
+  }
   for (const [a, b] of (DATA.high_h_pairs || [])) HIGH_H.add(Math.min(a,b) + ":" + Math.max(a,b));
-  $("#stat-badge").textContent = `${num(DATA.counts.v0_cards)} safe v0 cards · ${num(DATA.counts.unique_candidate_accounts)} live-checked accounts · 0 violations`;
+  $("#stat-badge").textContent = `${num(DATA.counts.v0_cards)} organic v0 cards · ${num(DATA.counts.unique_candidate_accounts)} human accounts · 0 violations`;
   const langs = {};
   for (const cd of Object.values(DATA.cards)) langs[cd.lg] = (langs[cd.lg] || 0) + 1;
   $("#lang").innerHTML = `<option value="">All languages</option>` + Object.entries(langs).sort((a,b)=>b[1]-a[1]).map(([l,n]) => `<option value="${esc(l)}">${esc(l)} (${n})</option>`).join("");

@@ -23,6 +23,7 @@ Enforces:
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import collections
 import datetime as dt
@@ -31,6 +32,7 @@ import json
 import os
 import pathlib
 import pickle
+import re
 import sys
 import time
 import urllib.error
@@ -47,6 +49,7 @@ MAX_JSON_BYTES = 2_097_152
 BUNDLE_DEFAULT = 25
 POP_LIMIT = 500_000
 POP_MAX = 2
+SUP_MAX = 2
 MIN_LIVE_POSTS = 3
 PACKS_PER_CARD = 2
 FEEDS_PER_CARD = 3
@@ -61,7 +64,98 @@ Y3_CLASSES = {
     "adult",
     "likely_minors",
 }
+# Non-ethnicity, non-generic-media Y3 keyword classes run on Opus label + label_native:
+OPUS_LABEL_Y3_CLASSES = {
+    "politics",
+    "religion",
+    "sexuality_gender",
+    "health",
+    "adult",
+    "likely_minors",
+}
 DROP_PROFILE_CLASSES = {"likely_minors", "adult"}
+
+# Provisional S17 rev-2 safety + organic-human curation rules (reversible via --strict-registered-only):
+EXPLICIT_BLOCK_CIDS = {1707, 409, 1849, 1056, 1856, 2774, 2245, 2826}
+RE_DESC_ADULT_MINORS = re.compile(
+    r"(?:(?<!\w)18\+|(?<!\w)21\+|(?<!\w)r-?18\b|\bmdni\b|\bnsfw\b|\bonlyfans\b|\bfansly\b|"
+    r"\blewd\b|\bfetish\b|\bporn\b|\bunderage\b|\bminors?\b|\badult work\b|(?<!young )\badult fan\b)",
+    re.I,
+)
+RE_RP_UNSAFE = re.compile(
+    r"\b(high[- ]school|school[- ]life|school roleplay|school oc|yokai[- ]school|magic[- ]school|"
+    r"academy|university|hogwarts|idol|k-?pop|celebrity|face[- ]?claim)\b",
+    re.I,
+)
+RE_NON_ORGANIC_CARD = re.compile(
+    r"\b(image bots?|paper bots?|horoscope bots?|promo bots?|gimmick (?:bots?|accounts?)|tech bots?|"
+    r"automated (?:bot|nep|repec|feeds?)|ai[- ]art (?:generators?|creators?)|"
+    r"book[- ]deal(?:/promo)?|amazon affiliates?|prints and photography sellers|promoting wall art|"
+    r"arxiv feeds?|news feeds, bots)\b",
+    re.I,
+)
+
+# Clause-level negation stripper so "No NSFW, porn, bots, F4F, or AI" does not false-positive human bios:
+RE_STRIP_NEG = re.compile(
+    r"(?:\b(?:no|not|non|anti|never|without|zero|ban|fuck|don'?t|doesn'?t|won'?t)\b|🚫|❌|🚷)[^.\n;|•!]{0,65}",
+    re.I,
+)
+RE_RAW_ADULT = re.compile(
+    r"(?:🔞|(?<!\w)18\+|(?<!\w)21\+|(?<!\w)r-?18\b|\bmdni\b|\bminors?\s+dni\b|"
+    r"\bminors?\s+do\s+not\s+interact\b|\badults?\s+only\b)",
+    re.I,
+)
+RE_CLEAN_ADULT = re.compile(
+    r"(?:\bnsfw\b|\bonlyfans\b|\bfansly\b|\byiff\b|\bporn\b|\bhentai\b|\beroge\b|\badult\s+content\b)",
+    re.I,
+)
+RE_HDL_BOT = re.compile(
+    r"(?:\.bot$|\.ap\.brid\.gy$|(?:^|[.-])(?:bot|rss|feed|mirror|alerts?)(?:$|[.-]))",
+    re.I,
+)
+RE_NAME_BOT = re.compile(
+    r"(?:\[bot\]|\(bot\)|\b(?:unofficial|automated|mirror|rss|repost)\s+bot\b|(?:^|\s)bot(?:$|\s)|"
+    r"\[twitter/x\s*mirror\]|\(mirror\)|#(?:f4f|bluecrew|ifb|fbr)\b|@f4f\b)",
+    re.I,
+)
+RE_BIO_BOT = re.compile(
+    r"(?:\bautomated\s+(?:account|feed|posts?|bot|updates?|mirror|weather|alerts?)\b|"
+    r"\bunoff?icial\s+(?:bot|mirror|feed)\b|\bmirror\s+(?:of|from|bot|account)\b|"
+    r"\bbridgy\s+fed\b|\brss\s+(?:feed|bot)\b|"
+    r"\bposts?\s+(?:every|once\s+an?)\s+(?:hour|day|\d+\s*(?:min|hour)))",
+    re.I,
+)
+RE_BIO_F4F = re.compile(
+    r"(?:#(?:f4f|ifb|fbr|followback|teamfollowback|bluecrew)\b|\bi\s+follow\s+back\b|"
+    r"\bfollow\s+4\s+follow\b|\bfollow\s+for\s+follow\b)",
+    re.I,
+)
+RE_BIO_AI = re.compile(
+    r"(?:\bai\s+artist\b|\bai[- ]generated\s+(?:art|images|music)\b|\bmidjourney\s+(?:artist|creator)\b|"
+    r"\bstable\s+diffusion\s+artist\b|\bprompt\s+artist\b)",
+    re.I,
+)
+
+
+def screen_account_organic_and_safe(handle: str, name: str, bio: str, *, allow_feed_handle: bool = False) -> str | None:
+    """Return exclusion reason if account is unlabeled 18+/NSFW/MDNI, bot/mirror, F4F ring, or AI-slop."""
+    h = (handle or "").strip().lower()
+    nm = (name or "").strip()
+    b = (bio or "").strip()
+    raw = f"{nm}\n{b}"
+    cleaned = RE_STRIP_NEG.sub(" ", raw)
+    if RE_RAW_ADULT.search(raw) or RE_CLEAN_ADULT.search(cleaned):
+        return "bio_adult_or_mdni"
+    if not allow_feed_handle:
+        if RE_HDL_BOT.search(h):
+            return "bot_or_mirror_handle"
+        if RE_NAME_BOT.search(RE_STRIP_NEG.sub(" ", nm)) or RE_BIO_BOT.search(cleaned):
+            return "automated_bot_or_mirror"
+    if RE_BIO_F4F.search(cleaned):
+        return "follow_back_ring_marker"
+    if RE_BIO_AI.search(cleaned):
+        return "ai_slop_account"
+    return None
 
 
 def sha256_file(p: pathlib.Path) -> str:
@@ -229,7 +323,15 @@ def collect_raw_response_hashes(lake: pathlib.Path, s5_dir: pathlib.Path) -> tup
 def main() -> None:
     t0 = time.time()
     lake = pathlib.Path.home() / "catbird-lake-local"
-    out_dir = lake / "s17-picker-v1-20261030"
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=str(lake / "s17-picker-v1-20261030"))
+    ap.add_argument(
+        "--strict-registered-only",
+        action="store_true",
+        help="Disable provisional S17 rev-2 safety & organic-human curation rules.",
+    )
+    args = ap.parse_args()
+    out_dir = pathlib.Path(args.out).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = out_dir / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -319,6 +421,36 @@ def main() -> None:
 
     snap = s6_in.profile_snapshot()  # did -> (display_name, description)
     claude_c, claude_p = s6_in.claude_labels()
+    claude_comm_extra: dict[int, dict] = {}
+    t_cl_extra = pq.read_table(
+        claude_comm_path,
+        columns=["community", "label", "label_native", "description", "community_type", "onboarding_fit", "confidence"],
+    )
+    for rc in t_cl_extra.to_pylist():
+        claude_comm_extra[int(rc["community"])] = {
+            "label": (rc.get("label") or "").strip(),
+            "label_native": (rc.get("label_native") or "").strip(),
+            "description": " ".join((rc.get("description") or "").split()),
+            "community_type": (rc.get("community_type") or "").strip(),
+            "onboarding_fit": (rc.get("onboarding_fit") or "").strip(),
+            "confidence": (rc.get("confidence") or "").strip(),
+        }
+    del t_cl_extra
+
+    acct_excl_reason_by_did: dict[str, str] = {}
+    feed_creator_excl_dids: set[str] = set()
+    if not args.strict_registered_only:
+        for d, lp in live_prof_by_did.items():
+            nm, bio = snap.get(d, ("", ""))
+            rsn = screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=False)
+            if rsn:
+                acct_excl_reason_by_did[d] = rsn
+            rsn_fd = screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=True)
+            if rsn_fd:
+                feed_creator_excl_dids.add(d)
+    (out_dir / "non_organic_exclude_dids.txt").write_text(
+        "".join(f"{d}\t{acct_excl_reason_by_did[d]}\n" for d in sorted(acct_excl_reason_by_did))
+    )
 
     # 3. Load cand5-full-matched partition, locked S13 eligibility & scores, and theta=0.5 flags
     comm_rows = pq.read_table(cand5_dir / "communities.parquet", columns=["community", "scene_id", "size", "top_dids"]).to_pylist()
@@ -426,12 +558,17 @@ def main() -> None:
     medoid_by_did: dict[str, list[str]] = {}
     t_med = pq.read_table(s12_dir / "medoids.parquet", columns=["did", "uris"])
     for d_s, uris_l in zip(t_med["did"].to_pylist(), t_med["uris"].to_pylist()):
-        if d_s not in hfr_dids and d_s not in hard_safety_excl and live_status_by_did.get(d_s) == "ok":
+        if (
+            d_s not in hfr_dids
+            and d_s not in hard_safety_excl
+            and d_s not in acct_excl_reason_by_did
+            and live_status_by_did.get(d_s) == "ok"
+        ):
             clean_u = [u for u in (uris_l or []) if isinstance(u, str) and u.startswith(f"at://{d_s}/app.bsky.feed.post/")]
             if clean_u:
                 medoid_by_did[d_s] = clean_u
 
-    # 5. Evaluate every cand5 community under locked S13 + Y3 + S5 live rules
+    # 5. Evaluate every cand5 community under locked S13 + Y3 + S5 live + S17 rev-2 organic rules
     pids_by_comm: dict[int, list[int]] = collections.defaultdict(list)
     for p_i in np.flatnonzero(pid_home >= 0).tolist():
         pids_by_comm[int(pid_home[p_i])].append(p_i)
@@ -450,8 +587,14 @@ def main() -> None:
             continue
 
         cl = claude_c.get(c) or {}
+        cx = claude_comm_extra.get(c) or {}
         a_top = [n for n, _k in a_names.get(c, [])]
-        opus_label = (cl.get("label") or "").strip()
+        opus_label = (cl.get("label") or cx.get("label") or "").strip()
+        label_native = (cx.get("label_native") or "").strip()
+        full_desc = cx.get("description") or " ".join((cl.get("description") or "").split())
+        comm_type = cx.get("community_type") or ""
+        onb_fit = cx.get("onboarding_fit") or ""
+        conf_lvl = cx.get("confidence") or ""
         if not a_top and not opus_label:
             excluded_cards["unlabelled"].append(c)
             continue
@@ -459,9 +602,22 @@ def main() -> None:
         names_screened = a_top[:6] + all_names.get(c, [])[:6]
         kw_classes = sorted({k.replace("/", "_").replace("-", "_") for nm in names_screened for k in s6_kw.classes(nm)})
         opus_classes = sorted({s.replace("/", "_").replace("-", "_") for s in (cl.get("sensitivity") or []) if s and s != "none"})
-        sens_union = sorted((set(kw_classes) | set(opus_classes)) & Y3_CLASSES)
+        opus_lbl_kw = (
+            sorted(
+                {
+                    k.replace("/", "_").replace("-", "_")
+                    for nm in (opus_label, label_native)
+                    if nm
+                    for k in s6_kw.classes(nm)
+                }
+                & OPUS_LABEL_Y3_CLASSES
+            )
+            if not args.strict_registered_only
+            else []
+        )
+        sens_union = sorted((set(kw_classes) | set(opus_classes) | set(opus_lbl_kw)) & Y3_CLASSES)
 
-        # Candidate filtering under locked S13 + S5 live check
+        # Candidate filtering under locked S13 + S5 live check + account-level organic/bio-safety screen
         elig_pids: list[int] = []
         for p_i in pids_by_comm.get(c, []):
             if not s13_elig[p_i]:
@@ -485,6 +641,10 @@ def main() -> None:
             if lp["postsCount"] < MIN_LIVE_POSTS:
                 drop_counts["live_postsCount_lt_3"] += 1
                 continue
+            acct_rsn = acct_excl_reason_by_did.get(d)
+            if acct_rsn:
+                drop_counts[f"acct_{acct_rsn}"] += 1
+                continue
             elig_pids.append(p_i)
 
         if len(elig_pids) < BUNDLE_DEFAULT:
@@ -497,6 +657,33 @@ def main() -> None:
                 excluded_cards[f"y3_class_{sc}"].append(c)
             continue
 
+        if not args.strict_registered_only:
+            blob_txt = f"{opus_label} :: {full_desc}"
+            if c in EXPLICIT_BLOCK_CIDS:
+                excluded_cards["y3_explicit_review_block"].append(c)
+                continue
+            if RE_DESC_ADULT_MINORS.search(blob_txt):
+                excluded_cards["y3_desc_adult_or_minors"].append(c)
+                continue
+            if comm_type == "roleplay" and RE_RP_UNSAFE.search(blob_txt):
+                excluded_cards["y3_roleplay_school_or_idol"].append(c)
+                continue
+            if comm_type == "spam_or_commercial":
+                excluded_cards["organic_spam_or_commercial"].append(c)
+                continue
+            if onb_fit == "poor":
+                excluded_cards["organic_onboarding_fit_poor"].append(c)
+                continue
+            if comm_type == "mixed_or_unclear":
+                excluded_cards["organic_mixed_or_unclear"].append(c)
+                continue
+            if conf_lvl == "low":
+                excluded_cards["organic_low_confidence"].append(c)
+                continue
+            if RE_NON_ORGANIC_CARD.search(blob_txt):
+                excluded_cards["organic_bot_promo_or_ai_slop"].append(c)
+                continue
+
         # Rank eligible candidates by locked S13 winner score (w_lin_plus_curators), tiebreak (-followers, did)
         elig_pids.sort(
             key=lambda p_i: (
@@ -506,20 +693,27 @@ def main() -> None:
             )
         )
 
-        # Keep up to 27 candidates respecting <=2 >500k in the first 25
+        # Keep up to 27 candidates respecting <=2 >500k and (in rev 2) <=2 supplement in the first 25
         card_cands: list[int] = []
         big = 0
+        sup_cnt = 0
         for p_i in elig_pids:
             fc = live_prof_by_did[full_dids[p_i]]["followersCount"]
-            if fc > POP_LIMIT:
-                if big >= POP_MAX:
+            is_sup = bool(s13_sup[p_i])
+            if len(card_cands) < BUNDLE_DEFAULT:
+                if fc > POP_LIMIT and big >= POP_MAX:
                     continue
-                big += 1
+                if (not args.strict_registered_only) and is_sup and sup_cnt >= SUP_MAX:
+                    continue
+                if fc > POP_LIMIT:
+                    big += 1
+                if is_sup:
+                    sup_cnt += 1
             card_cands.append(p_i)
             if len(card_cands) >= 27:
                 break
         if len(card_cands) < BUNDLE_DEFAULT:
-            excluded_cards["lt25_after_pop_cap"].append(c)
+            excluded_cards["lt25_after_pop_or_sup_cap"].append(c)
             continue
 
         # Clean starter packs (0-2 per card, inspect only)
@@ -530,13 +724,21 @@ def main() -> None:
             if not mems:
                 continue
             bad_m = [
-                m for m in mems if (m in hard_safety_excl) or (live_status_by_did.get(m, "unchecked") != "ok")
+                m
+                for m in mems
+                if (m in hard_safety_excl)
+                or (m in acct_excl_reason_by_did)
+                or (live_status_by_did.get(m, "unchecked") != "ok")
             ]
             if bad_m:
                 pack_feed_stats["packs_dropped_member_check"] += 1
                 continue
             creator_did = u_pk.split("/")[2]
-            if creator_did in hard_safety_excl or live_status_by_did.get(creator_did, "unchecked") != "ok":
+            if (
+                creator_did in hard_safety_excl
+                or creator_did in acct_excl_reason_by_did
+                or live_status_by_did.get(creator_did, "unchecked") != "ok"
+            ):
                 pack_feed_stats["packs_dropped_creator_check"] += 1
                 continue
             pack_feed_stats["packs_kept"] += 1
@@ -579,7 +781,11 @@ def main() -> None:
             if c_did in hfr_dids:
                 pack_feed_stats["feeds_dropped_creator_hfr"] += 1
                 continue
-            if c_did in hard_safety_excl or live_status_by_did.get(c_did, "unchecked") != "ok":
+            if (
+                c_did in hard_safety_excl
+                or c_did in feed_creator_excl_dids
+                or live_status_by_did.get(c_did, "unchecked") != "ok"
+            ):
                 pack_feed_stats["feeds_dropped_creator_status"] += 1
                 continue
             fg_m = fg_meta.get(f_uri)
@@ -620,7 +826,10 @@ def main() -> None:
                 "lang": (cl.get("primary_language") or "en").strip() or "en",
                 "opus_label": opus_label or list_fallback_title,
                 "list_title": list_fallback_title or opus_label,
-                "desc": " ".join((cl.get("description") or "").split()),
+                "desc": full_desc,
+                "community_type": comm_type,
+                "onboarding_fit": onb_fit,
+                "confidence": conf_lvl,
                 "list_names": a_names.get(c, [])[:4],
                 "cand_pids": card_cands,
                 "packs": kept_packs,
@@ -644,8 +853,6 @@ def main() -> None:
 
     # 6. Deterministic 30-card S17 blind review draw by cityHash64(str(community)) across ALL kept v0 cards
     c_strs = [str(cd["community"]) for cd in kept_cards_raw]
-    # Use sha256(cityHash_mod + blake2b) if needed? No: s3_prep.city_hash_mod uses ClickHouse cityHash64!
-    # Let's invoke ClickHouse cityHash64(toString(community)) directly so the 30-card order is 100% canonical cityHash64!
     import subprocess
     ch_in = "\n".join(c_strs).encode()
     ch_out = subprocess.check_output(
@@ -690,14 +897,27 @@ def main() -> None:
             "curated_list_title": cd["list_title"],
         }
 
-    # 7. Probe Bluesky onboarding comparator once
-    comparator = probe_bsky_onboarding_comparator(live_prof_by_did, hard_safety_excl)
+    # 7. Probe Bluesky onboarding comparator once + write sidecar descriptions & starter pack details
+    comparator = probe_bsky_onboarding_comparator(live_prof_by_did, hard_safety_excl | set(acct_excl_reason_by_did))
     (out_dir / "comparator.json").write_text(json.dumps(comparator, indent=2, ensure_ascii=False))
     (out_dir / "packs_members.json").write_text(json.dumps(packs_detail_out, ensure_ascii=False))
     (out_dir / "blind_review_key.json").write_text(json.dumps(blind_secret, indent=2, ensure_ascii=False))
 
-    # 8. Assemble compact `cards_v1.json` guaranteed <= 2,097,152 bytes (all kept v0 cards included!)
-    def serialize_catalog(cands_per_card: int, desc_limit: int, name_limit: int, name_top_k: int = 8) -> tuple[bytes, dict]:
+    descs_out = {
+        str(cd["community"]): {
+            "d": cd["desc"],
+            "ct": cd["community_type"],
+            "fit": cd["onboarding_fit"],
+            "cf": cd["confidence"],
+            "lt": cd["list_title"],
+        }
+        for cd in kept_cards_raw
+    }
+    descs_bytes = json.dumps(descs_out, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    (out_dir / "cards_descriptions.json").write_bytes(descs_bytes)
+
+    # 8. Assemble compact `cards_v1.json` guaranteed <= 2,097,152 bytes (all kept v0 cards included; full descriptions in cards_descriptions.json)
+    def serialize_catalog(cands_per_card: int, desc_limit: int, name_limit: int, name_top_k: int = 10) -> tuple[bytes, dict]:
         top_named_pids: set[int] = set()
         for cd in kept_cards_raw:
             top_named_pids.update(cd["cand_pids"][:name_top_k])
@@ -795,10 +1015,11 @@ def main() -> None:
         )
 
         payload = {
-            "version": "onboarding_v0_20261030",
+            "version": "onboarding_v0_20261030_rev2" if not args.strict_registered_only else "onboarding_v0_20261030_strict",
             "partition": "cand5-full-matched",
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "locked_s13": {"k": 3, "m": 3, "theta": 0.5, "ranker": "w_lin_plus_curators"},
+            "rev2_organic_safety_curation": not args.strict_registered_only,
             "h_enabled": True,
             "counts": {
                 "v0_cards": len(cards_compact),
@@ -826,9 +1047,9 @@ def main() -> None:
 
     chosen_bytes = b""
     chosen_payload: dict = {}
-    for c_lim, d_lim, n_lim in ((25, 64, 18), (25, 52, 16), (25, 40, 14), (25, 28, 12), (25, 0, 0)):
-        b_try, p_try = serialize_catalog(c_lim, d_lim, n_lim)
-        print(f"[s17-build] trial (cands={c_lim}, desc={d_lim}, name={n_lim}) -> {len(b_try):,} bytes", flush=True)
+    for c_lim, d_lim, n_lim, n_topk in ((25, 0, 26, 10), (25, 0, 22, 10), (25, 0, 18, 8), (25, 0, 14, 8), (25, 0, 0, 0)):
+        b_try, p_try = serialize_catalog(c_lim, d_lim, n_lim, n_topk)
+        print(f"[s17-build] trial (cands={c_lim}, desc={d_lim}, name={n_lim}, topk={n_topk}) -> {len(b_try):,} bytes", flush=True)
         if len(b_try) <= MAX_JSON_BYTES - 8_192:
             chosen_bytes, chosen_payload = b_try, p_try
             break
@@ -845,12 +1066,17 @@ def main() -> None:
     if len(chosen_bytes) > MAX_JSON_BYTES:
         violations.append(f"cards_v1.json size {len(chosen_bytes)} > {MAX_JSON_BYTES}")
 
+    descs_loaded = json.loads((out_dir / "cards_descriptions.json").read_text())
+    if set(descs_loaded.keys()) != set(chosen_payload["cards"].keys()):
+        violations.append("cards_descriptions.json key mismatch against cards_v1.json")
+
     accts_tbl = chosen_payload["accts"]
     for c_key, cd in chosen_payload["cards"].items():
         cid = int(c_key)
         if comm_bad_full.get(cid, False):
             violations.append(f"card {cid}: flagged community present")
         cl = claude_c.get(cid) or {}
+        cx = claude_comm_extra.get(cid) or {}
         if any(s and s != "none" for s in (cl.get("sensitivity") or [])):
             violations.append(f"card {cid}: Opus sensitive card present ({cl.get('sensitivity')})")
         a_top = [n for n, _k in a_names.get(cid, [])]
@@ -861,21 +1087,59 @@ def main() -> None:
         if len(cd["m"]) < BUNDLE_DEFAULT:
             violations.append(f"card {cid}: <25 candidates ({len(cd['m'])})")
 
+        if not args.strict_registered_only:
+            if cid in EXPLICIT_BLOCK_CIDS:
+                violations.append(f"card {cid}: in EXPLICIT_BLOCK_CIDS")
+            opus_lbl = cx.get("label") or ""
+            nat_lbl = cx.get("label_native") or ""
+            full_d = cx.get("description") or ""
+            ct_v = cx.get("community_type") or ""
+            fit_v = cx.get("onboarding_fit") or ""
+            cf_v = cx.get("confidence") or ""
+            lbl_kw_hit = {
+                k.replace("/", "_").replace("-", "_")
+                for nm in (opus_lbl, nat_lbl)
+                if nm
+                for k in s6_kw.classes(nm)
+            } & OPUS_LABEL_Y3_CLASSES
+            if lbl_kw_hit:
+                violations.append(f"card {cid}: Opus label Y3 keyword hit ({sorted(lbl_kw_hit)})")
+            blob_v = f"{opus_lbl} :: {full_d}"
+            if RE_DESC_ADULT_MINORS.search(blob_v):
+                violations.append(f"card {cid}: description adult/minors hit")
+            if ct_v == "roleplay" and RE_RP_UNSAFE.search(blob_v):
+                violations.append(f"card {cid}: unsafe school/idol roleplay hit")
+            if ct_v in ("spam_or_commercial", "mixed_or_unclear") or fit_v == "poor" or cf_v == "low":
+                violations.append(f"card {cid}: non-organic/low-fit card ({ct_v}/{fit_v}/{cf_v})")
+            if RE_NON_ORGANIC_CARD.search(blob_v):
+                violations.append(f"card {cid}: automated bot/promo/AI-slop card hit")
+
         big_25 = 0
+        sup_25 = 0
         for pos, aid in enumerate(cd["m"]):
             row = accts_tbl[aid]
             d = expand_did(row[0])
             fc = int(row[2])
+            fl_bits = int(row[4]) if len(row) > 4 else 0
             if pos < BUNDLE_DEFAULT and fc > POP_LIMIT:
                 big_25 += 1
+            if pos < BUNDLE_DEFAULT and (fl_bits & 2):
+                sup_25 += 1
             if live_status_by_did.get(d) != "ok":
                 violations.append(f"card {cid}: candidate {d} live status != ok")
             if d in hard_safety_excl:
                 violations.append(f"card {cid}: candidate {d} in hard_safety_excl")
             if DROP_PROFILE_CLASSES & claude_p.get(d, set()):
                 violations.append(f"card {cid}: candidate {d} Claude profile minors/adult")
+            if not args.strict_registered_only:
+                nm_v, bio_v = snap.get(d, ("", ""))
+                rsn_v = screen_account_organic_and_safe(live_prof_by_did[d]["handle"], nm_v, bio_v, allow_feed_handle=False)
+                if rsn_v:
+                    violations.append(f"card {cid}: candidate {d} failed organic/bio screen ({rsn_v})")
         if big_25 > POP_MAX:
             violations.append(f"card {cid}: >2 accounts >500k in top 25 ({big_25})")
+        if (not args.strict_registered_only) and sup_25 > SUP_MAX:
+            violations.append(f"card {cid}: >2 supplement accounts in top 25 ({sup_25})")
 
         for pk in cd.get("pk", []):
             u_pk = expand_pack_uri(pk[0])
@@ -884,18 +1148,28 @@ def main() -> None:
             det = packs_detail_out.get(u_pk, {})
             for mem in det.get("members", []):
                 md = mem["did"]
-                if live_status_by_did.get(md) != "ok" or md in hard_safety_excl:
+                if live_status_by_did.get(md) != "ok" or md in hard_safety_excl or md in acct_excl_reason_by_did:
                     violations.append(f"card {cid}: pack {u_pk} member {md} not clean/ok")
 
         for fd in cd.get("fd", []):
             u_fd = expand_feed_uri(fd[0])
             c_did = u_fd.split("/")[2]
-            if c_did in hfr_dids or c_did in hard_safety_excl or live_status_by_did.get(c_did) != "ok":
+            if (
+                c_did in hfr_dids
+                or c_did in hard_safety_excl
+                or c_did in feed_creator_excl_dids
+                or live_status_by_did.get(c_did) != "ok"
+            ):
                 violations.append(f"card {cid}: feed {u_fd} creator {c_did} not allowed")
 
         for m_pair in cd.get("md", []):
             m_did = expand_did(accts_tbl[int(m_pair[0])][0])
-            if m_did in hfr_dids or m_did in hard_safety_excl or live_status_by_did.get(m_did) != "ok":
+            if (
+                m_did in hfr_dids
+                or m_did in hard_safety_excl
+                or m_did in acct_excl_reason_by_did
+                or live_status_by_did.get(m_did) != "ok"
+            ):
                 violations.append(f"card {cid}: medoid {m_did}/{m_pair[1]} author not allowed")
 
         for nb in cd.get("nb", []):
@@ -909,11 +1183,15 @@ def main() -> None:
         "zero_safety_violations": len(violations) == 0,
         "violations_count": len(violations),
         "violations": violations[:100],
+        "rev2_organic_safety_curation": not args.strict_registered_only,
         "cards_v1_bytes": len(chosen_bytes),
         "cards_v1_le_2mb": len(chosen_bytes) <= MAX_JSON_BYTES,
         "cards_v1_sha256": cards_sha,
+        "cards_descriptions_bytes": len(descs_bytes),
+        "cards_descriptions_sha256": hashlib.sha256(descs_bytes).hexdigest(),
         "v0_cards_count": len(chosen_payload["cards"]),
         "unique_candidate_accounts": len(accts_tbl),
+        "non_organic_or_bio_unsafe_dids_excluded": len(acct_excl_reason_by_did),
         "blind_review_cards_count": len(s17_review_30),
         "controls_ok": all(controls_map.values()),
         "raw_response_records_hashed": len(raw_hashes),
@@ -924,11 +1202,12 @@ def main() -> None:
         sys.exit(f"ABORT: {len(violations)} safety violations detected in S17 verify: {violations[:5]}")
 
     receipt = {
-        "step": "S17 Harness v1 & Onboarding v0 Catalog Build (127.0.0.1 only, never published)",
+        "step": "S17 Harness v1 & Onboarding v0 Catalog Build (rev 2 organic+safety hardened, 127.0.0.1 only)",
         "plan": "docs/execution-plans/2026-10-25-whole-network-signals-plan.md rows S16 & S17, §3.3",
-        "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §9.6, §10, Amendments A1 & A2",
+        "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §9.6, §10, Amendments A1 & A2 + DECISIONS S17 rev 2",
         "written_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "wall_seconds": round(time.time() - t0, 2),
+        "strict_registered_only": bool(args.strict_registered_only),
         "inputs_sha256": {
             "communities_parquet": sha256_file(cand5_dir / "communities.parquet"),
             "known_for_parquet": sha256_file(cand5_dir / "known_for.parquet"),
@@ -950,6 +1229,7 @@ def main() -> None:
         },
         "counts": chosen_payload["counts"],
         "member_drops": dict(drop_counts),
+        "account_organic_safety_exclusions": dict(collections.Counter(acct_excl_reason_by_did.values())),
         "packs_and_feeds": dict(pack_feed_stats),
         "comparator_probe": {k: v for k, v in comparator.items() if k != "actors"},
         "verify": ver_report,
@@ -957,7 +1237,7 @@ def main() -> None:
     (out_dir / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(
         f"[s17-build] PASS: v0_cards={len(chosen_payload['cards']):,}, bytes={len(chosen_bytes):,}/{MAX_JSON_BYTES:,}, "
-        f"violations=0, comparator_http={comparator['http_status']} ({time.time()-t0:.1f}s)",
+        f"descs_bytes={len(descs_bytes):,}, violations=0, comparator_http={comparator['http_status']} ({time.time()-t0:.1f}s)",
         flush=True,
     )
 

@@ -10,6 +10,8 @@ O5-raw blocks and follows, the positive-control list) are written here too.
 """
 from __future__ import annotations
 
+import re
+
 from rules import day_start, epoch
 from sqlc import NONE, PRELUDE, S, out, settings_sql, src
 
@@ -66,19 +68,61 @@ SELECT u, toInt32(argMaxIf(c1, n1, c1 > 0)) AS cc1, toInt32(argMaxIf(c5, n5, c5 
     else:
         comm_sql = "CREATE TABLE ucomm (u UInt32, cc1 Int32, cc5 Int32) ENGINE = Join(ANY, LEFT, u);"
 
-    return PRELUDE + settings_sql(r) + f"""
-CREATE TABLE dmu ENGINE = Join(ANY, LEFT, uid) AS
-SELECT uid, part, is_prod, ls, fit, m1, pc, h, hide, synth_no, plc_t, web, followers, s200, s400 FROM file('{dm}', Parquet, '{S['didmap']}');
-CREATE TABLE ev ENGINE = MergeTree ORDER BY (coll, u, rk) AS SELECT * FROM {src(evf, 'ev')};
+    # re-keyed outputs, built here because Python 3.11 (Debian 12) has no nested f-strings with the same quotes
+    eng_sel = (f"SELECT u, a, ph, t, s_t, typ, fol, m, apart FROM ("
+               f" SELECT u, a, ph, t, s_t, toUInt8(1) AS typ, fol, m, apart FROM lk WHERE t > {t12}"
+               f" UNION ALL SELECT u, a, ph, t, s_t, toUInt8(2), fol, m, apart FROM rp WHERE t > {t12})")
+    splits = {
+        "eng": (o + "/eng/j{k}.parquet", "apart", eng_sel),
+        "rep": (o + "/rep/j{k}.parquet", "tpart", "SELECT * FROM rep"),
+        "fol": (o + "/fol/j{k}.parquet", "ppart", "SELECT * FROM fol"),
+        "blk": (o + "/blk/j{k}.parquet", "ppart", "SELECT * FROM blk"),
+        "cur": (o + "/cur/j{k}.parquet", "ppart", "SELECT * FROM cur"),
+        "cand": (o + "/cand/j{k}.parquet", "ppart", "SELECT u, p, cidx, ck, pi, toUInt8(joinGet('dmu', 'part', p)) AS ppart FROM cand"),
+    }
+    # Actor sub-chunks (like phase 2's user sub-chunks): every phase-1 computation is per actor, so
+    # the partition is processed K actors-hash slices at a time. Each slice's outputs accumulate in
+    # MergeTree tables; the files are written once at the end. Memory is ~1/K of a whole-partition run.
+    K = max(1, int(opts.get("chunks", 1)))
+    pm = 1 if K == 1 else 50
+    accs: dict[str, tuple] = {}
+
+    def emitter(k: int):
+        def em(path: str) -> str:
+            name = accs.setdefault(path, (f"acc_{len(accs)}", None))[0]
+            return f"CREATE TABLE {name} ENGINE = MergeTree ORDER BY tuple() AS" if k == 0 else f"INSERT INTO {name}"
+        return em
+
+    def split_em(em, key: str):
+        path, kcol, sel = splits[key]
+        name = accs.setdefault("split:" + key, (f"acc_{len(accs)}", (path, kcol)))[0]
+        head = f"CREATE TABLE {name} ENGINE = MergeTree ORDER BY {kcol} AS" if em.__name__ == "em0" else f"INSERT INTO {name}"
+        return f"{head} {sel};"
+
+    def body(k: int) -> str:
+        em = emitter(k)
+        em.__name__ = "em0" if k == 0 else "emk"
+        sw = {key: split_em(em, key) for key in splits}
+        return f"""
+CREATE TABLE ev ENGINE = MergeTree ORDER BY (coll, u, rk) AS SELECT * FROM ev_all WHERE ck = {k};
+CREATE TABLE po0 ENGINE = MergeTree ORDER BY (u, rk) AS SELECT * FROM po_all WHERE ck = {k};
+-- dedupe: latest revision per (collection, rkey). The string payload (list purpose, gate JSON, profile
+-- fields, feed URI) exists only for a few collections, so it is deduped separately: the main GROUP BY
+-- carries numbers only (measured ~2x cheaper). nrevs is exact for keys with <= 2 rows (the cross-shard
+-- duplicate case) and counts every row as distinct beyond that.
 CREATE TABLE st ENGINE = MergeTree ORDER BY (coll, u, rk) AS
-SELECT coll, u, rk, argMax(op, (rev, seq)) AS lop, max(rev) AS lrev, count() AS nrows, uniqExact(rev) AS nrevs,
-  countIf(op != 3) AS ncr,
-  argMaxIf(tuple(t, tok, subj, spart, sph, scoll, st, lh, gph, created, extra, trunc, name, descr, feed), (rev, seq), op != 3) AS pl
+SELECT coll, u, rk, argMax(op, (rev, seq)) AS lop, max(rev) AS lrev, count() AS nrows,
+  if(nrows = 1 OR min(rev) = max(rev), 1, nrows) AS nrevs, countIf(op != 3) AS ncr,
+  argMaxIf(tuple(t, tok, subj, spart, sph, scoll, st, lh, gph, created, trunc), (rev, seq), op != 3) AS pl
 FROM ev WHERE kind = 1 GROUP BY coll, u, rk;
+CREATE TABLE sst ENGINE = Join(ANY, LEFT, coll, u, rk) AS
+SELECT coll, u, rk, argMaxIf(tuple(extra, name, descr, feed), (rev, seq), op != 3) AS sp
+FROM ev WHERE kind = 1 AND (coll IN (5, 10, 11, 12, 13) OR scoll = 2) GROUP BY coll, u, rk;
 CREATE TABLE live ENGINE = MergeTree ORDER BY (coll, u, rk) AS
 SELECT coll, u, rk, lop, lrev, pl.1 AS t, pl.2 AS tok, pl.3 AS subj, pl.4 AS spart, pl.5 AS sph, pl.6 AS scoll, pl.7 AS st,
-  pl.8 AS lh, pl.9 AS gph, pl.10 AS created, pl.11 AS extra, pl.12 AS trunc, pl.13 AS name, pl.14 AS descr, pl.15 AS feed
-FROM st WHERE ncr > 0;
+  pl.8 AS lh, pl.9 AS gph, pl.10 AS created, sx.1 AS extra, pl.11 AS trunc, sx.2 AS name, sx.3 AS descr, sx.4 AS feed
+FROM (SELECT *, if(coll IN (5, 10, 11, 12, 13) OR pl.6 = 2, joinGet('sst', 'sp', coll, u, rk), ('', '', '', '')) AS sx FROM st)
+WHERE ncr > 0;
 
 -- follows: one row per follow record; dt = delete time (TID of the delete commit) or never
 CREATE TABLE fol ENGINE = MergeTree ORDER BY (u, p) AS
@@ -104,13 +148,13 @@ FROM (SELECT u, sph AS ph, any(subj) AS a, any(spart) AS apart, min(t) AS t, any
 
 -- the actor's own posts (post index for phase 2) and its outbound replies and quotes
 CREATE TABLE po ENGINE = MergeTree ORDER BY (u, rk) AS
-SELECT u, rk, rkey, t, tok, rev, seq, op, ing, src, ph, par_ph, par_a, par_t, root_ph, root_a, q_ph, q_a, q_t, img, langs FROM {src(pof, 'po')};
+SELECT u, rk, rkey, t, tok, rev, seq, op, ing, src, ph, par_ph, par_a, par_t, root_ph, root_a, q_ph, q_a, q_t, img, langs FROM po0;
 CREATE TABLE pi ENGINE = MergeTree ORDER BY (u, ph) AS
 SELECT u, pl.1 AS ph, pl.2 AS rkey, pl.3 AS t, toUInt8(pl.4 != 0) AS is_reply, pl.4 AS par_ph, pl.5 AS par_a, pl.6 AS par_t,
   pl.7 AS root_ph, pl.8 AS root_a, toUInt8(pl.9 != 0) AS is_quote, pl.9 AS q_ph, pl.10 AS q_a, pl.11 AS q_t, pl.12 AS img, pl.13 AS langs
 FROM (SELECT u, rk, argMax(op, (rev, seq)) AS lop, countIf(op != 3) AS ncr,
         argMaxIf(tuple(ph, rkey, t, par_ph, par_a, par_t, root_ph, root_a, q_ph, q_a, q_t, img, langs), (rev, seq), op != 3) AS pl
-      FROM po GROUP BY u, rk) WHERE lop != 3 AND ncr > 0;
+      FROM po GROUP BY u, rk SETTINGS optimize_aggregation_in_order = 1) WHERE lop != 3 AND ncr > 0;
 CREATE TABLE rep ENGINE = MergeTree ORDER BY (u, a) AS
 SELECT u, a, kind, r_ph, t, x_ph, x_t, root_ph, root_a,
   toUInt8(arrayExists(x -> x.1 <= t AND t < x.2, joinGet('fiv', 'iv', u, a))) AS fol, toUInt8(joinGet('dmu', 'part', a)) AS tpart
@@ -236,33 +280,30 @@ ARRAY JOIN {C} AS C, range(5) AS cidx
 WHERE t > C - {W} AND t <= C AND arrayExists(x -> x.1 <= C AND C < x.2, joinGet('fiv', 'iv', u, a)) GROUP BY u, a, cidx;
 
 -- ===== outputs re-keyed by the target's partition (phase 2 inputs) =====
-{out(o + '/eng/j{_partition_id}.parquet')} PARTITION BY apart
-SELECT u, a, ph, t, s_t, typ, fol, m, apart FROM (
-  SELECT u, a, ph, t, s_t, toUInt8(1) AS typ, fol, m, apart FROM lk WHERE t > {t12}
-  UNION ALL SELECT u, a, ph, t, s_t, toUInt8(2), fol, m, apart FROM rp WHERE t > {t12});
-{out(o + '/eng_own.parquet')} SELECT u, ph, t FROM lk WHERE t > {t12} AND t >= s_t AND t - s_t <= {cr_w};
-{out(o + '/rep/j{_partition_id}.parquet')} PARTITION BY tpart SELECT * FROM rep;
-{out(o + '/fol/j{_partition_id}.parquet')} PARTITION BY ppart SELECT * FROM fol;
-{out(o + '/fol_own.parquet')} SELECT * FROM fol;
-{out(o + '/blk/j{_partition_id}.parquet')} PARTITION BY ppart SELECT * FROM blk;
-{out(o + '/blk_own.parquet')} SELECT * FROM blk;
-{out(o + '/cur/j{_partition_id}.parquet')} PARTITION BY ppart SELECT * FROM cur;
-{out(o + '/cand/j{_partition_id}.parquet')} PARTITION BY ppart SELECT u, p, cidx, ck, pi, toUInt8(joinGet('dmu', 'part', p)) AS ppart FROM cand;
-{out(o + '/pi.parquet')} SELECT * FROM pi;
-{out(o + '/lk_own_fol.parquet')} SELECT * FROM lkf;
-{out(o + '/gates.parquet')} SELECT * FROM gates;
-{out(o + '/modli.parquet')} SELECT li.lh AS lh, li.u AS owner, member, t FROM li INNER JOIN lists AS l ON l.lh = li.lh AND l.u = li.u WHERE endsWith(l.purpose, '#modlist');
-{out(o + '/lbsub.parquet')} SELECT u, lh, t FROM live WHERE coll = 7 AND lop != 3;
-{out(o + '/ustats.parquet')} SELECT * FROM ustats;
-{out(o + '/o7p.parquet')} SELECT feed, toUInt8(1) AS map, toInt32(joinGet('ucomm', 'cc1', u) - 1) AS comm, uniqExact(u) AS n FROM live
+{sw['eng']}
+{em(o + '/eng_own.parquet')} SELECT u, ph, t FROM lk WHERE t > {t12} AND t >= s_t AND t - s_t <= {cr_w};
+{sw['rep']}
+{sw['fol']}
+{em(o + '/fol_own.parquet')} SELECT * FROM fol;
+{sw['blk']}
+{em(o + '/blk_own.parquet')} SELECT * FROM blk;
+{sw['cur']}
+{sw['cand']}
+{em(o + '/pi.parquet')} SELECT * FROM pi;
+{em(o + '/lk_own_fol.parquet')} SELECT * FROM lkf;
+{em(o + '/gates.parquet')} SELECT * FROM gates;
+{em(o + '/modli.parquet')} SELECT li.lh AS lh, li.u AS owner, member, t FROM li INNER JOIN lists AS l ON l.lh = li.lh AND l.u = li.u WHERE endsWith(l.purpose, '#modlist');
+{em(o + '/lbsub.parquet')} SELECT u, lh, t FROM live WHERE coll = 7 AND lop != 3;
+{em(o + '/ustats.parquet')} SELECT * FROM ustats;
+{em(o + '/o7p.parquet')} SELECT feed, toUInt8(1) AS map, toInt32(joinGet('ucomm', 'cc1', u) - 1) AS comm, uniqExact(u) AS n FROM live
   WHERE coll = 3 AND lop != 3 AND scoll = 2 AND feed != '' AND {1 if maps else 0} GROUP BY feed, comm
   UNION ALL SELECT feed, toUInt8(5), toInt32(joinGet('ucomm', 'cc5', u) - 1), uniqExact(u) FROM live
   WHERE coll = 3 AND lop != 3 AND scoll = 2 AND feed != '' AND {1 if maps else 0} GROUP BY feed, 3;
 
 -- ===== final outputs written by phase 1 =====
-{out(final['o5raw'] + f'/blocks/i{i:02d}.parquet')} SELECT u, p, t, b, toUInt8(b >= {thr}) AS bulk FROM blk;
-{out(final['o5raw'] + f'/follows/i{i:02d}.parquet')} SELECT u, p, ft, dt, b FROM fol WHERE b < {thr} AND ft > {o5a} AND ft <= {o5b};
-{out(final['o3b'] + f'/labels_i{i:02d}.parquet')}
+{em(final['o5raw'] + f'/blocks/i{i:02d}.parquet')} SELECT u, p, t, b, toUInt8(b >= {thr}) AS bulk FROM blk;
+{em(final['o5raw'] + f'/follows/i{i:02d}.parquet')} SELECT u, p, ft, dt, b FROM fol WHERE b < {thr} AND ft > {o5a} AND ft <= {o5b};
+{em(final['o3b'] + f'/labels_i{i:02d}.parquet')}
 SELECT u, p, kind, t FROM (
   SELECT u, p, toUInt8(1) AS kind, ft AS t FROM fol WHERE {prod('p')}
   UNION ALL SELECT u, a, toUInt8(2), t FROM lk WHERE {prod('a')}
@@ -278,7 +319,7 @@ WHERE c0 >= {m2a} AND c0 <= {m2b};
 CREATE TABLE eng30 ENGINE = Join(ANY, LEFT, u, a) AS
 SELECT u, a, min(t) AS t0 FROM (SELECT u, a, t FROM lk UNION ALL SELECT u, a, t FROM rp UNION ALL SELECT u, a, t FROM rep)
 WHERE joinGet('coh', 'c0', u) > 0 GROUP BY u, a;
-{out(final['o3c'] + f'/i{i:02d}.parquet')}
+{em(final['o3c'] + f'/i{i:02d}.parquet')}
 SELECT u, p, kind, ft, toUInt8(e0 > 0 AND e0 <= c0 + {m2o}) AS engaged30 FROM (
   SELECT u, p, ft, joinGet('coh', 'c0', u) AS c0, joinGet('eng30', 't0', u, p) AS e0,
     multiIf(ft >= c0 AND ft < c0 + 86400, 1, ft >= c0 + 86400 AND ft < c0 + {m2o} AND dt = {NONE}, 2, 0) AS kind
@@ -294,11 +335,10 @@ SELECT u, toUInt32(uniqExact(rk)) AS n,
   toUInt8(joinGet('snap', 's_old', u) >= {snapmin}) AS e_old, toUInt8(joinGet('snap', 's_fb', u) >= {snapmin}) AS e_fb,
   toUInt8(joinGet('snap', 'n_bf', u) = 0) AS used_fb
 FROM live WHERE coll = 3 AND lop != 3 AND scoll = 1 AND tok = 1 AND t >= {pc0} AND t < {pc0 + 86400} GROUP BY u;
-{out(final['pc'] + f'/i{i:02d}.parquet')}
+{em(final['pc'] + f'/i{i:02d}.parquet')}
 SELECT joinGet('dmu', 'h', u) AS h, toUInt16(h % 1000) AS bucket, n, e_new, e_old, e_fb, used_fb FROM pcl WHERE joinGet('dmu', 'pc', u) = 1;
 
 -- ===== O1 fragments =====
-CREATE TABLE o1 (metric String, k1 String, k2 String, k3 String, v Float64) ENGINE = Memory;
 INSERT INTO o1 SELECT 'rows_by_coll_op_month', toString(coll), toString(op), toString(toYYYYMM(toDateTime(t))), count() FROM ev WHERE kind = 1 GROUP BY coll, op, 4;
 INSERT INTO o1 SELECT 'rows_by_coll_op_month', '19', toString(op), toString(toYYYYMM(toDateTime(t))), count() FROM po GROUP BY op, 4;
 INSERT INTO o1 SELECT 'rows_by_kind', toString(kind), toString(src), '', count() FROM ev GROUP BY kind, src;
@@ -309,8 +349,11 @@ INSERT INTO o1 SELECT 'bad_tid', toString(coll), '', '', countIf(tok = 0) FROM e
 INSERT INTO o1 SELECT 'follow_created_minus_tid', toString(multiIf(dd <= 1, 1, dd <= 10, 10, dd <= 60, 60, dd <= 3600, 3600, dd <= 86400, 86400, dd <= 2592000, 2592000, 999999999)),
   toString(sign(sd)), '', count() FROM (SELECT toInt64(created) - toInt64(t) AS sd, abs(sd) AS dd FROM live WHERE coll = 1 AND created > 0 AND tok = 1) GROUP BY 2, 3;
 INSERT INTO o1 SELECT 'backfill_probe', toString(src), toString(kind), '', count() FROM ev GROUP BY src, kind;
-INSERT INTO o1 SELECT 'backfill_probe_modal_rev', toString(src), toString(kind), '', countIf(rev = mr) FROM ev
-  INNER JOIN (SELECT u, topK(1)(rev)[1] AS mr FROM ev WHERE rev > 0 GROUP BY u) AS m USING (u) GROUP BY src, kind;
+-- modal-rev probe (a 1-in-{pm} actor sample in multi-chunk partitions: it was the heaviest statement after the dedupe)
+INSERT INTO o1 SELECT 'backfill_probe_modal_rev', toString(src), toString(kind), '', countIf(rev = mr) * {pm} FROM
+  (SELECT u, src, kind, rev FROM ev WHERE cityHash64(u) % {pm} = 0) AS e
+  INNER JOIN (SELECT u, argMax(rev, n) AS mr FROM (SELECT u, rev, count() AS n FROM ev WHERE rev > 0 AND cityHash64(u) % {pm} = 0 GROUP BY u, rev)
+              GROUP BY u) AS m USING (u) GROUP BY src, kind;
 INSERT INTO o1 SELECT 'backfill_probe_ing_min', toString(src), toString(kind), '', min(ing) FROM ev WHERE ing > 0 GROUP BY src, kind;
 INSERT INTO o1 SELECT 'backfill_probe_ing_max', toString(src), toString(kind), '', max(ing) FROM ev WHERE ing > 0 GROUP BY src, kind;
 INSERT INTO o1 SELECT 'pc_likers', toString(e_old), toString(e_new), toString(e_fb), count() FROM pcl GROUP BY e_old, e_new, e_fb;
@@ -331,5 +374,31 @@ INSERT INTO o1 SELECT 'reposts_dedup', '', '', '', count() FROM rp;
 INSERT INTO o1 SELECT 'cand_rows', toString(cidx), toString(ck), '', count() FROM cand GROUP BY cidx, ck;
 INSERT INTO o1 SELECT 'cand_users', toString(cidx), toString(ck), '', uniqExact(u) FROM cand GROUP BY cidx, ck;
 INSERT INTO o1 SELECT 'posts_live_12mo', toString(is_reply), toString(is_quote), '', count() FROM pi WHERE t > {t12} AND t <= {tn} GROUP BY is_reply, is_quote;
-{out(o + '/o1.parquet')} SELECT * FROM o1;
 """
+
+    hf = "cityHash64(u)"
+    head = PRELUDE + settings_sql(r) + f"""
+CREATE TABLE dmu ENGINE = Join(ANY, LEFT, uid) AS
+SELECT uid, part, is_prod, ls, fit, m1, pc, h, hide, synth_no, plc_t, web, followers, s200, s400 FROM file('{dm}', Parquet, '{S['didmap']}');
+CREATE TABLE ev_all ENGINE = MergeTree ORDER BY (ck, coll, u, rk) AS SELECT *, toUInt16({hf} % {K}) AS ck FROM {src(evf, 'ev')};
+CREATE TABLE po_all ENGINE = MergeTree ORDER BY (ck, u, rk) AS
+SELECT u, rk, rkey, t, tok, rev, seq, op, ing, src, ph, par_ph, par_a, par_t, root_ph, root_a, q_ph, q_a, q_t, img, langs,
+  toUInt16({hf} % {K}) AS ck FROM {src(pof, 'po')};
+CREATE TABLE o1 (metric String, k1 String, k2 String, k3 String, v Float64) ENGINE = Memory;
+"""
+    parts = [head]
+    for k in range(K):
+        b = body(k)
+        made = list(dict.fromkeys(re.findall(r"CREATE TABLE (\w+)", b)))
+        drops = "".join(f"DROP TABLE IF EXISTS {t};\n" for t in made if not t.startswith("acc_"))
+        parts.append(f"\nSELECT 'p1 chunk {k + 1}/{K}' FORMAT Null;\n" + b + "\n" + drops)
+    tail = ""
+    for path, (name, split) in accs.items():
+        if split:
+            p_fmt, kcol = split
+            for kk in range(r.N):
+                tail += f"{out(p_fmt.format(k=kk))} SELECT * FROM {name} WHERE {kcol} = {kk};\n"
+        else:
+            tail += f"{out(path)} SELECT * FROM {name};\n"
+    tail += f"{out(o + '/o1.parquet')} SELECT metric, k1, k2, k3, multiIf(endsWith(metric, '_min'), min(v), endsWith(metric, '_max'), max(v), sum(v)) AS v FROM o1 GROUP BY metric, k1, k2, k3;\n"
+    return "".join(parts) + tail

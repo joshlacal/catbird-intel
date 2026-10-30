@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Catbird S17 Harness v1 — Onboarding &amp; Local For You Preview</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --ink: #1b1b19; --muted: #5c5b57; --faint: #77756f; --line: #dedbd3;
+  --accent: #1d5a8a; --accent-ink: #ffffff; --accent-soft: #e3eef7; --ok: #1f6b3b; --ok-soft: #e3f4e9;
+  --warn: #7a3f0a; --warn-soft: #fbeedd; --bad: #9b2226; --bad-soft: #f9e3e3; --chip: #efede8;
+  --shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141413; --panel: #1e1e1c; --ink: #eeede9; --muted: #b3b1ab; --faint: #95938d; --line: #363531;
+    --accent: #8cc0ec; --accent-ink: #0f202f; --accent-soft: #213242; --ok: #7ed49b; --ok-soft: #1b3324;
+    --warn: #f2bd84; --warn-soft: #3a2a18; --bad: #f2a3a5; --bad-soft: #3d1f20; --chip: #2a2a27;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+.wrap { max-width: 1460px; margin: 0 auto; padding: 0 16px; }
+header.top { padding: 18px 0 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header.top h1 { font-size: 22px; margin: 0 0 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; background: var(--ok-soft); color: var(--ok); border: 1px solid currentColor; }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.sub { color: var(--muted); margin: 0; font-size: 14px; max-width: 980px; }
+.tabs { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.tab { border: 1px solid var(--line); background: var(--bg); padding: 7px 14px; border-radius: 999px; font-weight: 600; cursor: pointer; }
+.tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+.toolbar { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); padding: 10px 0; }
+.toolbar .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+input[type=search], select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-height: 36px; }
+input[type=search] { flex: 1 1 260px; max-width: 420px; }
+.count { margin-left: auto; color: var(--muted); font-size: 13px; }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 20px; align-items: start; padding: 16px 0 60px; }
+@media (max-width: 1020px) { .layout { grid-template-columns: 1fr; } }
+
+.scene { margin: 20px 0 8px; }
+.scene:first-child { margin-top: 4px; }
+.scene-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.scene-h h2 { font-size: 19px; margin: 0; }
+.scene-h span { color: var(--muted); font-size: 13px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px; }
+.card.picked { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.card-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.card h3 { font-size: 16px; margin: 0; line-height: 1.3; }
+.desc { color: var(--muted); font-size: 13.5px; margin: 0; }
+.meta { color: var(--faint); font-size: 12.5px; }
+.samples { list-style: none; margin: 4px 0 0; padding: 6px 0 0; border-top: 1px solid var(--line); font-size: 13.5px; }
+.samples li { padding: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nm { font-weight: 600; }
+.hd { color: var(--muted); }
+.flag { display: inline-block; font-size: 11px; font-weight: 600; background: var(--warn-soft); color: var(--warn); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+.sup-flag { background: var(--chip); color: var(--muted); }
+.btn { border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 999px; padding: 4px 12px; font-size: 13.5px; font-weight: 600; cursor: pointer; flex: none; }
+.btn:hover { background: var(--accent-soft); }
+.btn.on { background: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-sm { padding: 2px 9px; font-size: 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; }
+.btn-sm.sel { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+details.more summary { cursor: pointer; color: var(--accent); font-size: 13px; margin-top: 4px; }
+.more-body { margin-top: 8px; font-size: 13px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.more-body h4 { margin: 8px 0 4px; font-size: 13px; }
+.more-body ol { margin: 0; padding-left: 20px; }
+
+aside.side { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 15px; box-shadow: var(--shadow); }
+aside.side h2 { font-size: 17px; margin: 0 0 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft); border-radius: 999px; padding: 3px 8px 3px 11px; font-size: 13px; }
+.chip button { border: 0; background: none; cursor: pointer; font-weight: 700; color: var(--muted); }
+.suggest-box { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin: 10px 0; font-size: 13px; }
+.suggest-box b { display: block; margin-bottom: 4px; }
+.bundle-list { margin: 8px 0 0; padding-left: 22px; font-size: 13.5px; }
+.bundle-list li { margin-bottom: 6px; }
+.src-tag { font-size: 12px; color: var(--accent); display: block; }
+
+.post-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.post-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.post-txt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; margin: 4px 0 6px; }
+.post-foot { font-size: 12px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 10px; }
+
+.review-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+.ab-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
+.ab-opt { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+.rate-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 13.5px; }
+.score-bar { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal-bg.open { display: flex; }
+.modal { background: var(--panel); border-radius: 12px; max-width: 640px; width: 100%; max-height: 80vh; overflow: auto; padding: 18px; border: 1px solid var(--line); }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <h1>
+      Catbird Onboarding &amp; Local For You Harness v1
+      <span class="badge">S17 · 127.0.0.1 only</span>
+      <span class="badge" id="stat-badge">Loading catalog…</span>
+    </h1>
+    <p class="sub">
+      Frozen <b>cand5-full-matched</b> partition · Locked S13 <code>(k=3, m=3, θ=0.5, w_lin_plus_curators)</code> ·
+      Validated S14 <b>H-matrix</b> active · All 8 Y3 sensitive classes excluded in v0 ·
+      <code>hideFromAlgorithmicRecommendations</code> posts hidden (A1).
+    </p>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="picker">1. Scene Picker &amp; Bundle (25–50)</button>
+      <button class="tab" data-tab="preview">2. Local For You ("Preview from Oct 22 data")</button>
+      <button class="tab" data-tab="review">3. Blind S17 Review (30 Rule-Drawn Cards)</button>
+      <button class="tab" data-tab="comparator">4. Bluesky Onboarding Comparator</button>
+    </div>
+  </div>
+</header>
+
+<section id="tab-picker">
+  <div class="toolbar">
+    <div class="wrap row">
+      <input type="search" id="q" placeholder="Search scenes, communities, handles, or list names…">
+      <select id="lang"><option value="">All languages</option></select>
+      <select id="jump"><option value="">Jump to scene…</option></select>
+      <label>Bundle size:
+        <select id="bsize"><option value="25" selected>25 (default)</option><option value="50">50 (max)</option></select>
+      </label>
+      <span class="count" id="count"></span>
+    </div>
+  </div>
+  <div class="wrap layout">
+    <main id="main"></main>
+    <aside class="side" id="side"></aside>
+  </div>
+</section>
+
+<section id="tab-preview" class="wrap hidden" style="padding:18px 16px 60px;">
+  <div class="score-bar">
+    <div>
+      <b style="font-size:17px;">Preview from Oct 22 data</b>
+      <div class="meta">Ranked by community-InterestedIn excess engagement residual · ≤2 posts/author · ≤5% high-H community cap · Hydrated live via <code>getPosts</code> so deleted/labelled posts vanish.</div>
+    </div>
+    <button class="btn on" id="refresh-preview">Refresh Live Preview</button>
+    <span id="preview-stats" class="meta"></span>
+  </div>
+  <div id="preview-body"></div>
+</section>
+
+<section id="tab-review" class="wrap hidden" style="padding:18px 16px 60px;">
+  <div class="score-bar" id="review-summary">
+    <div>
+      <b>30 Rule-Drawn Cards (`cityHash64(community)`) — Blind S17 Audit</b>
+      <div class="meta">Bars: ≥70% real scene recognised · ≥85% label accepted · ≥60% Opus preferred in blind A/B (else ship list names) · 0 missed sensitive cards · ≥80% bundle accounts on-scene &amp; active (≤10% junk/dormant).</div>
+    </div>
+    <button class="btn" id="btn-reveal">Reveal Blind A/B Tallies</button>
+    <span id="save-status" class="meta">Auto-saved to ratings.json</span>
+  </div>
+  <div id="reveal-box" class="score-bar hidden"></div>
+  <div id="review-list"></div>
+</section>
+
+<section id="tab-comparator" class="wrap hidden" style="padding:18px 16px 60px;">
+  <div id="comp-body"></div>
+</section>
+
+<div class="modal-bg" id="pack-modal">
+  <div class="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <b id="pm-title">Starter pack inspection (never follow-all)</b>
+      <button class="btn-sm" id="pm-close">Close</button>
+    </div>
+    <p class="meta" style="margin-top:0;">Inspect-only per Whole-Network Plan §3.3 (never bulk follow-all). Every member passed S5 live checks.</p>
+    <div id="pm-body"></div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (n) => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
+const num = (n) => Number(n || 0).toLocaleString("en-US");
+const B32 = "abcdefghijklmnopqrstuvwxyz234567";
+function expDid(s) {
+  if (s.startsWith("did:")) return s;
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + pad);
+  let bits = 0, val = 0, out = "did:plc:";
+  for (let i = 0; i < bin.length; i++) {
+    val = (val << 8) | bin.charCodeAt(i);
+    bits += 8;
+    while (bits >= 5) { bits -= 5; out += B32[(val >>> bits) & 31]; }
+  }
+  return out;
+}
+const expHdl = (s) => s.endsWith("~") ? s.slice(0, -1) + ".bsky.social" : s;
+const expPackUri = (s) => {
+  if (s.startsWith("at://")) return s;
+  const i = s.indexOf("/");
+  return `at://${expDid(s.slice(0, i))}/app.bsky.graph.starterpack/${s.slice(i + 1)}`;
+};
+const expFeedUri = (s) => {
+  if (s.startsWith("at://")) return s;
+  const i = s.indexOf("/");
+  return `at://${expDid(s.slice(0, i))}/app.bsky.feed.generator/${s.slice(i + 1)}`;
+};
+
+let DATA = null;
+let HIGH_H = new Set();
+let RATINGS = {cards: {}, accounts: {}, comparator: {}};
+const picked = [];
+const POP_LIMIT = 500000, POP_MAX = 2, PICK_MAX = 5;
+
+function acct(aid) {
+  const r = DATA.accts[aid];
+  const fl = r[4] || 0;
+  return {did: expDid(r[0]), handle: expHdl(r[1]), followers: r[2], name: r[3] || "", hfr: !!(fl & 1), sup: !!(fl & 2)};
+}
+function expMedoidUri(pair) {
+  return `at://${acct(pair[0]).did}/app.bsky.feed.post/${pair[1]}`;
+}
+
+function badges(m) {
+  let b = "";
+  if (m.hfr) b += `<span class="flag" title="hideFromAlgorithmicRecommendations: posts never shown (A1); profile eligible">posts hidden</span>`;
+  if (m.sup) b += `<span class="flag sup-flag" title="Supplement producer verified active via S5(vi)">supplement</span>`;
+  return b;
+}
+
+function who(m) {
+  return m.name ? `<span class="nm">${esc(m.name)}</span> <span class="hd">@${esc(m.handle)}</span>` : `<span class="nm">@${esc(m.handle)}</span>`;
+}
+
+function hasHighH(c1, c2) {
+  const a = Math.min(c1, c2), b = Math.max(c1, c2);
+  return HIGH_H.has(a + ":" + b);
+}
+
+/* Registered Y6 + S14 H-aware bundle solver */
+function solveBundle(picks, targetSize) {
+  if (!picks.length) return {items: [], counts: {}, filled: 0, suggestedNext: []};
+  const k = picks.length;
+  const quotas = [];
+  if (k <= 2) {
+    for (let i = 0; i < k; i++) quotas.push(Math.floor(targetSize / k) + (i < (targetSize % k) ? 1 : 0));
+  } else {
+    const cap = Math.floor(0.40 * targetSize);
+    let rem = targetSize;
+    for (let i = 0; i < k; i++) {
+      const q = Math.min(cap, Math.max(3, Math.floor(rem / (k - i))));
+      quotas.push(q);
+      rem -= q;
+    }
+  }
+  const perCardCap = k >= 3 ? Math.floor(0.40 * targetSize) : targetSize;
+  const chosen = [];
+  const seen = new Set();
+  const counts = {};
+  let big = 0;
+
+  for (let i = 0; i < k; i++) {
+    const cid = picks[i], cd = DATA.cards[cid];
+    if (!cd) continue;
+    let got = 0;
+    for (const aid of cd.m) {
+      if (got >= quotas[i] || chosen.length >= targetSize) break;
+      const m = acct(aid);
+      if (seen.has(m.did)) continue;
+      if (m.followers > POP_LIMIT) { if (big >= POP_MAX) continue; big++; }
+      seen.add(m.did);
+      counts[cid] = (counts[cid] || 0) + 1;
+      chosen.push({...m, srcCard: cid, viaFill: false});
+      got++;
+    }
+  }
+
+  /* Second pass across picked cards up to perCardCap if needed */
+  if (chosen.length < targetSize) {
+    for (const cid of picks) {
+      const cd = DATA.cards[cid];
+      if (!cd) continue;
+      for (const aid of cd.m) {
+        if (chosen.length >= targetSize || (counts[cid] || 0) >= perCardCap) break;
+        const m = acct(aid);
+        if (seen.has(m.did)) continue;
+        if (m.followers > POP_LIMIT) { if (big >= POP_MAX) continue; big++; }
+        seen.add(m.did);
+        counts[cid] = (counts[cid] || 0) + 1;
+        chosen.push({...m, srcCard: cid, viaFill: false});
+      }
+    }
+  }
+
+  /* Build H-compatible KnownFor co-membership neighbor queue (for both Suggested Next Cards & Shortfall Fill) */
+  const nbScore = {};
+  const pickSet = new Set(picks);
+  for (const cid of picks) {
+    const cd = DATA.cards[cid];
+    if (!cd) continue;
+    (cd.nb || []).forEach((nb, idx) => {
+      if (pickSet.has(nb) || !DATA.cards[nb]) return;
+      if (picks.some((p) => hasHighH(p, nb))) return;
+      nbScore[nb] = (nbScore[nb] || 0) + (10 - idx);
+    });
+  }
+  const orderedNbs = Object.keys(nbScore).map(Number).sort((a, b) => nbScore[b] - nbScore[a] || a - b);
+
+  let filled = 0;
+  if (chosen.length < targetSize) {
+    for (const nb of orderedNbs) {
+      if (chosen.length >= targetSize) break;
+      const cd = DATA.cards[nb];
+      for (const aid of cd.m) {
+        if (chosen.length >= targetSize) break;
+        const m = acct(aid);
+        if (seen.has(m.did)) continue;
+        if (m.followers > POP_LIMIT) { if (big >= POP_MAX) continue; big++; }
+        seen.add(m.did);
+        counts[nb] = (counts[nb] || 0) + 1;
+        chosen.push({...m, srcCard: nb, viaFill: true});
+        filled++;
+      }
+    }
+  }
+  return {items: chosen, counts, filled, suggestedNext: orderedNbs.slice(0, 5)};
+}
+
+function renderPicker() {
+  const q = $("#q").value.trim().toLowerCase();
+  const lg = $("#lang").value;
+  let shownCards = 0;
+  const scenesHtml = [];
+  const jumpOpts = [`<option value="">Jump to scene…</option>`];
+
+  for (const sc of DATA.scenes) {
+    const cards = sc.cs.map((c) => DATA.cards[c]).filter(Boolean).filter((cd) => {
+      if (lg && cd.lg !== lg) return false;
+      if (!q) return true;
+      if (cd.t.toLowerCase().includes(q) || (cd.d || "").toLowerCase().includes(q)) return true;
+      for (const [ln] of (cd.ln || [])) if (ln.toLowerCase().includes(q)) return true;
+      for (const aid of cd.m.slice(0, 10)) {
+        const m = acct(aid);
+        if (m.handle.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)) return true;
+      }
+      return false;
+    });
+    if (!cards.length) continue;
+    shownCards += cards.length;
+    jumpOpts.push(`<option value="sc-${sc.s}">${esc(sc.n)} (${cards.length})</option>`);
+    scenesHtml.push(`<section class="scene" id="sc-${sc.s}">
+      <div class="scene-h"><h2>${esc(sc.n)}</h2><span>${cards.length} card${cards.length > 1 ? "s" : ""}</span></div>
+      <div class="grid">${cards.map(renderCard).join("")}</div>
+    </section>`);
+  }
+  $("#jump").innerHTML = jumpOpts.join("");
+  $("#count").textContent = `${num(shownCards)} of ${num(DATA.counts.v0_cards)} v0 cards`;
+  $("#main").innerHTML = scenesHtml.join("") || `<p class="meta">No matching scenes.</p>`;
+  renderSide();
+}
+
+function renderCard(cd) {
+  const on = picked.includes(cd.c);
+  const conflict = !on && picked.some((p) => hasHighH(p, cd.c));
+  const full = picked.length >= PICK_MAX && !on;
+  const top5 = cd.m.slice(0, 5).map((aid) => {
+    const m = acct(aid);
+    return `<li>${who(m)} <span class="hd">· ${fmt(m.followers)}</span>${badges(m)}</li>`;
+  }).join("");
+  const lists = (cd.ln || []).map(([n, k]) => `${esc(n)} (${k})`).join(", ");
+  const pks = cd.pk || [], fds = cd.fd || [], mds = cd.md || [];
+  const packsHtml = pks.map((p) =>
+    `<div><button class="btn-sm" data-pack="${esc(expPackUri(p[0]))}">Inspect pack</button> <b>${esc(p[1])}</b> <span class="hd">by @${esc(expHdl(p[2]))} (${p[3]} accts)</span></div>`
+  ).join("");
+  const feedsHtml = fds.map((f) =>
+    `<div><b>${esc(f[1])}</b> <span class="hd">by @${esc(expHdl(f[2]))} · ${num(f[3])} community likers</span></div>`
+  ).join("");
+  const medUris = mds.map(expMedoidUri);
+  const medBtn = medUris.length ? `<button class="btn-sm" data-medoids="${esc(medUris.join(","))}">Hydrate ${medUris.length} sample post(s)</button><div class="med-slot"></div>` : "";
+
+  return `<article class="card${on ? " picked" : ""}">
+    <div class="card-top">
+      <h3>${esc(cd.t)}</h3>
+      <button class="btn${on ? " on" : ""}" data-pick="${cd.c}" ${full ? "disabled" : ""}>${on ? "Picked ✓" : "Pick"}</button>
+    </div>
+    ${cd.d ? `<p class="desc">${esc(cd.d)}</p>` : ""}
+    <div class="meta">${num(cd.sz)} producers (${num(cd.el)} eligible) · ${esc(cd.lg)}${conflict ? ` · <span class="flag">high-H w/ pick</span>` : ""}</div>
+    <ul class="samples">${top5}</ul>
+    ${lists ? `<div class="meta">Curated lists: ${lists}</div>` : ""}
+    <details class="more" data-card-more="${cd.c}">
+      <summary>Details · all ${cd.m.length} ranked · ${pks.length} pack(s) · ${fds.length} feed(s)</summary>
+      <div class="more-body">
+        ${medBtn}
+        ${packsHtml ? `<h4>Starter packs (inspect-only)</h4>${packsHtml}` : ""}
+        ${feedsHtml ? `<h4>Community-liked feeds (O7)</h4>${feedsHtml}` : ""}
+        <h4>Top ${cd.m.length} S13 candidates</h4>
+        <ol>${cd.m.map((aid) => { const m = acct(aid); return `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span>${badges(m)}</li>`; }).join("")}</ol>
+      </div>
+    </details>
+  </article>`;
+}
+
+function renderSide() {
+  const bsize = Number($("#bsize").value || 25);
+  if (!picked.length) {
+    $("#side").innerHTML = `<h2>Your Onboarding Bundle</h2>
+      <p class="meta">Pick 1 to 5 scenes on the left to solve your ${bsize}-account bundle (with H-compatible neighbor suggestions, starter packs, feeds, and live Oct 22 For You preview).</p>`;
+    return;
+  }
+  const res = solveBundle(picked, bsize);
+  const chips = picked.map((c) => `<span class="chip">${esc(DATA.cards[c].t)} <button data-unpick="${c}" title="Remove">×</button></span>`).join("");
+  const sug = picked.length < PICK_MAX && res.suggestedNext.length
+    ? `<div class="suggest-box"><b>Suggested next cards (KnownFor co-membership, H-compatible):</b>
+        <div class="chips">${res.suggestedNext.map((nb) => `<button class="btn-sm" data-pick="${nb}">+ ${esc(DATA.cards[nb].t)}</button>`).join("")}</div>
+       </div>`
+    : "";
+
+  const feeds = [];
+  const packs = [];
+  for (const c of picked) {
+    for (const f of (DATA.cards[c].fd || [])) feeds.push({u: expFeedUri(f[0]), n: f[1], ch: f[2], lk: f[3], cardTitle: DATA.cards[c].t});
+    for (const p of (DATA.cards[c].pk || [])) packs.push({u: expPackUri(p[0]), n: p[1], ch: p[2], mc: p[3], cardTitle: DATA.cards[c].t});
+  }
+
+  $("#side").innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;">
+      <h2>Bundle (${res.items.length}/${bsize} accounts)</h2>
+      <button class="btn-sm" id="clear-picks">Clear</button>
+    </div>
+    <div class="chips">${chips}</div>
+    <div style="margin:8px 0;">
+      <button class="btn on" id="goto-preview" style="width:100%;">Open Live "Preview from Oct 22 data" →</button>
+    </div>
+    ${sug}
+    <div class="meta">Quota rule: ${picked.length <= 2 ? "even split (1–2 cards)" : "≥3/card, ≤40%/card"} · ≤2 &gt;500k followers${res.filled ? ` · ${res.filled} filled via H-safe neighbors` : ""}.</div>
+    ${feeds.length ? `<div class="more-body"><h4>Suggested Feeds (${feeds.length})</h4>${feeds.slice(0, 6).map((f) => `<div><b>${esc(f.n)}</b> <span class="hd">@${esc(expHdl(f.ch))} (${esc(f.cardTitle)})</span></div>`).join("")}</div>` : ""}
+    ${packs.length ? `<div class="more-body"><h4>Inspectable Starter Packs (${packs.length})</h4>${packs.slice(0, 4).map((p) => `<div><button class="btn-sm" data-pack="${esc(p.u)}">Inspect</button> <b>${esc(p.n)}</b></div>`).join("")}</div>` : ""}
+    <ol class="bundle-list">
+      ${res.items.map((m) => {
+        const curRate = (RATINGS.accounts || {})[m.did] || "";
+        return `<li>${who(m)} <span class="hd">· ${fmt(m.followers)}</span>${badges(m)}
+          <span class="src-tag">${esc(DATA.cards[m.srcCard]?.t || "c"+m.srcCard)}${m.viaFill ? " (neighbor fill)" : ""}</span>
+          <div style="margin-top:2px;display:flex;gap:4px;">
+            <button class="btn-sm${curRate==="on_scene_active"?" sel":""}" data-rate-acct="${esc(m.did)}" data-val="on_scene_active">On-scene</button>
+            <button class="btn-sm${curRate==="off_scene"?" sel":""}" data-rate-acct="${esc(m.did)}" data-val="off_scene">Off-scene</button>
+            <button class="btn-sm${curRate==="junk_or_dormant"?" sel":""}" data-rate-acct="${esc(m.did)}" data-val="junk_or_dormant">Junk/dormant</button>
+          </div>
+        </li>`;
+      }).join("")}
+    </ol>`;
+}
+
+async function loadPreview() {
+  const body = $("#preview-body");
+  if (!picked.length) {
+    body.innerHTML = `<p class="meta">Pick 1–5 scenes in Tab 1 first, then view their live-hydrated Oct 22 residual preview here.</p>`;
+    $("#preview-stats").textContent = "";
+    return;
+  }
+  body.innerHTML = `<p class="meta">Hydrating live posts via public AppView <code>getPosts</code>…</p>`;
+  const r = await fetch(`/api/preview?cards=${picked.join(",")}`);
+  const d = await r.json();
+  $("#preview-stats").textContent = `${d.live_posts_returned} live posts (${d.candidate_uris_checked} candidates checked) · Measured political share: ${(d.political_share * 100).toFixed(1)}% (${d.political_posts_count}/${d.live_posts_returned})`;
+  if (!d.posts.length) {
+    body.innerHTML = `<p class="meta">No live posts returned for the selected cards.</p>`;
+    return;
+  }
+  body.innerHTML = d.posts.map((p) => `<article class="post-card">
+    <div class="post-head">
+      <span><b>${esc(p.name || "@" + p.handle)}</b> <span class="hd">@${esc(p.handle)}</span> · <span class="badge">${esc(p.community_title)}</span></span>
+      <span>residual ${p.residual} (in-comm ${p.n_comm} / global ${p.n_all})</span>
+    </div>
+    <div class="post-txt">${esc(p.text || "[media-only post]")}</div>
+    <div class="post-foot">
+      <span>Preview from Oct 22 data</span>
+      <span>♥ ${num(p.likes)} · ↻ ${num(p.reposts)} · 💬 ${num(p.replies)}</span>
+      ${p.media_badge ? `<span>[${esc(p.media_badge)} attachment — bytes not fetched]</span>` : ""}
+      ${p.is_political ? `<span class="flag">political-keyword/score</span>` : ""}
+    </div>
+  </article>`).join("");
+}
+
+function renderBlindReview() {
+  const html = (DATA.blind_review_30 || []).map((item) => {
+    const cd = DATA.cards[item.c];
+    if (!cd) return "";
+    const cr = (RATINGS.cards || {})[item.c] || {};
+    const samples = cd.m.slice(0, 8).map((aid) => { const m = acct(aid); return `${m.name ? esc(m.name)+" " : ""}<span class="hd">@${esc(m.handle)} (${fmt(m.followers)})</span>`; }).join(" · ");
+    return `<div class="review-card" id="rev-${item.c}">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;">
+        <b>Card #${item.slot} of 30 · Community c${item.c} (${num(cd.sz)} members, ${esc(cd.lg)})</b>
+        ${(cd.md && cd.md.length) ? `<button class="btn-sm" data-medoids="${esc(cd.md.map(expMedoidUri).join(","))}">Hydrate sample posts</button>` : ""}
+      </div>
+      <div class="med-slot"></div>
+      <p class="meta" style="margin:6px 0;">Top ranked accounts: ${samples}</p>
+      <div class="ab-box">
+        <div class="ab-opt"><b>Title Option A:</b><div>${esc(item.option_a)}</div></div>
+        <div class="ab-opt"><b>Title Option B:</b><div>${esc(item.option_b)}</div></div>
+      </div>
+      <div class="rate-row">
+        <span>1. Real scene I recognise?</span>
+        <button class="btn-sm${cr.recognise==="yes"?" sel":""}" data-rc="${item.c}" data-k="recognise" data-v="yes">Yes</button>
+        <button class="btn-sm${cr.recognise==="no"?" sel":""}" data-rc="${item.c}" data-k="recognise" data-v="no">No</button>
+        <span style="margin-left:12px;">2. Blind A/B preference:</span>
+        <button class="btn-sm${cr.prefer==="A"?" sel":""}" data-rc="${item.c}" data-k="prefer" data-v="A">Prefer A</button>
+        <button class="btn-sm${cr.prefer==="B"?" sel":""}" data-rc="${item.c}" data-k="prefer" data-v="B">Prefer B</button>
+        <button class="btn-sm${cr.prefer==="tie"?" sel":""}" data-rc="${item.c}" data-k="prefer" data-v="tie">Tie</button>
+      </div>
+      <div class="rate-row">
+        <span>3. Winning title acceptable?</span>
+        <button class="btn-sm${cr.label_ok==="yes"?" sel":""}" data-rc="${item.c}" data-k="label_ok" data-v="yes">Yes (acceptable)</button>
+        <button class="btn-sm${cr.label_ok==="no"?" sel":""}" data-rc="${item.c}" data-k="label_ok" data-v="no">No</button>
+        <span style="margin-left:12px;">4. Missed Y3 sensitivity?</span>
+        <button class="btn-sm${(cr.sensitive_missed||"no")==="no"?" sel":""}" data-rc="${item.c}" data-k="sensitive_missed" data-v="no">Safe (none)</button>
+        <button class="btn-sm${cr.sensitive_missed==="yes"?" sel":""}" data-rc="${item.c}" data-k="sensitive_missed" data-v="yes">Should be sensitive!</button>
+      </div>
+    </div>`;
+  }).join("");
+  $("#review-list").innerHTML = html;
+}
+
+function renderComparator() {
+  const c = DATA.comparator || {};
+  if (!c.available) {
+    $("#comp-body").innerHTML = `<div class="review-card">
+      <h3>Bluesky Suggested Onboarding Comparator</h3>
+      <p>${esc(c.note || "Comparator unavailable unauthenticated.")}</p>
+      <p class="meta">HTTP status recorded in <code>receipt.json</code>: <b>${c.http_status}</b>. Per Whole-Network Plan row S17 ("if the Bluesky comparator works, ours preferred in ≥15/20"), side-by-side authenticated comparison runs in S18 dev build.</p>
+    </div>`;
+    return;
+  }
+  const bundle = solveBundle(picked.length ? picked : [DATA.blind_review_30[0].c], 25).items;
+  $("#comp-body").innerHTML = `<div class="review-card">
+    <h3>Bluesky <code>getSuggestedOnboardingUsers</code> (${c.actors.length} clean accounts) vs Catbird v0 Bundle</h3>
+    <div class="ab-box">
+      <div class="ab-opt"><b>Catbird v0 Bundle (${bundle.length})</b><ol>${bundle.map((m) => `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span></li>`).join("")}</ol></div>
+      <div class="ab-opt"><b>Bluesky Default Onboarding (${c.actors.length})</b><ol>${c.actors.map((m) => `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span></li>`).join("")}</ol></div>
+    </div>
+  </div>`;
+}
+
+async function saveRatings(patch) {
+  $("#save-status").textContent = "Saving…";
+  const r = await fetch("/api/ratings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(patch)});
+  const d = await r.json();
+  $("#save-status").textContent = d.ok ? `Saved ${d.updated_utc.slice(11, 19)}Z` : "Save error";
+}
+
+document.addEventListener("click", async (e) => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  if (t.dataset.tab) {
+    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === t));
+    ["picker", "preview", "review", "comparator"].forEach((nm) => {
+      $("#tab-" + nm).classList.toggle("hidden", nm !== t.dataset.tab);
+    });
+    if (t.dataset.tab === "preview") loadPreview();
+    if (t.dataset.tab === "comparator") renderComparator();
+    return;
+  }
+  if (t.dataset.pick) {
+    const cid = Number(t.dataset.pick);
+    const i = picked.indexOf(cid);
+    if (i >= 0) picked.splice(i, 1);
+    else if (picked.length < PICK_MAX) picked.push(cid);
+    renderPicker();
+    return;
+  }
+  if (t.dataset.unpick) {
+    const i = picked.indexOf(Number(t.dataset.unpick));
+    if (i >= 0) picked.splice(i, 1);
+    renderPicker();
+    return;
+  }
+  if (t.id === "clear-picks") { picked.length = 0; renderPicker(); return; }
+  if (t.id === "goto-preview") { document.querySelector('[data-tab="preview"]').click(); return; }
+  if (t.id === "refresh-preview") { loadPreview(); return; }
+  if (t.dataset.pack) {
+    const r = await fetch(`/api/pack?uri=${encodeURIComponent(t.dataset.pack)}`);
+    const pk = await r.json();
+    $("#pm-title").textContent = `${pk.name || "Starter pack"} (@${pk.creator_handle}) — ${pk.members?.length || 0} accounts`;
+    $("#pm-body").innerHTML = `<ol>${(pk.members || []).map((m) => `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span>${badges(m)}</li>`).join("")}</ol>`;
+    $("#pack-modal").classList.add("open");
+    return;
+  }
+  if (t.id === "pm-close") { $("#pack-modal").classList.remove("open"); return; }
+  if (t.dataset.medoids) {
+    const slot = t.parentElement.querySelector(".med-slot") || t.closest(".review-card")?.querySelector(".med-slot");
+    if (!slot) return;
+    slot.innerHTML = `<div class="meta">Hydrating live via getPosts…</div>`;
+    const r = await fetch(`/api/medoids?uris=${encodeURIComponent(t.dataset.medoids)}`);
+    const d = await r.json();
+    slot.innerHTML = (d.posts || []).map((p) => `<div class="post-card" style="margin-top:6px;">
+      <div class="post-head"><b>@${esc(p.handle)}</b><span>♥ ${num(p.likes)}</span></div>
+      <div class="post-txt">${esc(p.text || "[media post]")}</div>
+    </div>`).join("") || `<div class="meta">Posts deleted or unavailable live.</div>`;
+    return;
+  }
+  if (t.dataset.rc) {
+    const cid = t.dataset.rc, k = t.dataset.k, v = t.dataset.v;
+    RATINGS.cards = RATINGS.cards || {};
+    RATINGS.cards[cid] = {...(RATINGS.cards[cid] || {}), [k]: v};
+    renderBlindReview();
+    await saveRatings({cards: {[cid]: RATINGS.cards[cid]}});
+    return;
+  }
+  if (t.dataset.rateAcct) {
+    const did = t.dataset.rateAcct, v = t.dataset.val;
+    RATINGS.accounts = RATINGS.accounts || {};
+    RATINGS.accounts[did] = v;
+    renderSide();
+    await saveRatings({accounts: {[did]: v}});
+    return;
+  }
+  if (t.id === "btn-reveal") {
+    const r = await fetch("/api/ratings?reveal=1");
+    const d = await r.json();
+    const b = d.reveal?.bars || {};
+    const box = $("#reveal-box");
+    box.classList.remove("hidden");
+    box.innerHTML = `
+      <div><b>Scene recognised:</b> ${b.scene_recognised_pct ?? "—"}% (n=${b.scene_rated_n}, bar ≥70%)</div>
+      <div><b>Label accepted:</b> ${b.label_accepted_pct ?? "—"}% (n=${b.label_rated_n}, bar ≥85%)</div>
+      <div><b>Opus vs List A/B:</b> ${b.opus_preferred_pct ?? "—"}% Opus (n=${b.ab_decided_n}, bar ≥60%)</div>
+      <div><b>Missed sensitive:</b> ${b.sensitive_missed_count} (bar = 0)</div>
+      <div><b>Bundle accounts:</b> ${b.bundle_on_scene_pct ?? "—"}% on-scene · ${b.bundle_junk_pct ?? "—"}% junk (n=${b.bundle_rated_n})</div>`;
+  }
+});
+
+$("#q").addEventListener("input", renderPicker);
+$("#lang").addEventListener("change", renderPicker);
+$("#bsize").addEventListener("change", renderSide);
+$("#jump").addEventListener("change", (e) => {
+  if (e.target.value) document.getElementById(e.target.value)?.scrollIntoView({behavior: "smooth"});
+});
+
+(async function init() {
+  const [cRes, rRes] = await Promise.all([fetch("/cards_v1.json"), fetch("/api/ratings")]);
+  DATA = await cRes.json();
+  RATINGS = await rRes.json();
+  for (const [k, cd] of Object.entries(DATA.cards)) { cd.c = Number(k); cd.lg = cd.lg || "en"; }
+  for (const [a, b] of (DATA.high_h_pairs || [])) HIGH_H.add(Math.min(a,b) + ":" + Math.max(a,b));
+  $("#stat-badge").textContent = `${num(DATA.counts.v0_cards)} safe v0 cards · ${num(DATA.counts.unique_candidate_accounts)} live-checked accounts · 0 violations`;
+  const langs = {};
+  for (const cd of Object.values(DATA.cards)) langs[cd.lg] = (langs[cd.lg] || 0) + 1;
+  $("#lang").innerHTML = `<option value="">All languages</option>` + Object.entries(langs).sort((a,b)=>b[1]-a[1]).map(([l,n]) => `<option value="${esc(l)}">${esc(l)} (${n})</option>`).join("");
+  renderPicker();
+  renderBlindReview();
+  renderComparator();
+})();
+</script>
+</body>
+</html>

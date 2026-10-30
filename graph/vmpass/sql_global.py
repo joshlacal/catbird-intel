@@ -125,12 +125,20 @@ FROM (
 """
 
 
-def bucket(rules, stage: str, dm: str, o: str, actor_filter: str) -> str:
-    """Scan every staged file once; map DIDs to u32; drop purged and bulkDataset:false
+def bucket(rules, stage: str, dm: str, o: str, actor_filter: str, shard: str | None = None) -> str:
+    """Scan the staged files once; map DIDs to u32; drop purged and bulkDataset:false
     accounts; write 16 actor/author-keyed buckets to local SSD (never uploaded:
-    post text stays on the VM)."""
+    post text stays on the VM).
+
+    `shard` is one top-level staged directory (v2-*). The driver runs the shards as
+    parallel processes, each writing buckets/{ev,po}/p<part>/<shard>.parquet: a
+    partitioned file() INSERT has a single serial Parquet writer per query (measured
+    ~4x slower than an unpartitioned write), so one query over all 916 GB is
+    writer-bound; many concurrent shard queries are not."""
     from rules import epoch
-    ev, po = EV_GLOB.format(stage=stage), PO_GLOB.format(stage=stage)
+    base = f"{stage}/{shard}" if shard else stage
+    ev, po = EV_GLOB.format(stage=base), PO_GLOB.format(stage=base)
+    leaf = shard or "all"
     lo, hi = rules["tid_valid"]
     tlo, thi = epoch(lo) * 1_000_000, epoch(hi) * 1_000_000
     coll = map_expr("ifNull(collection, '')", COLL)
@@ -140,27 +148,35 @@ def bucket(rules, stage: str, dm: str, o: str, actor_filter: str) -> str:
     scoll = "transform(uri_coll(subj_s), ['app.bsky.feed.post', 'app.bsky.feed.generator', 'app.bsky.graph.list'], [1, 2, 3], 0)"
     tsec = (f"if(tus >= {tlo} AND tus < {thi}, toUInt32(intDiv(tus, 1000000)), "
             f"toUInt32(parseDateTimeBestEffortOrZero(ifNull(created_at, ''))))")
-    return PRELUDE + settings_sql(rules) + f"""
-CREATE TABLE dmj ENGINE = Join(ANY, LEFT, did) AS SELECT did, uid + 1 AS uid1, purge, part FROM file('{dm}', Parquet, '{S['didmap']}');
-{out(o + '/ev/p{_partition_id}.parquet')} PARTITION BY part
+    import glob as _glob
+    sql = PRELUDE + settings_sql(rules) + f"""
+-- one lookup per DID: v = (uid + 1) << 9 | purge << 8 | part (was three joinGets per DID)
+CREATE TABLE dmj ENGINE = Join(ANY, LEFT, did) AS
+SELECT did, bitOr(bitOr(bitShiftLeft(toUInt64(uid) + 1, 9), bitShiftLeft(toUInt64(purge), 8)), toUInt64(part)) AS v
+FROM file('{dm}', Parquet, '{S['didmap']}');
+CREATE OR REPLACE FUNCTION dm_v AS (x) -> if(x = '', toUInt64(0), joinGet('dmj', 'v', x));
+"""
+    if _glob.glob(ev, recursive=True):
+        sql += f"""
+{out(o + '/ev/p{_partition_id}/' + leaf + '.parquet')} PARTITION BY part
 SELECT toUInt32(u1 - 1) AS u, pt AS part, kc AS kind, cc AS coll, oc AS op, rk, t, tok, rv AS rev, sq AS seq, ing, sr AS src,
   toUInt32(if(s1 > 0, s1 - 1, {NONE})) AS subj, toUInt8(spart0) AS spart, sph, scoll, st, lh, gph, cr AS created,
   xx AS extra, trunc, nm AS name, ds AS descr, feed, aact, astat
 FROM (
   SELECT ifNull(did, '') AS d,
-    joinGet('dmj', 'uid1', d) AS u1, joinGet('dmj', 'purge', d) AS px, joinGet('dmj', 'part', d) AS pt,
+    dm_v(d) AS dv, bitShiftRight(dv, 9) AS u1, bitAnd(bitShiftRight(dv, 8), 1) AS px, bitAnd(dv, 255) AS pt,
     {kind} AS kc, {coll} AS cc, {op} AS oc, cityHash64(ifNull(rkey, '')) AS rk,
     tid_us(ifNull(rkey, '')) AS tus, toUInt8(tus >= {tlo} AND tus < {thi}) AS tok, {tsec} AS t,
-    tid_us(ifNull(rev, '')) AS rv, ifNull(seq, 0) AS sq, toUInt32(parseDateTimeBestEffortOrZero(ifNull(time, ''))) AS ing,
+    tid_us(ifNull(rev, '')) AS rv, ifNull(seq, 0) AS sq, iso_s(ifNull(time, '')) AS ing,
     {srcc} AS sr, ifNull(subject, '') AS subj_s,
     multiIf(cc IN ({C_FOLLOW}, {C_BLOCK}, {C_LISTITEM}), subj_s, startsWith(subj_s, 'at://'), uri_did(subj_s), '') AS sdid,
-    joinGet('dmj', 'uid1', sdid) AS s1, joinGet('dmj', 'purge', sdid) AS spx, joinGet('dmj', 'part', sdid) AS spart0,
+    dm_v(sdid) AS sv, bitShiftRight(sv, 9) AS s1, bitAnd(bitShiftRight(sv, 8), 1) AS spx, bitAnd(sv, 255) AS spart0,
     if(cc IN ({C_LIKE}, {C_REPOST}, {C_LISTBLOCK}), cityHash64(subj_s), 0) AS sph, {scoll} AS scoll,
     if(cc IN ({C_LIKE}, {C_REPOST}), toUInt32(intDiv(tid_us(uri_rkey(subj_s)), 1000000)), 0) AS st,
     multiIf(cc = {C_LISTITEM}, cityHash64(ifNull(list_uri, '')), cc = {C_LIST}, cityHash64(concat('at://', d, '/app.bsky.graph.list/', ifNull(rkey, ''))),
             cc = {C_LISTBLOCK}, cityHash64(subj_s), 0) AS lh,
     if(cc IN ({C_THREADGATE}, {C_POSTGATE}), cityHash64(concat('at://', d, '/app.bsky.feed.post/', ifNull(rkey, ''))), 0) AS gph,
-    toUInt32(parseDateTimeBestEffortOrZero(ifNull(created_at, ''))) AS cr,
+    if(cc = {C_FOLLOW}, toUInt32(parseDateTimeBestEffortOrZero(ifNull(created_at, ''))), 0) AS cr,
     if(cc IN ({C_LIST}, {C_THREADGATE}, {C_POSTGATE}, 13), ifNull(extra, ''), '') AS xx,
     toUInt8(length(ifNull(extra, '')) >= 4000) AS trunc,
     if(cc = 10, ifNull(name, ''), '') AS nm, if(cc = 10, ifNull(description, ''), '') AS ds,
@@ -169,26 +185,29 @@ FROM (
   FROM file('{ev}', Parquet)
   WHERE {actor_filter}
 ) WHERE u1 > 0 AND px = 0 AND (s1 = 0 OR spx = 0) AND NOT (sdid != '' AND s1 = 0 AND cc IN ({C_FOLLOW}, {C_BLOCK}, {C_LISTITEM}));
-{out(o + '/po/p{_partition_id}.parquet')} PARTITION BY part
+"""
+    if _glob.glob(po, recursive=True):
+        sql += f"""
+{out(o + '/po/p{_partition_id}/' + leaf + '.parquet')} PARTITION BY part
 SELECT toUInt32(u1 - 1) AS u, pt AS part, rk, rks AS rkey, t, tok, rv AS rev, sq AS seq, oc AS op, ing, sr AS src, ph, cr AS created,
   par_ph, toUInt32(if(pa1 > 0 AND papx = 0, pa1 - 1, {NONE})) AS par_a, par_t, root_ph,
   toUInt32(if(ra1 > 0 AND rapx = 0, ra1 - 1, {NONE})) AS root_a,
   q_ph, toUInt32(if(qa1 > 0 AND qapx = 0, qa1 - 1, {NONE})) AS q_a, q_t, img, la AS langs, lb AS labels, tx AS text,
   al AS alts, em AS embed
 FROM (
-  SELECT ifNull(did, '') AS d, joinGet('dmj', 'uid1', d) AS u1, joinGet('dmj', 'purge', d) AS px, joinGet('dmj', 'part', d) AS pt,
+  SELECT ifNull(did, '') AS d, dm_v(d) AS dv, bitShiftRight(dv, 9) AS u1, bitAnd(bitShiftRight(dv, 8), 1) AS px, bitAnd(dv, 255) AS pt,
     ifNull(rkey, '') AS rks, cityHash64(rks) AS rk,
     tid_us(rks) AS tus, toUInt8(tus >= {tlo} AND tus < {thi}) AS tok, {tsec} AS t,
     tid_us(ifNull(rev, '')) AS rv, ifNull(seq, 0) AS sq, {op} AS oc,
-    toUInt32(parseDateTimeBestEffortOrZero(ifNull(time, ''))) AS ing, {srcc} AS sr,
+    iso_s(ifNull(time, '')) AS ing, {srcc} AS sr,
     cityHash64(concat('at://', d, '/app.bsky.feed.post/', rks)) AS ph,
     toUInt32(parseDateTimeBestEffortOrZero(ifNull(created_at, ''))) AS cr,
     ifNull(reply_parent, '') AS rp_s, ifNull(reply_root, '') AS rr_s, ifNull(quote_uri, '') AS q_s,
-    if(rp_s != '', cityHash64(rp_s), 0) AS par_ph, joinGet('dmj', 'uid1', uri_did(rp_s)) AS pa1, joinGet('dmj', 'purge', uri_did(rp_s)) AS papx,
+    if(rp_s != '', cityHash64(rp_s), 0) AS par_ph, dm_v(uri_did(rp_s)) AS pav, bitShiftRight(pav, 9) AS pa1, bitAnd(bitShiftRight(pav, 8), 1) AS papx,
     toUInt32(intDiv(tid_us(uri_rkey(rp_s)), 1000000)) AS par_t,
-    if(rr_s != '', cityHash64(rr_s), 0) AS root_ph, joinGet('dmj', 'uid1', uri_did(rr_s)) AS ra1, joinGet('dmj', 'purge', uri_did(rr_s)) AS rapx,
+    if(rr_s != '', cityHash64(rr_s), 0) AS root_ph, dm_v(uri_did(rr_s)) AS rav, bitShiftRight(rav, 9) AS ra1, bitAnd(bitShiftRight(rav, 8), 1) AS rapx,
     if(uri_coll(q_s) = 'app.bsky.feed.post', cityHash64(q_s), 0) AS q_ph,
-    if(q_ph != 0, joinGet('dmj', 'uid1', uri_did(q_s)), 0) AS qa1, joinGet('dmj', 'purge', uri_did(q_s)) AS qapx,
+    dm_v(if(q_ph != 0, uri_did(q_s), '')) AS qav, bitShiftRight(qav, 9) AS qa1, bitAnd(bitShiftRight(qav, 8), 1) AS qapx,
     toUInt32(intDiv(tid_us(uri_rkey(q_s)), 1000000)) AS q_t,
     toUInt8(least(255, ifNull(image_count, 0))) AS img, ifNull(langs, []) AS la, ifNull(self_labels, []) AS lb,
     ifNull(text, '') AS tx, ifNull(image_alts, []) AS al, ifNull(embed_type, '') AS em
@@ -196,6 +215,7 @@ FROM (
   WHERE {actor_filter}
 ) WHERE u1 > 0 AND px = 0;
 """
+    return sql
 
 
 def ustats_merge(rules, p1: str, o: str) -> str:

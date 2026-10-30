@@ -14,7 +14,7 @@ CR/URf/URn/RH, Qf/Qn/QH, LST, follows), and computes, per cutoff:
 from __future__ import annotations
 
 from rules import A_TYPES, day_start
-from sqlc import NONE, PRELUDE, S, TY, out, settings_sql, src
+from sqlc import NONE, PRELUDE, S, TY, out, settings_sql, split_out, src
 
 TYPES2 = list(A_TYPES) + ["ACK", "RH", "QH"]
 LIKES = ("LO", "LR", "LU")
@@ -309,6 +309,9 @@ CREATE TABLE acc_{tag} (p UInt32, k UInt8, {', '.join(f'`{f}__a05` Float32, `{f}
   replies_all UInt64, courtesy_likes UInt64, likes_all UInt64, maint_pairs UInt64) ENGINE = MergeTree ORDER BY p;
 """
         for k in range(K):
+            maint_sel = (f"SELECT u, p, toUInt8({cidx}) AS cidx, toUInt32(nlk) AS n_up, toUInt32(n_pu) AS n_pu, maint AS flag, "
+                         f"toUInt8(cityHash64(least(u, p), greatest(u, p)) % {N}) AS kpart FROM l2_{tag}_{k} WHERE mutual = 1")
+            maint_sw = split_out(o + "/maintd/k{k}_" + f"{tag}_{k}.parquet", "kpart", N, maint_sel, f"x_maint_{tag}_{k}")
             sql += f"""
 CREATE TABLE l2_{tag}_{k} ENGINE = MergeTree ORDER BY (u, p) AS
 SELECT *, {der}
@@ -324,9 +327,7 @@ SELECT u, p, toUInt8({cidx}) AS cidx, toUInt8(qa_n >= {r['teacher']['min_engagem
 FROM l2_{tag}_{k}
 WHERE (withqn = 1 OR noqn = 1) AND light = 1 AND maint = 0 AND b1own = 0 AND u != p AND joinGet('dmu', 'is_prod', p) = 1
   AND joinGet('dmu', 'synth_no', u) = 0 AND joinGet('dmu', 'hide', p) = 0 AND joinGet('dmu', 'synth_no', p) = 0;
-{out(o + f'/maintd/k{{_partition_id}}_{tag}_{k}.parquet')} PARTITION BY kpart
-SELECT u, p, toUInt8({cidx}) AS cidx, toUInt32(nlk) AS n_up, toUInt32(n_pu) AS n_pu, maint AS flag,
-  toUInt8(cityHash64(least(u, p), greatest(u, p)) % {N}) AS kpart FROM l2_{tag}_{k} WHERE mutual = 1;
+{maint_sw}
 INSERT INTO o1 SELECT 'pairs_{tag}', toString({k}), '', '', count() FROM l2_{tag}_{k};
 INSERT INTO o1 SELECT 'aud_pairs_{tag}', toString({k}), '', '', countIf(aud = 1) FROM l2_{tag}_{k};
 DROP TABLE l2_{tag}_{k};
@@ -344,7 +345,9 @@ SELECT p, uniqExact(x) AS targets, countIf(hb > 0) / greatest(1, count()) AS sha
   WHERE x != u AND NOT arrayExists(iv -> iv.1 <= t AND t < iv.2, joinGet('fown', 'iv', u, x))
 ) GROUP BY p;
 CREATE TABLE lang_{tag} ENGINE = Join(ANY, LEFT, p) AS
-SELECT u AS p, topK(3)(lang) AS langs FROM (SELECT u, arrayJoin(langs) AS lang FROM pi WHERE t > {C - 31536000} AND t <= {C}) GROUP BY u;""")
+SELECT p, arrayMap(x -> x.2, arraySlice(arrayReverseSort(groupArray((n, lang))), 1, 3)) AS langs FROM (
+  SELECT u AS p, lang, count() AS n FROM (SELECT u, arrayJoin(langs) AS lang FROM pi
+  WHERE t > {C - 31536000} AND t <= {C} AND joinGet('dmu', 'is_prod', u) = 1) GROUP BY p, lang) GROUP BY p;""")
     sql += "\n".join(comb)
     for cidx, tag in ((names.index("T"), "eval"), (names.index("T_now"), "prod")):
         sumcols = ", ".join(f"toFloat32(sum(`{f}__a05`)) AS `{f}__a05`, toFloat32(sum(`{f}__a10`)) AS `{f}__a10`" for f in fn + ["S0"])
@@ -435,23 +438,27 @@ SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/',
   FROM pi WHERE is_reply = 0 AND t > {tn - recent} AND t <= {tn} AND joinGet('dmu', 'is_prod', u) = 1
     AND joinGet('dmu', 'hide', u) = 0 AND joinGet('dmu', 'synth_no', u) = 0
 ) WHERE rn <= 3 AND nl > 0;
-CREATE TABLE ptxt ENGINE = Join(ANY, LEFT, ph) AS
-SELECT ph, argMax(text, (rev, seq)) AS text, argMax(alts, (rev, seq)) AS alts, argMax(labels, (rev, seq)) AS labels
-FROM {src(f'{buckets}/po/p{j}.parquet', 'po')} WHERE op != 3 GROUP BY ph;
-{out(final['o8'] + f'/j{j:02d}.parquet')}
-SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/', rkey) AS uri,
-  formatDateTime(toDateTime(t), '%Y-%m-%dT%H:%i:%SZ') AS created,
-  concat(joinGet('ptxt', 'text', ph), arrayStringConcat(arrayMap(x -> concat(' [image: ', x, ']'), arrayFilter(x -> x != '', joinGet('ptxt', 'alts', ph))), '')) AS text,
-  langs, img AS image_count, joinGet('ptxt', 'labels', ph) AS self_labels
-FROM (
+-- O8: pick the slab posts first, then fetch only their text. (Fetching every post's text of the partition
+-- into a Join table first was S8's phase-2 peak: ~145 GB and 220 s, independent of the inbound sample.)
+CREATE TABLE o8s ENGINE = MergeTree ORDER BY ph AS
+SELECT u, ph, rkey, t, langs, img FROM (
   SELECT *, row_number() OVER (PARTITION BY u ORDER BY t DESC) AS rall FROM (
     SELECT *, row_number() OVER (PARTITION BY u, toYYYYMM(toDateTime(t)) ORDER BY joinGet('eng_light', 'nl', ph) DESC, cityHash64(ph)) AS rm
     FROM pi WHERE is_reply = 0 AND t > {t12} AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'hide', u) = 0 AND joinGet('dmu', 'synth_no', u) = 0
   ) WHERE rm <= {o8['per_month']}
 ) WHERE rall <= {o8['max_posts']};
+CREATE TABLE ptxt ENGINE = Join(ANY, LEFT, ph) AS
+SELECT ph, argMax(text, (rev, seq)) AS text, argMax(alts, (rev, seq)) AS alts, argMax(labels, (rev, seq)) AS labels
+FROM {src(f'{buckets}/po/p{j}/*.parquet', 'po')} WHERE op != 3 AND ph IN (SELECT ph FROM o8s) GROUP BY ph;
+{out(final['o8'] + f'/j{j:02d}.parquet')}
+SELECT u AS p, concat('at://', joinGet('dmd', 'did', u), '/app.bsky.feed.post/', rkey) AS uri,
+  formatDateTime(toDateTime(t), '%Y-%m-%dT%H:%i:%SZ') AS created,
+  concat(joinGet('ptxt', 'text', ph), arrayStringConcat(arrayMap(x -> concat(' [image: ', x, ']'), arrayFilter(x -> x != '', joinGet('ptxt', 'alts', ph))), '')) AS text,
+  langs, img AS image_count, joinGet('ptxt', 'labels', ph) AS self_labels
+FROM o8s ORDER BY p, t DESC;
 {out(final['o9'] + f'/j{j:02d}.parquet')}
 SELECT u AS p, argMax(name, (rev, seq)) AS display_name, argMax(descr, (rev, seq)) AS description
-FROM {src(f'{buckets}/ev/p{j}.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'synth_no', u) = 0
+FROM {src(f'{buckets}/ev/p{j}/*.parquet', 'ev')} WHERE coll = 10 AND kind = 1 AND op != 3 AND joinGet('dmu', 'is_prod', u) = 1 AND joinGet('dmu', 'synth_no', u) = 0
 GROUP BY u;
 {out(o + '/o12c.parquet')}
 SELECT stratum, kind, c_ph, c_a, x_ph, x_a, hsh FROM (

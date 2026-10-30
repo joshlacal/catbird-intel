@@ -27,8 +27,8 @@ for a in "$@"; do [[ "$a" == "--execute" ]] && EXECUTE=1; done
 PROJECT="${PROJECT:-catbird-436600}"
 REGION="us-west1"
 ZONES="${ZONES:-us-west1-b us-west1-a us-west1-c}"
-MACHINE="n2-highmem-64"
-N_SSD=8
+MACHINE="${MACHINE:-n2-highmem-64}"
+N_SSD="${N_SSD:-8}"
 PLAN30="${PLAN30:-gs://catbird-436600-plan-30d}"
 PLAN60="${PLAN60:-gs://catbird-436600-plan-60d}"
 EXTRACT="gs://catbird-436600-jetstream-buffer-20261020/derived/all-extract-20261024"
@@ -81,7 +81,7 @@ create_vm() {  # $1 step label, $2 max-run duration
  --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-balanced \
  --scopes=storage-rw,compute-rw --labels='$LABEL_KEY=$LABEL_VAL,step=$step,run=$(echo "$RUN_ID" | tr 'A-Z_.' 'a-z--')' \
  --metadata-from-file=startup-script='$HERE/vm_bootstrap.sh' \
- --metadata='vmpass-run-id=$RUN_ID,vmpass-mode=${step%%-*},vmpass-plan30=$PLAN30,vmpass-plan60=$PLAN60,vmpass-extract=$EXTRACT,vmpass-ch-version=$CH_VERSION,vmpass-rules-sha256=$rules_sha'"
+ --metadata='vmpass-run-id=$RUN_ID,vmpass-mode=${step%%-*},vmpass-plan30=$PLAN30,vmpass-plan60=$PLAN60,vmpass-extract=$EXTRACT,vmpass-ch-version=$CH_VERSION,vmpass-rules-sha256=$rules_sha,vmpass-bucket-shards=${BUCKET_SHARDS:-0},vmpass-python=${VM_PYTHON:-3.14}'"
     printf '+ %s\n' "$cmd"
     if [[ $EXECUTE -eq 1 ]]; then
       if eval "$cmd"; then
@@ -110,9 +110,18 @@ case "$MODE" in
   s9)
     need_run_id
     [[ -n "$O3B_SCALES" ]] || echo "# WARNING: S9 should get O3B_SCALES=<S8 run>/S8/o3b_scales.json (S1 R4); its sha256 goes in R-S9" >&2
-    echo "# S9 main pass: cap \$32 = (9 h + one 2.75 h restart) x \$2.715/h; a fresh VM re-stages (10-30 min)"
+    echo "# S9 main pass on $MACHINE: max-run 9 h + one 2.75 h resumed restart; cap = 11.75 h x the machine's Spot rate"
+    echo "#   (c2d-highmem-56 + 8 local SSD, us-west1 Spot, Billing Catalog 2026-10-28: \$1.785/h -> cap \$21); a fresh VM re-stages (~10 min)"
     stage_code
     create_vm s9 9h
+    ;;
+  s8-resume)
+    need_run_id
+    echo "# S8 resumed on a fresh VM, same RUN_ID: inputs, inventory, read_rate, hash check and the DID map are skipped (ledger);"
+    echo "# staging and bucketing rerun. The code tarball is re-uploaded so the VM runs this checkout. BUCKET_SHARDS=K stages and"
+    echo "# buckets only K evenly spaced directories (projection scaled by their row fraction). Max-run \${S8_MAXRUN:-90m}."
+    stage_code
+    create_vm s8-resume "${S8_MAXRUN:-90m}"
     ;;
   resume)
     need_run_id

@@ -64,7 +64,14 @@ else
 fi
 clickhouse local --version
 gcloud storage cp --quiet "$PLAN30/inputs/$RUN_ID/code.tar.gz" /mnt/ssd/code.tar.gz && mkdir -p /mnt/ssd/code && tar -xzf /mnt/ssd/code.tar.gz -C /mnt/ssd/code
-python3 -m venv /mnt/ssd/venv && /mnt/ssd/venv/bin/pip install -q pyarrow
+# Pinned interpreter: Debian 12's python3 is 3.11; the pass is tested on 3.14 (graph/.venv) and
+# kept 3.11-safe. uv fetches a standalone CPython so the VM matches the tested version.
+UV_VERSION="${UV_VERSION:-0.10.11}"; PY_VERSION="$(attr vmpass-python || true)"; PY_VERSION="${PY_VERSION:-3.14}"
+curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null \
+  || { log "uv install failed"; exit 6; }
+uv venv --python "$PY_VERSION" /mnt/ssd/venv -q && VIRTUAL_ENV=/mnt/ssd/venv uv pip install -q pyarrow==26.0.0 \
+  || { log "venv build failed"; exit 6; }
+log "python $(/mnt/ssd/venv/bin/python -c 'import sys, pyarrow; print(sys.version.split()[0], "pyarrow", pyarrow.__version__)')"
 curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
 # shellcheck source=/dev/null
 source "$HOME/.cargo/env"
@@ -80,13 +87,28 @@ EOF
 "$SIMGRAPH" --dir /mnt/ssd/tiny --min-support 1 > /mnt/ssd/simgraph_tiny.json || { log "simgraph tiny run failed"; finish 3; exit 0; }
 log "simgraph tiny run: $(cat /mnt/ssd/simgraph_tiny.json)"
 BUILD_S=$(( $(date +%s) - B0 ))
+# preflight: the whole pass on the synthetic fixture world with this VM's python, ClickHouse and
+# simgraph (~1-2 min), so a code or tooling error fails before 10 min of staging
+/mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py selfcheck --work /mnt/ssd/selfcheck --mode "$MODE" --simgraph "$SIMGRAPH" \
+  || { log "selfcheck failed: not staging"; exit 7; }
+rm -rf /mnt/ssd/selfcheck
 upload_log
 
 # 3. stage the extract once (one GET per object) and the manifest
 S0=$(date +%s)
 mkdir -p /mnt/ssd/stage
 gcloud storage cp --quiet "$EXTRACT/manifest.tsv" /mnt/ssd/stage/manifest.tsv
-gcloud storage cp --recursive --quiet "$EXTRACT/v2-*" /mnt/ssd/stage/ || { log "staging failed"; finish 4; exit 0; }
+BUCKET_SHARDS="$(attr vmpass-bucket-shards || true)"; BUCKET_SHARDS="${BUCKET_SHARDS:-0}"
+if [[ "$BUCKET_SHARDS" -gt 0 ]]; then
+  # S8 on a bucketing subset: stage only the K evenly spaced directories passrun will bucket
+  mapfile -t SHARD_DIRS < <(/mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py shards --manifest /mnt/ssd/stage/manifest.tsv --k "$BUCKET_SHARDS")
+  log "staging a $BUCKET_SHARDS-directory subset: ${SHARD_DIRS[*]}"
+  for d in "${SHARD_DIRS[@]}"; do
+    gcloud storage cp --recursive --quiet "$EXTRACT/$d" /mnt/ssd/stage/ || { log "staging $d failed"; finish 4; exit 0; }
+  done
+else
+  gcloud storage cp --recursive --quiet "$EXTRACT/v2-*" /mnt/ssd/stage/ || { log "staging failed"; finish 4; exit 0; }
+fi
 STAGED=$(find /mnt/ssd/stage -name '*.parquet' | wc -l)
 STAGE_S=$(( $(date +%s) - S0 ))
 log "staged $STAGED objects in ${STAGE_S}s"
@@ -104,8 +126,11 @@ if gcloud storage cp --quiet "$PLAN30/inputs/$RUN_ID/o3b_scales.json" /mnt/ssd/o
 elif [[ "$MODE" == "s9" ]]; then
   log "S9 without S8's o3b_scales.json: O3b uses the rules' default scales (S1 R4 expects S8's)"
 fi
-( while sleep 600; do upload_log; done ) &
+( while sleep 180; do upload_log; done ) &   # passrun also streams work/progress.log to _logs/progress.log
+SHARD_ARG=()
+[[ "$BUCKET_SHARDS" -gt 0 ]] && SHARD_ARG=(--bucket-shards "$BUCKET_SHARDS")
+[[ "$MODE" == "s9" ]] && SHARD_ARG+=(--free-stage-after-bucket)
 /mnt/ssd/venv/bin/python /mnt/ssd/code/vmpass/passrun.py run --mode "$MODE" --stage /mnt/ssd/stage --work /mnt/ssd/work \
   --store30 "$PLAN30" --store60 "$PLAN60" --run-id "$RUN_ID" --inputs "$PLAN30/inputs/$RUN_ID" \
-  --manifest /mnt/ssd/stage/manifest.tsv --simgraph "$SIMGRAPH" --stage-seconds "$STAGE_S" "${RULES_ARG[@]}"
+  --manifest /mnt/ssd/stage/manifest.tsv --simgraph "$SIMGRAPH" --stage-seconds "$STAGE_S" "${RULES_ARG[@]}" "${SHARD_ARG[@]}"
 finish $?

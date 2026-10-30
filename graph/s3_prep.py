@@ -121,10 +121,18 @@ def extract_knn(sim: pathlib.Path, producers: pathlib.Path, list_files: list[pat
     pid_of = {d: i for i, d in enumerate(dids)}
     members = sorted({pid_of[m] for f in list_files for _u, _o, _n, ms in read_lists(f) for m in ms if m in pid_of})
     raw = np.memmap(sim, dtype=SIM_DTYPE, mode="r")
-    p_col = raw["p"]
+    # raw["p"] is a strided field view; np.searchsorted copies a non-contiguous haystack on
+    # every call (~3 GB per member on a full sim.bin), so take one contiguous copy and
+    # look all members up at once.
+    p_col = np.ascontiguousarray(raw["p"])
+    if len(p_col) > 1 and (p_col[1:] < p_col[:-1]).any():
+        raise ValueError("sim.bin is not grouped by p in ascending order")
+    member_arr = np.array(members, dtype=p_col.dtype)
+    los = np.searchsorted(p_col, member_arr, "left")
+    his = np.searchsorted(p_col, member_arr, "right")
+    del p_col
     cols: dict[str, list] = {"pid": [], "did": [], "rank": [], "nbr_pid": [], "nbr_did": [], "cos": []}
-    for pid in members:
-        lo, hi = int(np.searchsorted(p_col, pid, "left")), int(np.searchsorted(p_col, pid, "right"))
+    for pid, lo, hi in zip(members, los.tolist(), his.tolist()):
         rows = np.array(raw[lo:hi])
         if len(rows) and (rows["p"] != pid).any():
             raise ValueError("sim.bin is not grouped by p in ascending order")

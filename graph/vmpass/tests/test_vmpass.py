@@ -45,8 +45,8 @@ def ch(sql: str) -> list[list[str]]:
 
 
 def run_pass(mode: str, root: pathlib.Path, work: str, run_id: str, rules: str | None = None, env: dict | None = None,
-             extra: list[str] | None = None) -> subprocess.CompletedProcess:
-    cmd = [PY, str(VMPASS / "passrun.py"), "run", "--mode", mode, "--stage", str(root / "stage"), "--work", str(root / work),
+             extra: list[str] | None = None, stage: str = "stage") -> subprocess.CompletedProcess:
+    cmd = [PY, str(VMPASS / "passrun.py"), "run", "--mode", mode, "--stage", str(root / stage), "--work", str(root / work),
            "--store30", str(root / "s30"), "--store60", str(root / "s60"), "--run-id", run_id, "--inputs", str(root / "side"),
            "--manifest", str(root / "stage" / "manifest.tsv")]
     if mode == "s9":
@@ -56,7 +56,8 @@ def run_pass(mode: str, root: pathlib.Path, work: str, run_id: str, rules: str |
     if ENV.get("simgraph"):
         cmd += ["--simgraph", ENV["simgraph"]]
     cmd += extra or []
-    return subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **(env or {})})
+    fast_logs = {"VMPASS_HEARTBEAT_S": "0.5", "VMPASS_LOG_UPLOAD_S": "0"}
+    return subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **fast_logs, **(env or {})})
 
 
 def setUpModule() -> None:  # noqa: N802
@@ -71,7 +72,9 @@ def setUpModule() -> None:  # noqa: N802
                            env={**os.environ, "CARGO_TARGET_DIR": str(tgt)}, capture_output=True, text=True)
         if b.returncode == 0:
             ENV["simgraph"] = str(tgt / "release" / "simgraph")
-    r = run_pass("s9", root, "work", "base")
+    # the base run splits every phase-1 partition into actor sub-chunks (~1k rows each here); the
+    # "kill" run below does not, and Resume.test_resumed_outputs_equal_uninterrupted compares them
+    r = run_pass("s9", root, "work", "base", env={"VMPASS_P1_ROWS_PER_CHUNK": "400"})
     assert r.returncode == 0, r.stderr[-4000:]
     # the same world under the S1-registered rules (pre-registration §3 feature list, §6 list split)
     r = run_pass("s9", root, "work1", "s1", rules=str(rules_mod.S1))
@@ -82,12 +85,20 @@ def setUpModule() -> None:  # noqa: N802
     (root / "rules_s8.json").write_text(json.dumps(rules))
     r = run_pass("s8", root, "work8", "s8", rules=str(root / "rules_s8.json"))
     assert r.returncode == 0, r.stderr[-4000:]
+    # S8 on a bucketing subset (2 of the 3 staged directories), as a cheaper rerun would do
+    r = run_pass("s8", root, "work8s", "s8sub", rules=str(root / "rules_s8.json"), extra=["--bucket-shards", "2"])
+    assert r.returncode == 0, r.stderr[-4000:]
+    # S8 killed right after bucketing (a max-run kill): the partial projection must survive
+    r = run_pass("s8", root, "work8k", "s8kill", rules=str(root / "rules_s8.json"), env={"VMPASS_FAIL_AFTER": "bucket"})
+    assert r.returncode != 0
     # killed after p1_05, then resumed on a fresh work dir (a new Spot VM)
-    r = run_pass("s9", root, "workk", "kill", env={"VMPASS_FAIL_AFTER": "p1_05"})
+    shutil.copytree(root / "stage", root / "stagek")  # the resumed run frees its staged copy after bucketing
+    r = run_pass("s9", root, "workk", "kill", env={"VMPASS_FAIL_AFTER": "p1_05"}, stage="stagek")
     ENV["kill_rc"] = r.returncode
     ENV["kill_err"] = r.stderr
     shutil.rmtree(root / "workk")
-    r = run_pass("s9", root, "workk", "kill")
+    shutil.copytree(root / "stage", root / "stagek", dirs_exist_ok=True)  # a fresh VM re-stages
+    r = run_pass("s9", root, "workk", "kill", stage="stagek", extra=["--free-stage-after-bucket"])
     assert r.returncode == 0, r.stderr[-4000:]
     ENV["resume_out"] = r.stdout
 
@@ -135,8 +146,10 @@ class HashParity(unittest.TestCase):
 
     def test_buckets_hold_only_their_partition(self):
         for kind in ("ev", "po"):
-            for f in glob.glob(str(ENV["root"] / "work" / "buckets" / kind / "p*.parquet")):
-                k = int(pathlib.Path(f).stem[1:])
+            files = glob.glob(str(ENV["root"] / "work" / "buckets" / kind / "p*" / "*.parquet"))
+            self.assertGreater(len({pathlib.Path(f).name for f in files}), 1)  # one file per staged shard
+            for f in files:
+                k = int(pathlib.Path(f).parent.name[1:])
                 bad = ch(f"SELECT count() FROM file('{f}', Parquet) WHERE part != {k} OR "
                          f"u NOT IN (SELECT uid FROM file('{dm()}') WHERE part = {k})")[0][0]
                 self.assertEqual(int(bad), 0, f)
@@ -306,7 +319,7 @@ class Exclusions(unittest.TestCase):
         ids = self._all_uids()
         for d in (w.purged, w.bulk_no):
             self.assertNotIn(uid(d), ids)
-            n = ch(f"SELECT count() FROM file('{ENV['root']}/work/buckets/ev/*.parquet') WHERE u = {uid(d)} OR subj = {uid(d)}")
+            n = ch(f"SELECT count() FROM file('{ENV['root']}/work/buckets/ev/*/*.parquet') WHERE u = {uid(d)} OR subj = {uid(d)}")
             self.assertEqual(int(n[0][0]), 0)
         for f in (out30() / "O12").glob("*.parquet"):
             text = " ".join(" ".join(r) for r in ch(f"SELECT * FROM file('{f}')"))
@@ -479,7 +492,7 @@ class S8(unittest.TestCase):
 
     def test_sample_bucket_holds_sampled_actors_and_partition_zero(self):
         d = str(ENV["root"] / "work8" / "g" / "didmap.parquet")
-        bad = ch(f"SELECT count() FROM file('{ENV['root']}/work8/buckets/ev/*.parquet', Parquet) WHERE u NOT IN "
+        bad = ch(f"SELECT count() FROM file('{ENV['root']}/work8/buckets/ev/*/*.parquet', Parquet) WHERE u NOT IN "
                  f"(SELECT uid FROM file('{d}') WHERE h % 4 = 0 OR part = 0)")
         self.assertEqual(int(bad[0][0]), 0)
 
@@ -629,6 +642,180 @@ class S1Rules(unittest.TestCase):
         sc = json.loads((out30("s8") / "S8" / "o3b_scales.json").read_text())
         self.assertEqual(sorted(sc), sorted(f["name"] for f in rules_mod.load().features))
         self.assertTrue(all(v > 0 for v in sc.values()))
+
+
+class Progress(unittest.TestCase):
+    """Overrun diagnostics: a streamed progress log and an incremental S8 projection."""
+
+    def test_progress_log_streams_every_step(self):
+        log = (ENV["root"] / "s30" / "intermediates" / "base" / "_logs" / "progress.log").read_text()
+        for step in ("inventory", "didmap", "bucket", "p1_00", "p2_15", "finalize"):
+            self.assertIn(f"step {step}: start", log)
+            self.assertIn(f"step {step}: done", log)
+        self.assertRegex(log, r"bucket shard v2-test-\d done")
+        self.assertIn("ch: ", log)  # heartbeat lines carry ClickHouse's own progress
+
+    def test_partial_projection_survives_a_kill_after_bucketing(self):
+        p = json.loads((out30("s8kill") / "S8" / "projection.json").read_text())
+        self.assertTrue(p["partial"])
+        self.assertEqual(p["after_step"], "bucket")
+        k = p["known"]
+        for s in ("inventory", "read_rate", "didmap", "bucket"):
+            self.assertIn(s, k["steps"])
+        self.assertEqual(k["bucket_progress"]["shards_done"], 3)
+        self.assertGreater(k["s9_bucket_estimate"]["s9_bucket_hours"], 0)
+        self.assertIn("PARTIAL", (out30("s8kill") / "S8" / "projection.txt").read_text())
+
+    def test_full_projection_after_complete_s8(self):
+        p = json.loads((out30("s8") / "S8" / "projection.json").read_text())
+        self.assertFalse(p["partial"])
+        self.assertIn("projected", p)
+
+    def test_phase1_actor_subchunks(self):
+        rec = json.loads((ENV["root"] / "s30" / "intermediates" / "base" / "_ledger" / "p1_00.json").read_text())
+        self.assertGreater(rec["stats"]["chunks"], 1)
+        self.assertEqual(rec["stats"]["chunks"], -(-rec["stats"]["bucket_rows"] // 400))
+        log = (ENV["root"] / "s30" / "intermediates" / "base" / "_logs" / "progress.log").read_text()
+        self.assertIn("actor sub-chunk(s)", log)
+        self.assertIn("slowest:", log)
+
+    def test_failed_step_uploads_its_stderr(self):
+        root = ENV["root"]
+        import passrun
+        import types
+        a = types.SimpleNamespace(mode="s9", rules=str(rules_mod.DRAFT), rules_sha256="", allow_draft_rules=True, test_mode=False,
+                                  stage=str(root / "stage"), work=str(root / "wfail"), store30=str(root / "sf30"), store60=str(root / "sf60"),
+                                  run_id="fail", bucket_shards=0, manifest="", stage_seconds=0)
+        ps = passrun.Pass(a)
+        with self.assertRaises(Exception):
+            ps.step("boom", lambda: ps.sql("boom", "SELECT 1; SELECT groupArray(number) FROM numbers(50000000) SETTINGS max_memory_usage = 100000000;"))
+        log = (root / "sf30" / "intermediates" / "fail" / "_logs" / "progress.log").read_text()
+        self.assertIn("step boom: FAILED", log)
+        self.assertIn("MEMORY_LIMIT_EXCEEDED", log)
+        self.assertIn("in statement", log)
+        up = (root / "sf30" / "intermediates" / "fail" / "_logs" / "boom.stderr.txt").read_text()
+        self.assertIn("Code: 241", up)
+
+    def test_s9_phase1_estimate_in_partial_projection(self):
+        p = json.loads((out30("s8kill") / "S8" / "projection.json").read_text())
+        self.assertNotIn("s9_phase1_estimate", p["known"])  # killed before phase 1
+        full = json.loads((out30("s8") / "S8" / "projection.json").read_text())
+        e = full["known"]["s9_phase1_estimate"]
+        self.assertGreater(e["rows_per_s"], 0)
+        self.assertGreater(e["s9_phase1_hours"], 0)
+
+    def test_phase2_subchunks_and_model(self):
+        rec = json.loads((ENV["root"] / "s30" / "intermediates" / "base" / "_ledger" / "p2_00.json").read_text())
+        self.assertGreaterEqual(rec["stats"]["subchunks"], 4)
+        self.assertGreater(rec["stats"]["evidence_rows"], 0)
+        self.assertTrue(any(x.get("peak_rss_bytes") for x in rec["stats"]["statements"]))
+        m = json.loads((out30("s8") / "S8" / "projection.json").read_text())["projected"]["phase2_model"]
+        for k in ("pairs_rate1", "own_pairs", "inbound_pairs_rate1", "subchunks_s9", "seconds_rate1", "peak_bytes_rate1"):
+            self.assertIn(k, m)
+        self.assertGreaterEqual(m["pairs_rate1"], m["pairs_s200"])
+        self.assertGreater(m["seconds_rate1"], 0)
+
+    def test_free_stage_after_bucket(self):
+        self.assertFalse(list((ENV["root"] / "stagek").glob("*/**/*.parquet")))
+        self.assertTrue(list((ENV["root"] / "stage").glob("*/**/*.parquet")))
+        log = (ENV["root"] / "s30" / "intermediates" / "kill" / "_logs" / "progress.log").read_text()
+        self.assertIn("freed the staged extract after bucketing", log)
+
+    def test_split_writes_one_file_per_partition(self):
+        for name in ("eng", "rep", "fol", "blk", "cur", "cand"):
+            files = sorted(pathlib.Path(f).name for f in glob.glob(f"{ENV['root']}/work/p1/i00/{name}/j*.parquet"))
+            self.assertEqual(len(files), 16, name)
+            for f in glob.glob(f"{ENV['root']}/work/p1/i00/{name}/j*.parquet"):
+                k = int(pathlib.Path(f).stem[1:])
+                col = {"eng": "apart", "rep": "tpart"}.get(name, "ppart")
+                self.assertEqual(int(ch(f"SELECT count() FROM file('{f}', Parquet) WHERE {col} != {k}")[0][0]), 0)
+
+
+class BucketSubset(unittest.TestCase):
+    def test_select_shards(self):
+        import passrun
+        dirs = [f"v2-{i:02d}" for i in range(92)]
+        self.assertEqual(passrun.select_shards(dirs, 0), dirs)
+        pick = passrun.select_shards(dirs, 12)
+        self.assertEqual(len(pick), 12)
+        self.assertEqual(pick[0], "v2-00")
+        self.assertEqual(len(set(pick)), 12)
+
+    def test_subset_run_scales_the_projection(self):
+        p = json.loads((out30("s8sub") / "S8" / "projection.json").read_text())
+        self.assertFalse(p["partial"])
+        f = p["measured"]["subset_fraction"]
+        man = {}
+        for line in (ENV["root"] / "stage" / "manifest.tsv").read_text().splitlines()[1:]:
+            path, _b, n = line.split("\t")
+            d = path.strip("/").split("/")[1]
+            man[d] = man.get(d, 0) + int(n)
+        import passrun
+        pick = passrun.select_shards(sorted(man), 2)
+        want = sum(man[d] for d in pick) / sum(man.values())
+        self.assertAlmostEqual(f, want, places=6)
+        self.assertLess(f, 1.0)
+        shards = {pathlib.Path(x).name for x in glob.glob(f"{ENV['root']}/work8s/buckets/ev/*/*.parquet")}
+        self.assertEqual(shards, {d + ".parquet" for d in pick})
+
+
+class VmPython(unittest.TestCase):
+    """The VM's interpreter: Debian 12 ships 3.11 (no PEP 701 nested f-strings). The bootstrap pins
+    3.14 via uv, and the code stays 3.11-safe; both are checked here with uv's standalone CPython."""
+
+    FILES = sorted(str(p) for p in list(VMPASS.glob("*.py")) + list((VMPASS / "tests").glob("*.py"))) + \
+        [str(VMPASS.parent / n) for n in ("archive_graph_extract.py", "post_extract.py", "gcs_segments.py")]
+
+    def _py(self, version):
+        uv = shutil.which("uv")
+        if not uv:
+            self.skipTest("uv not installed")
+        r = subprocess.run([uv, "python", "find", version], capture_output=True, text=True)
+        if r.returncode != 0:
+            r = subprocess.run([uv, "python", "install", version], capture_output=True, text=True)
+            r = subprocess.run([uv, "python", "find", version], capture_output=True, text=True)
+        if r.returncode != 0:
+            self.skipTest(f"python {version} unavailable via uv")
+        return r.stdout.strip()
+
+    def test_py_compile_under_3_11_and_3_14(self):
+        for v in ("3.11", "3.14"):
+            py = self._py(v)
+            code = ("import py_compile, sys, tempfile, os\n"
+                    "d = tempfile.mkdtemp()\n"
+                    "for i, f in enumerate(sys.argv[1:]):\n"
+                    "    py_compile.compile(f, cfile=os.path.join(d, f'{i}.pyc'), doraise=True)\n")
+            r = subprocess.run([py, "-c", code, *self.FILES], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, f"python {v}: {r.stderr[-2000:]}")
+
+    def test_selfcheck_under_3_11(self):
+        """The VM preflight (whole pass on the fixture world) on Debian 12's interpreter version."""
+        uv = shutil.which("uv")
+        py = self._py("3.11")
+        venv = ENV["root"] / "venv311"
+        r = subprocess.run([uv, "venv", "--python", py, str(venv), "-q"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = subprocess.run([uv, "pip", "install", "-q", "pyarrow==26.0.0"], capture_output=True, text=True,
+                           env={**os.environ, "VIRTUAL_ENV": str(venv)})
+        if r.returncode != 0:
+            self.skipTest(f"pyarrow for 3.11 unavailable: {r.stderr[-300:]}")
+        r = subprocess.run([str(venv / "bin" / "python"), str(VMPASS / "passrun.py"), "selfcheck", "--work", str(ENV["root"] / "sc311"),
+                            "--mode", "s8"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr[-3000:])
+        self.assertIn("selfcheck OK: python 3.11", r.stdout)
+
+
+class S9Rules(unittest.TestCase):
+    def test_s9_rules_apply_two_fit_halvings_above_the_floor(self):
+        s9 = rules_mod.load(VMPASS / "rules_s9.json")
+        s1 = rules_mod.load(rules_mod.S1)
+        self.assertFalse(s9.draft)
+        self.assertEqual(s9["samples"]["fit_halvings"], 2)
+        self.assertEqual({k: v for k, v in s9.d.items() if k not in ("status", "samples")},
+                         {k: v for k, v in s1.d.items() if k not in ("status", "samples")})
+        fit_full = 829809.6  # S8 s8-20261028b projection: fit_users_full
+        self.assertGreaterEqual(fit_full / 4, s9["o3"]["min_fit_users"])
+        self.assertLess(fit_full / 8, s9["o3"]["min_fit_users"])
 
 
 class Guards(unittest.TestCase):

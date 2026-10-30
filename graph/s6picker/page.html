@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>S6 baseline picker</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --ink: #1b1b19; --muted: #5c5b57; --faint: #77756f; --line: #dedbd3;
+  --accent: #245a8c; --accent-ink: #ffffff; --accent-soft: #e3ecf6; --warn: #7a3f0a; --warn-soft: #fbeedd;
+  --bad: #9b2226; --bad-soft: #f9e3e3; --chip: #efede8; --shadow: 0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --panel: #1e1e1c; --ink: #eeede9; --muted: #b3b1ab; --faint: #95938d; --line: #363531;
+    --accent: #8fbbe6; --accent-ink: #10202f; --accent-soft: #22303e; --warn: #f2bd84; --warn-soft: #3a2a18;
+    --bad: #f2a3a5; --bad-soft: #3d1f20; --chip: #2a2a27; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141413; --panel: #1e1e1c; --ink: #eeede9; --muted: #b3b1ab; --faint: #95938d; --line: #363531;
+  --accent: #8fbbe6; --accent-ink: #10202f; --accent-soft: #22303e; --warn: #f2bd84; --warn-soft: #3a2a18;
+  --bad: #f2a3a5; --bad-soft: #3d1f20; --chip: #2a2a27; --shadow: none;
+}
+* { box-sizing: border-box; }
+html { scroll-padding-top: 76px; }
+body { margin: 0; overflow-x: hidden; background: var(--bg); color: var(--ink); font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+.wrap { max-width: 1440px; margin: 0 auto; padding: 0 16px; }
+
+/* Intro */
+.intro { padding-top: 22px; padding-bottom: 14px; }
+.intro h1 { font-size: 26px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.01em; }
+.lede { font-size: 17px; max-width: 760px; margin: 0; }
+.badge { display: inline-block; vertical-align: middle; font-size: 13px; font-weight: 650; background: var(--warn-soft); color: var(--warn); border: 1px solid currentColor; border-radius: 999px; padding: 1px 10px; margin-left: 8px; }
+.badge.bad { background: var(--bad-soft); color: var(--bad); }
+.how { margin-top: 10px; max-width: 900px; }
+.how summary { color: var(--accent); cursor: pointer; font-size: 15px; }
+.how .tech { color: var(--muted); font-size: 15px; margin-top: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.how .tech p { margin: 0 0 8px; }
+.how .tech p:last-child { margin: 0; }
+
+/* Toolbar */
+.toolbar { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); }
+.toolbar .wrap { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding-top: 10px; padding-bottom: 10px; }
+.field { display: flex; flex-direction: column; gap: 2px; }
+.field span { font-size: 13px; color: var(--muted); }
+input[type=search], select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-height: 38px; }
+.field.q { flex: 1 1 260px; max-width: 440px; }
+.field select { max-width: 240px; }
+.count { color: var(--muted); font-size: 14px; margin-left: auto; align-self: flex-end; padding-bottom: 8px; }
+
+/* Layout */
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 22px; align-items: start; padding-bottom: 60px; }
+.scene { margin: 26px 0 6px; }
+.scene-h { min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-bottom: 4px; }
+.scene-h h2 { font-size: 21px; margin: 0; letter-spacing: -.01em; overflow-wrap: anywhere; min-width: 0; }
+.scene-h .n { color: var(--muted); font-size: 15px; }
+.scene-sub { color: var(--muted); font-size: 14px; margin: 0 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: start; }
+
+/* Card */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 15px 12px; min-width: 0; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.card.picked { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.card-top { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.card h3 { font-size: 17px; line-height: 1.3; margin: 0; overflow-wrap: anywhere; }
+.desc { color: var(--muted); font-size: 15px; margin: 4px 0 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.size { font-size: 14px; color: var(--muted); margin-top: 6px; }
+.samples { list-style: none; margin: 10px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.samples li { padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.samples li:last-child { border-bottom: 0; }
+.nm { font-weight: 600; }
+.hd { color: var(--muted); }
+.lists { color: var(--faint); font-size: 13px; margin-top: 8px; overflow-wrap: anywhere; }
+.hidden-note { margin-top: 10px; font-size: 15px; color: var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 9px 11px; }
+.hidden-note b { display: block; }
+.pick { flex: none; border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 999px; padding: 5px 14px; font-size: 15px; font-weight: 600; cursor: pointer; min-height: 34px; }
+.pick:hover { background: var(--accent-soft); }
+.pick.on { background: var(--accent); color: var(--accent-ink); }
+.pick:disabled { opacity: .4; cursor: not-allowed; background: transparent; }
+.flag { display: inline-block; font-size: 12px; font-weight: 600; color: var(--warn); background: var(--warn-soft); border-radius: 999px; padding: 0 7px; margin-left: 4px; vertical-align: 1px; }
+
+/* Details */
+details.more { margin-top: 10px; }
+details.more > summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+.more-body { margin-top: 8px; font-size: 14px; }
+.more-body h4 { font-size: 14px; margin: 12px 0 4px; }
+.more-body h4:first-child { margin-top: 0; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; color: var(--muted); }
+.kv dt { color: var(--faint); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.explain { color: var(--muted); margin: 0 0 6px; }
+ol.full { margin: 0; padding-left: 24px; }
+ol.full li { margin: 4px 0; overflow-wrap: anywhere; }
+.bio { color: var(--muted); font-size: 14px; display: block; }
+.pack { margin: 4px 0; overflow-wrap: anywhere; }
+.pack .hd { font-size: 14px; }
+
+/* Selection panel */
+#panel { position: sticky; top: 76px; max-height: calc(100vh - 92px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-top: 26px; box-shadow: var(--shadow); }
+#panel h2 { font-size: 19px; margin: 0; }
+.sheet-toggle { display: none; }
+.panel-sub { color: var(--muted); font-size: 15px; margin: 4px 0 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft); color: var(--ink); border-radius: 999px; padding: 3px 4px 3px 11px; font-size: 14px; max-width: 100%; }
+.chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip button { border: 0; background: transparent; cursor: pointer; border-radius: 999px; width: 24px; height: 24px; line-height: 1; font-size: 16px; color: var(--muted); flex: none; }
+.chip button:hover { background: var(--line); color: var(--ink); }
+.from-counts { margin: 12px 0 0; padding: 0; list-style: none; font-size: 14px; color: var(--muted); }
+.from-counts b { color: var(--ink); }
+.bundle-h { display: flex; justify-content: space-between; align-items: baseline; margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.bundle-h h3 { font-size: 16px; margin: 0; }
+ol.bundle { margin: 8px 0 0; padding-left: 26px; }
+ol.bundle li { margin: 0 0 8px; overflow-wrap: anywhere; font-size: 15px; }
+ol.bundle .src { display: block; font-size: 13px; color: var(--accent); }
+.linkbtn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 14px; text-decoration: underline; }
+.empty-panel { color: var(--muted); font-size: 15px; margin-top: 8px; }
+.panel-packs { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 14px; }
+.panel-packs h3 { font-size: 16px; margin: 0 0 4px; }
+.panel-packs h4 { font-size: 14px; margin: 10px 0 2px; color: var(--muted); font-weight: 600; }
+.empty-state { padding: 40px 0; color: var(--muted); font-size: 17px; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 980px) {
+  html { scroll-padding-top: 12px; }
+  .layout { grid-template-columns: minmax(0, 1fr); padding-bottom: 90px; }
+  .toolbar { position: static; }
+  #panel { position: fixed; left: 0; right: 0; bottom: 0; top: auto; margin: 0; border-radius: 14px 14px 0 0; max-height: 72px; overflow: hidden; z-index: 20; padding: 0; box-shadow: 0 -4px 18px rgba(0,0,0,.15); }
+  #panel.open { max-height: 78vh; overflow: auto; }
+  .sheet-toggle { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; border: 0; background: var(--panel); padding: 12px 16px; cursor: pointer; text-align: left; position: sticky; top: 0; border-bottom: 1px solid var(--line); min-height: 64px; }
+  .sheet-toggle b { font-size: 16px; }
+  .sheet-toggle span { color: var(--accent); font-size: 15px; flex: none; }
+  .panel-inner { padding: 12px 16px 18px; }
+  .panel-inner > h2 { display: none; }
+  .count { margin-left: 0; width: 100%; padding-bottom: 0; }
+}
+@media (max-width: 520px) {
+  .intro h1 { font-size: 22px; }
+  .lede { font-size: 16px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .field, .field.q { flex: 1 1 100%; max-width: none; }
+  .field select { width: 100%; max-width: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap intro">
+  <h1>Pick your communities <span class="badge" id="banner">baseline, not evaluated</span></h1>
+  <p class="lede">This simulates Catbird onboarding: pick the communities you'd care about, and you get a 25-account follow list built from them. Internal baseline: not evaluated yet.</p>
+  <details class="how"><summary>How this was built, and what is filtered out</summary><div class="tech" id="tech"></div></details>
+</div>
+<div class="toolbar">
+  <div class="wrap">
+    <label class="field q"><span>Search</span><input type="search" id="q" placeholder="Communities, accounts or list names"></label>
+    <label class="field"><span>Language</span><select id="lang"></select></label>
+    <label class="field"><span>Show</span><select id="show">
+      <option value="all">All communities</option>
+      <option value="members">Only ones you can pick</option>
+      <option value="sensitive">Only sensitive ones (members hidden)</option>
+    </select></label>
+    <label class="field"><span>Jump to scene</span><select id="jump"></select></label>
+    <span class="count" id="count"></span>
+  </div>
+</div>
+<div class="wrap layout">
+  <main id="main"></main>
+  <aside id="panel" aria-label="Your picks and follow list"></aside>
+</div>
+<script>
+const DATA = /*__DATA__*/null;
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (n) => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
+const num = (n) => Number(n).toLocaleString("en-US");
+const picked = [];
+const BUNDLE = 25, POP_LIMIT = 500000, POP_MAX = 2, SAMPLES = 5, PICK_MAX = 5;
+let sheetOpen = false;
+
+let langName = (l) => l;
+try { const dn = new Intl.DisplayNames(["en"], {type: "language"}); langName = (l) => l === "multi" ? "Multilingual" : l === "?" ? "Unknown" : (dn.of(l) || l); } catch (e) {}
+const title = (cd) => (cd.claude && cd.claude.label) || cd.label;
+const trim = (s, n) => { s = String(s || ""); if (s.length <= n) return s; const t = s.slice(0, n); return t.slice(0, Math.max(t.lastIndexOf(" "), n - 20)).replace(/[,;:.\s]+$/, "") + "…"; };
+const plain = (s) => String(s).replaceAll("_", " ");
+
+/* Scene titles: readable form of the scene's two most common list names; scenes that would share a title get the most
+   common distinguishing word from their communities' labels. Presentation only (DATA.scenes is unchanged). */
+const STOP = new Set("and & of the a an fans fan community communities bluesky with for in on posters accounts people sky its their".split(" "));
+const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+const near = (a, b) => a.toLowerCase().slice(0, 4) === b.toLowerCase().slice(0, 4);
+const SCENE = {};
+(function sceneTitles() {
+  const base = {};
+  for (const s of DATA.scenes) {
+    const [a, b] = String(s.name).split(" / ");
+    base[s.scene] = cap(a || "Other") + (b && !near(a, b) ? " & " + b : "");
+  }
+  const dup = {};
+  for (const t of Object.values(base)) dup[t] = (dup[t] || 0) + 1;
+  for (const s of DATA.scenes) {
+    const labels = s.cards.map((c) => DATA.cards[c]).filter(Boolean).map(title);
+    let t = base[s.scene];
+    if (dup[t] > 1) {
+      const have = t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+      const cnt = {};
+      for (const l of labels) for (const w of new Set(l.toLowerCase().split(/[^\p{L}\p{N}]+/u)))
+        if (w.length > 2 && !STOP.has(w) && !have.some((h) => near(h, w))) cnt[w] = (cnt[w] || 0) + 1;
+      const top = Object.entries(cnt).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).slice(0, 2).map((x) => x[0]);
+      if (top.length) t += ": " + top.join(", ");
+    }
+    SCENE[s.scene] = {title: t, sub: labels.slice(0, 4).join(" · ")};
+  }
+})();
+
+function techText() {
+  const c = DATA.counts;
+  const ex = Object.entries(c.excluded).map(([k, v]) => `${k.replaceAll("_", " ")} ${v}`).join(", ");
+  return `<p>Internal review for Josh only (127.0.0.1, never published). ${esc(DATA.partition || "cand1")} communities as cards, grouped by scene; ` +
+    `each card is titled with Claude's label; the community's most common A-half curated-list names are its secondary line. ` +
+    `Each bundle is 25 accounts from provisional eligibility (unflagged, on an A-half list, passed S5's live check). ` +
+    `Cards whose list names match the S1 sensitive-class keywords, or that Claude marks sensitive, show no members.</p>` +
+    `<p><b>${num(c.cards)}</b> cards (${num(c.with_members)} with members, ${num(c.member_list_hidden_sensitive)} with the member list hidden). Not shown: ${esc(ex)}.</p>` +
+    `<p>Combined bundle rule (S1 §10, Y6): up to 5 cards; 25 accounts; 1–2 cards split evenly; 3 or more cards: at least 3 each and at most 40% from one card; ` +
+    `at most 2 accounts over 500k followers; shortfalls are filled from the other picked cards. ` +
+    `“Posts hidden” marks an account with hideFromAlgorithmicRecommendations (amendment A1: its posts are never shown; the account may be suggested).</p>` +
+    `<p>Built ${esc(DATA.generated_at)}${DATA.dry_run ? " · <b>DRY RUN</b> (S5 live checks absent or unverified)" : ""}.</p>`;
+}
+
+function header() {
+  if (DATA.dry_run) { $("#banner").textContent = "baseline, not evaluated · DRY RUN (S5 live checks absent or unverified)"; $("#banner").classList.add("bad"); }
+  $("#tech").innerHTML = techText();
+  const langs = {};
+  for (const cd of Object.values(DATA.cards)) langs[cd.language] = (langs[cd.language] || 0) + 1;
+  $("#lang").innerHTML = `<option value="">All languages</option>` + Object.entries(langs).sort((a, b) => b[1] - a[1])
+    .map(([l, n]) => `<option value="${esc(l)}">${esc(langName(l))} (${num(n)})</option>`).join("");
+}
+
+const flag = (m) => m.hfr ? `<span class="flag" title="Has hideFromAlgorithmicRecommendations: their posts are never shown (A1); the account may be suggested">posts hidden</span>` : "";
+const who = (m) => m.name ? `<span class="nm">${esc(m.name)}</span> <span class="hd">@${esc(m.handle)}</span>` : `<span class="nm">@${esc(m.handle)}</span>`;
+
+function fullMember(m) {
+  return `<li>${who(m)} <span class="hd">· ${fmt(m.followers)} followers</span>${flag(m)}` + (m.bio ? `<span class="bio">${esc(m.bio)}</span>` : "") + `</li>`;
+}
+
+function packLine(p) {
+  const nm = p.name ? `<span class="nm">${esc(p.name)}</span>` : `<span class="nm">Starter pack</span> <span class="hd">(name not in the data)</span>`;
+  return `<div class="pack">${nm}${p.creator_handle ? ` by <b>@${esc(p.creator_handle)}</b>` : ""}` +
+    ` <span class="hd">· ${num(p.members)} accounts, ${num(p.in_card)} of them in this community</span></div>`;
+}
+const PACK_EXPLAIN = `Existing Bluesky starter packs mostly made of this community's members: an alternative “follow all” option.`;
+
+function detailsHTML(cd) {
+  const cl = cd.claude || {};
+  const kv = [["Community id", "c" + cd.community], ["Scene id", cd.scene], ["Members", num(cd.size)], ["Eligible accounts", num(cd.eligible)],
+    ["Type", cl.community_type ? plain(cl.community_type) : "—"], ["Language", `${langName(cd.language)} (${cd.language})`],
+    ["Onboarding fit", cl.onboarding_fit || "—"], ["Label confidence", cl.confidence || "—"]];
+  if (cd.sensitive) kv.push(["Hidden because", esc(plain([...cd.keyword_classes.map((k) => "list names: " + k), ...cd.claude_sensitivity.map((k) => "Claude: " + k)].join(", ")))]);
+  let h = "";
+  if (cl.description) h += `<h4>About</h4><p class="explain">${esc(cl.description)}</p>`;
+  h += `<h4>Curated list names</h4><p class="explain">${cd.list_names.map(([n, k]) => `${esc(n)} (${num(k)})`).join(", ")}</p>`;
+  if (!cd.sensitive) {
+    h += `<h4>All ${BUNDLE} accounts in this community's follow list</h4><ol class="full" data-full="${cd.community}"></ol>`;
+    if (cd.packs.length) h += `<h4>Related starter packs</h4><p class="explain">${PACK_EXPLAIN}</p>${cd.packs.map(packLine).join("")}`;
+    if (cd.feeds.length) h += `<h4>Related feeds</h4>${cd.feeds.map((f) => `<div class="pack">${esc(f.name)} <span class="hd">by @${esc(f.creator_handle)}</span></div>`).join("")}`;
+  }
+  h += `<h4>Reviewer details</h4><dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${typeof v === "number" ? v : v}</dd>`).join("")}</dl>`;
+  const bits = ["Details"];
+  if (!cd.sensitive) bits.push(`all ${BUNDLE} accounts`);
+  if (cd.packs.length) bits.push(`${cd.packs.length} related starter pack${cd.packs.length > 1 ? "s" : ""}`);
+  return `<details class="more" data-c="${cd.community}"><summary>${bits.join(" · ")}</summary><div class="more-body">${h}</div></details>`;
+}
+
+function cardHTML(cd) {
+  const on = picked.includes(cd.community);
+  const cl = cd.claude || {};
+  let body;
+  if (cd.sensitive) {
+    const why = [...new Set([...cd.keyword_classes, ...cd.claude_sensitivity].map((k) => k.replaceAll("_", " & ")))].join(", ");
+    body = `<div class="hidden-note"><b>Members hidden: sensitive topic</b>${why ? esc(cap(why)) + ". " : ""}This community can't be picked in this baseline.</div>`;
+  } else {
+    body = `<ul class="samples" aria-label="Sample accounts">${cd.members.slice(0, SAMPLES).map((m) => `<li>${who(m)}${flag(m)}</li>`).join("")}</ul>`;
+  }
+  const full = picked.length >= PICK_MAX && !on;
+  const pick = cd.sensitive ? "" : `<button class="pick${on ? " on" : ""}" data-pick="${cd.community}"${full ? ` disabled title="You can pick up to ${PICK_MAX}"` : ""} aria-pressed="${on}">${on ? "Picked ✓" : "Pick"}</button>`;
+  const lists = cd.list_names.slice(0, 4).map((x) => x[0]).join(", ");
+  return `<article class="card${on ? " picked" : ""}" data-card="${cd.community}">` +
+    `<div class="card-top"><h3>${esc(title(cd))}</h3>${pick}</div>` +
+    (cl.description ? `<p class="desc" title="${esc(cl.description)}">${esc(trim(cl.description, 150))}</p>` : "") +
+    `<div class="size">${num(cd.size)} people in this community · ${esc(langName(cd.language))}</div>` +
+    body + (lists ? `<div class="lists">On lists named: ${esc(lists)}</div>` : "") + detailsHTML(cd) + `</article>`;
+}
+
+function matches(cd, q, lang, show) {
+  if (lang && cd.language !== lang) return false;
+  if (show === "members" && cd.sensitive) return false;
+  if (show === "sensitive" && !cd.sensitive) return false;
+  if (!q) return true;
+  const hay = [cd.label, cd.claude && cd.claude.label, cd.claude && cd.claude.description, ...cd.list_names.map((x) => x[0]),
+    ...cd.members.map((m) => m.handle + " " + m.name)].join(" ").toLowerCase();
+  return q.split(/\s+/).every((t) => hay.includes(t));
+}
+
+function draw() {
+  const q = $("#q").value.trim().toLowerCase(), lang = $("#lang").value, show = $("#show").value;
+  let n = 0, html = "", jump = [];
+  for (const s of DATA.scenes) {
+    const cs = s.cards.map((c) => DATA.cards[c]).filter((cd) => matches(cd, q, lang, show));
+    if (!cs.length) continue;
+    n += cs.length;
+    const st = SCENE[s.scene];
+    jump.push(`<option value="scene-${s.scene}">${esc(st.title)} (${cs.length})</option>`);
+    html += `<section class="scene" id="scene-${s.scene}"><div class="scene-h"><h2>${esc(st.title)}</h2><span class="n">${cs.length} ${cs.length === 1 ? "community" : "communities"}</span></div>` +
+      `<p class="scene-sub">Includes ${esc(st.sub)}</p><div class="grid">${cs.map(cardHTML).join("")}</div></section>`;
+  }
+  $("#main").innerHTML = html || `<div class="empty-state">No communities match. ${DATA.live_present ? "Try a different search or filter." : "S5 (i) live checks are not available yet, so every card is excluded (a card whose members lack a live check is never shown)."}</div>`;
+  $("#jump").innerHTML = `<option value="">${jump.length} scenes…</option>` + jump.join("");
+  $("#count").textContent = `${num(n)} communities shown`;
+}
+
+function solve() {
+  // Bundle solver (S1 §10, Y6): <=5 cards; 25 accounts; 1-2 cards split evenly; >=3 cards: >=3 each, <=40% from one card;
+  // <=2 accounts over 500k followers. Shortfalls are filled from the other picked cards (the registered KnownFor-neighbour
+  // fill rule is not built for this baseline).
+  const cs = picked.map((c) => DATA.cards[c]);
+  const k = cs.length, cap = k >= 3 ? Math.floor(BUNDLE * 0.4) : BUNDLE;
+  const quota = cs.map((_, i) => Math.min(cap, Math.floor(BUNDLE / k) + (i < BUNDLE % k ? 1 : 0)));
+  const out = [], seen = new Set(); let big = 0;
+  const take = (cd, want) => {
+    let got = 0;
+    for (const m of cd.members) {
+      if (got >= want) break;
+      if (seen.has(m.did)) continue;
+      if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
+      if (m.followers > POP_LIMIT) big++;
+      seen.add(m.did); out.push([cd, m]); got++;
+    }
+    return got;
+  };
+  let short = 0;
+  cs.forEach((cd, i) => { short += quota[i] - take(cd, quota[i]); });
+  for (const cd of cs) { if (short <= 0) break; const per = out.filter((x) => x[0] === cd).length; short -= take(cd, Math.min(short, cap - per)); }
+  return out;
+}
+
+function panel() {
+  const p = $("#panel");
+  p.classList.toggle("open", sheetOpen);
+  if (!picked.length) {
+    p.innerHTML = `<button class="sheet-toggle" data-sheet><b>Your follow list</b><span>Pick a community</span></button>` +
+      `<div class="panel-inner"><h2>Your follow list</h2><p class="empty-panel">Pick up to ${PICK_MAX} communities and a ${BUNDLE}-account follow list built from them appears here.</p></div>`;
+    return;
+  }
+  const b = solve();
+  const per = new Map(picked.map((c) => [c, 0]));
+  for (const [cd] of b) per.set(cd.community, per.get(cd.community) + 1);
+  const cds = picked.map((c) => DATA.cards[c]);
+  const packs = cds.filter((cd) => cd.packs.length);
+  p.innerHTML = `<button class="sheet-toggle" data-sheet aria-expanded="${sheetOpen}"><b>${picked.length} picked · ${b.length} accounts to follow</b><span>${sheetOpen ? "Hide ▾" : "Show ▴"}</span></button>` +
+    `<div class="panel-inner"><h2>Your follow list</h2>` +
+    `<p class="panel-sub">${picked.length} of ${PICK_MAX} communities picked · ${b.length} accounts</p>` +
+    `<div class="chips">${cds.map((cd) => `<span class="chip"><span title="${esc(title(cd))}">${esc(title(cd))}</span><button data-unpick="${cd.community}" aria-label="Remove ${esc(title(cd))}">×</button></span>`).join("")}</div>` +
+    `<ul class="from-counts">${cds.map((cd) => `<li><b>${per.get(cd.community)}</b> from ${esc(title(cd))}</li>`).join("")}</ul>` +
+    `<div class="bundle-h"><h3>${b.length} accounts you'd follow</h3><button class="linkbtn" id="clear">Clear all</button></div>` +
+    `<ol class="bundle">${b.map(([cd, m]) => `<li>${who(m)}${flag(m)}` + (m.bio ? `<span class="bio">${esc(trim(m.bio, 90))}</span>` : "") +
+      (picked.length > 1 ? `<span class="src">from ${esc(title(cd))}</span>` : "") + `</li>`).join("")}</ol>` +
+    (packs.length ? `<div class="panel-packs"><h3>Related starter packs</h3><p class="explain">${PACK_EXPLAIN}</p>` +
+      packs.map((cd) => `<h4>${esc(title(cd))}</h4>${cd.packs.map(packLine).join("")}`).join("") + `</div>` : "") +
+    `</div>`;
+  $("#clear").onclick = () => { picked.length = 0; marks(); panel(); };
+}
+
+document.addEventListener("toggle", (e) => {
+  const d = e.target;
+  if (d.tagName !== "DETAILS" || !d.open || !d.dataset.c) return;
+  const ol = d.querySelector("ol[data-full]");
+  if (ol && !ol.children.length) ol.innerHTML = DATA.cards[d.dataset.c].members.slice(0, BUNDLE).map(fullMember).join("");
+}, true);
+function setPick(c) {
+  const i = picked.indexOf(c);
+  if (i >= 0) picked.splice(i, 1); else if (picked.length < PICK_MAX) picked.push(c);
+  marks(); panel();
+}
+function marks() {
+  // Update pick state in place (no full re-render, so the scroll position and open details stay put).
+  for (const b of document.querySelectorAll("button[data-pick]")) {
+    const c = Number(b.dataset.pick), on = picked.includes(c), full = picked.length >= PICK_MAX && !on;
+    b.classList.toggle("on", on); b.textContent = on ? "Picked ✓" : "Pick"; b.setAttribute("aria-pressed", on);
+    b.disabled = full; if (full) b.title = `You can pick up to ${PICK_MAX}`; else b.removeAttribute("title");
+    b.closest(".card").classList.toggle("picked", on);
+  }
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-pick]");
+  if (b) return setPick(Number(b.dataset.pick));
+  const u = e.target.closest("button[data-unpick]");
+  if (u) return setPick(Number(u.dataset.unpick));
+  if (e.target.closest("[data-sheet]")) { sheetOpen = !sheetOpen; panel(); }
+});
+let timer = 0;
+$("#q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(draw, 150); });
+for (const id of ["#lang", "#show"]) $(id).addEventListener("input", draw);
+$("#jump").addEventListener("change", (e) => { const el = document.getElementById(e.target.value); if (el) el.scrollIntoView({behavior: "smooth"}); e.target.value = ""; });
+header(); draw(); panel();
+</script>
+</body>
+</html>

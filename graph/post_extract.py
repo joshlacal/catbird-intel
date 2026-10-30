@@ -34,6 +34,8 @@ POST_SCHEMA = pa.schema(
         ("facet_tags", pa.list_(pa.string())),
         ("facet_mentions", pa.list_(pa.string())),
         ("self_labels", pa.list_(pa.string())),
+        # Appended last so positional readers of the columns above keep working.
+        ("image_cids", pa.list_(pa.string())),
     ]
 )
 
@@ -66,6 +68,38 @@ def _media(media: dict) -> tuple[int, list[str], str]:
     if kind == "app.bsky.embed.external" and isinstance(media.get("external"), dict):
         return 0, [], _str(media["external"].get("uri"))
     return 0, [], ""
+
+
+_CID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz234567")
+
+
+def _blob_cid(blob: object) -> str:
+    """CID of a blob ref: `ref.$link` (current form) or the legacy top-level `cid` string. Only
+    base32 CIDv1 strings (`b...`, lowercase base32) up to 128 chars pass, so a CID can be placed
+    in a CDN URL path verbatim; anything else is dropped."""
+    if not isinstance(blob, dict):
+        return ""
+    ref = blob.get("ref")
+    cid = ref.get("$link") if isinstance(ref, dict) else ref if isinstance(ref, str) else blob.get("cid")
+    if not isinstance(cid, str) or not 8 <= len(cid) <= 128 or cid[0] != "b" or not set(cid) <= _CID_CHARS:
+        return ""
+    return cid
+
+
+def _image_cids(embed: object) -> list[str]:
+    """Blob CIDs of `app.bsky.embed.images` images, directly or as recordWithMedia's media, in
+    record order; images whose blob CID is missing or malformed are skipped. Video thumbnails,
+    external-link thumbnails, avatars and banners are never included."""
+    if not isinstance(embed, dict):
+        return []
+    if embed.get("$type") == "app.bsky.embed.recordWithMedia":
+        embed = embed.get("media")
+        if not isinstance(embed, dict):
+            return []
+    if embed.get("$type") != "app.bsky.embed.images" or not isinstance(embed.get("images"), list):
+        return []
+    cids = [_blob_cid(i.get("image")) for i in embed["images"] if isinstance(i, dict)]
+    return [c for c in cids if c]
 
 
 def _embed(embed: object) -> tuple[str, str, str, int, list[str]]:
@@ -144,4 +178,5 @@ def post_row_from_event(base: dict) -> dict:
         "facet_tags": tags,
         "facet_mentions": mentions,
         "self_labels": _self_labels(rec.get("labels")),
+        "image_cids": _image_cids(rec.get("embed")),
     }

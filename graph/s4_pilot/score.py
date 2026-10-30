@@ -72,7 +72,7 @@ def load_lists(split_tsv):
     bucket = dict(l.rstrip("\n").split("\t") for l in open(split_tsv))
     fam = {"A": [], "B1b": []}
     for uri, owner, _n, members, total in lists:
-        if max(total, len(members)) > 500:
+        if max(total, len(members)) > 500 or owner not in bucket:
             continue
         b = int(bucket[owner])
         if b == B1B_BUCKET:

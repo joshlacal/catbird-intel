@@ -38,9 +38,12 @@ SET output_format_parquet_compression_method = 'zstd';
 SET engine_file_truncate_on_insert = 1;
 SET input_format_parquet_allow_missing_columns = 1;
 SET allow_suspicious_low_cardinality_types = 1;
+-- base32-sortable TID -> microseconds ('2'..'7' = 0..5, 'a'..'z' = 6..31), unrolled: no lambda per row
 CREATE OR REPLACE FUNCTION tid_us AS (k) -> if(match(k, '^[2-7a-j][2-7a-z]{12}$'),
-  toUInt64(intDiv(arraySum(i -> bitShiftLeft(toUInt64(position('234567abcdefghijklmnopqrstuvwxyz', substring(k, i, 1)) - 1), toUInt8(5 * (13 - i))), range(1, 14)), 1024)),
+  toUInt64(intDiv(bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 1, 1)) - if(reinterpretAsUInt8(substring(k, 1, 1)) <= 55, 50, 91)), 60) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 2, 1)) - if(reinterpretAsUInt8(substring(k, 2, 1)) <= 55, 50, 91)), 55) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 3, 1)) - if(reinterpretAsUInt8(substring(k, 3, 1)) <= 55, 50, 91)), 50) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 4, 1)) - if(reinterpretAsUInt8(substring(k, 4, 1)) <= 55, 50, 91)), 45) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 5, 1)) - if(reinterpretAsUInt8(substring(k, 5, 1)) <= 55, 50, 91)), 40) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 6, 1)) - if(reinterpretAsUInt8(substring(k, 6, 1)) <= 55, 50, 91)), 35) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 7, 1)) - if(reinterpretAsUInt8(substring(k, 7, 1)) <= 55, 50, 91)), 30) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 8, 1)) - if(reinterpretAsUInt8(substring(k, 8, 1)) <= 55, 50, 91)), 25) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 9, 1)) - if(reinterpretAsUInt8(substring(k, 9, 1)) <= 55, 50, 91)), 20) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 10, 1)) - if(reinterpretAsUInt8(substring(k, 10, 1)) <= 55, 50, 91)), 15) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 11, 1)) - if(reinterpretAsUInt8(substring(k, 11, 1)) <= 55, 50, 91)), 10) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 12, 1)) - if(reinterpretAsUInt8(substring(k, 12, 1)) <= 55, 50, 91)), 5) + bitShiftLeft(toUInt64(reinterpretAsUInt8(substring(k, 13, 1)) - if(reinterpretAsUInt8(substring(k, 13, 1)) <= 55, 50, 91)), 0), 1024)),
   toUInt64(0));
+-- the extract's `time` column is fixed ISO-8601 (YYYY-MM-DDTHH:MM:SS[.ffffff]Z): no best-effort parser per row
+CREATE OR REPLACE FUNCTION iso_s AS (x) -> toUInt32(parseDateTimeOrZero(substring(x, 1, 19), '%Y-%m-%dT%H:%i:%S'));
 SET use_variant_as_common_type = 0;
 CREATE OR REPLACE FUNCTION uri_did AS (u) -> if(startsWith(u, 'at://'), splitByChar('/', u)[3], '');
 CREATE OR REPLACE FUNCTION uri_coll AS (u) -> if(startsWith(u, 'at://'), splitByChar('/', u)[4], '');
@@ -48,8 +51,28 @@ CREATE OR REPLACE FUNCTION uri_rkey AS (u) -> if(startsWith(u, 'at://'), splitBy
 """
 
 
+def ram_bytes() -> int:
+    """Physical RAM of this machine (VMPASS_RAM_BYTES overrides, for tests)."""
+    if os.environ.get("VMPASS_RAM_BYTES"):
+        return int(os.environ["VMPASS_RAM_BYTES"])
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return 64 << 30
+
+
+def memory_settings(ram: int | None = None) -> dict:
+    """Per-query limits from the machine's RAM, not a fixed 512 GB. clickhouse-local's own
+    server-wide cap is 0.9 x RAM, so a query limit must sit under it; spilling starts early
+    enough that the spill buffers, Join tables and sort runs still fit."""
+    ram = ram or ram_bytes()
+    return {"max_memory_usage": int(ram * 0.70), "max_bytes_before_external_group_by": int(ram * 0.20),
+            "max_bytes_before_external_sort": int(ram * 0.20)}
+
+
 def settings_sql(rules) -> str:
-    ch = rules["clickhouse"]
+    ch = {**memory_settings(), **{k: v for k, v in rules["clickhouse"].items() if k not in ("max_memory_usage",
+          "max_bytes_before_external_group_by", "max_bytes_before_external_sort")}}
     return "\n".join(f"SET {k} = {v};" for k, v in ch.items()) + "\n"
 
 
@@ -122,3 +145,17 @@ def src(pattern: str, struct: str) -> str:
 
 def out(path: str, fmt: str = "Parquet") -> str:
     return f"INSERT INTO FUNCTION file('{path}', {fmt})"
+
+
+def split_out(path_fmt: str, key: str, n: int, select_sql: str, tmp: str) -> str:
+    """Write select_sql's rows to n files path_fmt.format(k=k), one per value of `key`.
+
+    Replaces `INSERT INTO FUNCTION file(...) PARTITION BY key`: a partitioned file()
+    insert drives every partition's Parquet writer from one serial sink (measured ~4x
+    slower than an unpartitioned write). Here the rows land in a MergeTree ordered by
+    the key (parallel insert), and each file is an unpartitioned, parallel-encoded
+    write that reads only its key range through the primary index."""
+    s = f"CREATE TABLE {tmp} ENGINE = MergeTree ORDER BY {key} AS {select_sql};\n"
+    for k in range(n):
+        s += f"{out(path_fmt.format(k=k))} SELECT * FROM {tmp} WHERE {key} = {k};\n"
+    return s + f"DROP TABLE {tmp};\n"

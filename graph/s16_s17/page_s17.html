@@ -1,687 +1,2235 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>Catbird S17 Harness v1 — Onboarding &amp; Local For You Preview</title>
-<style>
-:root {
-  --bg: #f6f5f2; --panel: #ffffff; --ink: #1b1b19; --muted: #5c5b57; --faint: #77756f; --line: #dedbd3;
-  --accent: #1d5a8a; --accent-ink: #ffffff; --accent-soft: #e3eef7; --ok: #1f6b3b; --ok-soft: #e3f4e9;
-  --warn: #7a3f0a; --warn-soft: #fbeedd; --bad: #9b2226; --bad-soft: #f9e3e3; --chip: #efede8;
-  --shadow: 0 1px 3px rgba(0,0,0,.06);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #141413; --panel: #1e1e1c; --ink: #eeede9; --muted: #b3b1ab; --faint: #95938d; --line: #363531;
-    --accent: #8cc0ec; --accent-ink: #0f202f; --accent-soft: #213242; --ok: #7ed49b; --ok-soft: #1b3324;
-    --warn: #f2bd84; --warn-soft: #3a2a18; --bad: #f2a3a5; --bad-soft: #3d1f20; --chip: #2a2a27;
-    --shadow: none;
-  }
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-button, input, select { font: inherit; color: inherit; }
-.wrap { max-width: 1460px; margin: 0 auto; padding: 0 16px; }
-header.top { padding: 18px 0 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
-header.top h1 { font-size: 22px; margin: 0 0 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; background: var(--ok-soft); color: var(--ok); border: 1px solid currentColor; }
-.badge.warn { background: var(--warn-soft); color: var(--warn); }
-.sub { color: var(--muted); margin: 0; font-size: 14px; max-width: 980px; }
-.tabs { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-.tab { border: 1px solid var(--line); background: var(--bg); padding: 7px 14px; border-radius: 999px; font-weight: 600; cursor: pointer; }
-.tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Catbird S17 — Scene &amp; Author-Feed Inspector v2</title>
+  <style>
+    /* 1. Dark Mode + Color Scheme tokens (`dark-mode` modern-web-guidance) */
+    :root {
+      color-scheme: light dark;
+      --bg-light: #f5f7fb;
+      --bg-dark: #0d1117;
+      --surface-light: #ffffff;
+      --surface-dark: #161b22;
+      --surface-2-light: #eef2f8;
+      --surface-2-dark: #1f2632;
+      --border-light: #d7dfe9;
+      --border-dark: #2f3948;
+      --text-light: #101828;
+      --text-dark: #e6edf3;
+      --muted-light: #475467;
+      --muted-dark: #94a3b8;
+      --accent-light: #0b63e5;
+      --accent-dark: #58a6ff;
+      --accent-soft-light: #e7f0fe;
+      --accent-soft-dark: #172b46;
+      --good-light: #0f7647;
+      --good-dark: #3fb950;
+      --good-bg-light: #e6f6ee;
+      --good-bg-dark: #122d1f;
+      --warn-light: #b45309;
+      --warn-dark: #f0b429;
+      --warn-bg-light: #fef3c7;
+      --warn-bg-dark: #34260d;
+      --bad-light: #b91c1c;
+      --bad-dark: #f87171;
+      --bad-bg-light: #fee2e2;
+      --bad-bg-dark: #381518;
 
-.toolbar { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); padding: 10px 0; }
-.toolbar .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-input[type=search], select { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-height: 36px; }
-input[type=search] { flex: 1 1 260px; max-width: 420px; }
-.count { margin-left: auto; color: var(--muted); font-size: 13px; }
+      --bg: var(--bg-light);
+      --surface: var(--surface-light);
+      --surface-2: var(--surface-2-light);
+      --border: var(--border-light);
+      --text: var(--text-light);
+      --muted: var(--muted-light);
+      --accent: var(--accent-light);
+      --accent-soft: var(--accent-soft-light);
+      --good: var(--good-light);
+      --good-bg: var(--good-bg-light);
+      --warn: var(--warn-light);
+      --warn-bg: var(--warn-bg-light);
+      --bad: var(--bad-light);
+      --bad-bg: var(--bad-bg-light);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    }
 
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 20px; align-items: start; padding: 16px 0 60px; }
-@media (max-width: 1020px) { .layout { grid-template-columns: 1fr; } }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: var(--bg-dark);
+        --surface: var(--surface-dark);
+        --surface-2: var(--surface-2-dark);
+        --border: var(--border-dark);
+        --text: var(--text-dark);
+        --muted: var(--muted-dark);
+        --accent: var(--accent-dark);
+        --accent-soft: var(--accent-soft-dark);
+        --good: var(--good-dark);
+        --good-bg: var(--good-bg-dark);
+        --warn: var(--warn-dark);
+        --warn-bg: var(--warn-bg-dark);
+        --bad: var(--bad-dark);
+        --bad-bg: var(--bad-bg-dark);
+        --shadow: 0 3px 14px rgba(0, 0, 0, 0.35);
+      }
+    }
 
-.scene { margin: 20px 0 8px; }
-.scene:first-child { margin-top: 4px; }
-.scene-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
-.scene-h h2 { font-size: 19px; margin: 0; }
-.scene-h span { color: var(--muted); font-size: 13px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+    @supports (color: light-dark(white, black)) {
+      :root {
+        --bg: light-dark(var(--bg-light), var(--bg-dark));
+        --surface: light-dark(var(--surface-light), var(--surface-dark));
+        --surface-2: light-dark(var(--surface-2-light), var(--surface-2-dark));
+        --border: light-dark(var(--border-light), var(--border-dark));
+        --text: light-dark(var(--text-light), var(--text-dark));
+        --muted: light-dark(var(--muted-light), var(--muted-dark));
+        --accent: light-dark(var(--accent-light), var(--accent-dark));
+        --accent-soft: light-dark(var(--accent-soft-light), var(--accent-soft-dark));
+        --good: light-dark(var(--good-light), var(--good-dark));
+        --good-bg: light-dark(var(--good-bg-light), var(--good-bg-dark));
+        --warn: light-dark(var(--warn-light), var(--warn-dark));
+        --warn-bg: light-dark(var(--warn-bg-light), var(--warn-bg-dark));
+        --bad: light-dark(var(--bad-light), var(--bad-dark));
+        --bad-bg: light-dark(var(--bad-bg-light), var(--bad-bg-dark));
+      }
+    }
 
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px; }
-.card.picked { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
-.card-top { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
-.card h3 { font-size: 16px; margin: 0; line-height: 1.3; }
-.desc { color: var(--muted); font-size: 13.5px; margin: 0; }
-.meta { color: var(--faint); font-size: 12.5px; }
-.samples { list-style: none; margin: 4px 0 0; padding: 6px 0 0; border-top: 1px solid var(--line); font-size: 13.5px; }
-.samples li { padding: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nm { font-weight: 600; }
-.hd { color: var(--muted); }
-.flag { display: inline-block; font-size: 11px; font-weight: 600; background: var(--warn-soft); color: var(--warn); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
-.sup-flag { background: var(--chip); color: var(--muted); }
-.btn { border: 1px solid var(--accent); background: transparent; color: var(--accent); border-radius: 999px; padding: 4px 12px; font-size: 13.5px; font-weight: 600; cursor: pointer; flex: none; }
-.btn:hover { background: var(--accent-soft); }
-.btn.on { background: var(--accent); color: var(--accent-ink); }
-.btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn-sm { padding: 2px 9px; font-size: 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; }
-.btn-sm.sel { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: var(--bg-light);
+      --surface: var(--surface-light);
+      --surface-2: var(--surface-2-light);
+      --border: var(--border-light);
+      --text: var(--text-light);
+      --muted: var(--muted-light);
+      --accent: var(--accent-light);
+      --accent-soft: var(--accent-soft-light);
+      --good: var(--good-light);
+      --good-bg: var(--good-bg-light);
+      --warn: var(--warn-light);
+      --warn-bg: var(--warn-bg-light);
+      --bad: var(--bad-light);
+      --bad-bg: var(--bad-bg-light);
+    }
 
-details.more summary { cursor: pointer; color: var(--accent); font-size: 13px; margin-top: 4px; }
-.more-body { margin-top: 8px; font-size: 13px; border-top: 1px dashed var(--line); padding-top: 8px; }
-.more-body h4 { margin: 8px 0 4px; font-size: 13px; }
-.more-body ol { margin: 0; padding-left: 20px; }
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: var(--bg-dark);
+      --surface: var(--surface-dark);
+      --surface-2: var(--surface-2-dark);
+      --border: var(--border-dark);
+      --text: var(--text-dark);
+      --muted: var(--muted-dark);
+      --accent: var(--accent-dark);
+      --accent-soft: var(--accent-soft-dark);
+      --good: var(--good-dark);
+      --good-bg: var(--good-bg-dark);
+      --warn: var(--warn-dark);
+      --warn-bg: var(--warn-bg-dark);
+      --bad: var(--bad-dark);
+      --bad-bg: var(--bad-bg-dark);
+    }
 
-aside.side { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 15px; box-shadow: var(--shadow); }
-aside.side h2 { font-size: 17px; margin: 0 0 6px; }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft); border-radius: 999px; padding: 3px 8px 3px 11px; font-size: 13px; }
-.chip button { border: 0; background: none; cursor: pointer; font-weight: 700; color: var(--muted); }
-.suggest-box { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin: 10px 0; font-size: 13px; }
-.suggest-box b { display: block; margin-bottom: 4px; }
-.bundle-list { margin: 8px 0 0; padding-left: 22px; font-size: 13.5px; }
-.bundle-list li { margin-bottom: 6px; }
-.src-tag { font-size: 12px; color: var(--accent); display: block; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      font-size: 14px;
+    }
 
-.post-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
-.post-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-.post-txt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; margin: 4px 0 6px; }
-.post-foot { font-size: 12px; color: var(--faint); display: flex; flex-wrap: wrap; gap: 10px; }
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    a:hover { text-decoration: underline; }
 
-.review-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
-.ab-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; }
-.ab-opt { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
-.rate-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 13.5px; }
-.score-bar { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
-.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
-.modal-bg.open { display: flex; }
-.modal { background: var(--panel); border-radius: 12px; max-width: 640px; width: 100%; max-height: 80vh; overflow: auto; padding: 18px; border: 1px solid var(--line); }
-.hidden { display: none !important; }
-</style>
+    /* 2. Deferred rendering ONLY for off-screen heavy sections below the initial fold (`defer-rendering-heavy-content`) */
+    .cv-below-fold {
+      content-visibility: auto;
+      contain-intrinsic-size: auto none auto 340px;
+    }
+
+    /* Top Header & Nav */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+    .topbar-inner {
+      max-width: 1520px;
+      margin: 0 auto;
+      padding: 10px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-badge {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      letter-spacing: 0.03em;
+    }
+    .brand-title {
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .brand-sub {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .nav-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 13px;
+      padding: 7px 13px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tab-btn[aria-selected="true"] {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .tab-count {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: rgba(127, 127, 127, 0.2);
+    }
+    .tab-btn[aria-selected="true"] .tab-count {
+      background: rgba(255, 255, 255, 0.25);
+    }
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* Buttons & Pills */
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 12.5px;
+      font-weight: 600;
+      padding: 6px 11px;
+      border-radius: 7px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .btn:hover { background: var(--surface-2); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { filter: brightness(1.06); background: var(--accent); }
+    .btn-good {
+      background: var(--good-bg);
+      border-color: var(--good);
+      color: var(--good);
+    }
+    .btn-bad {
+      background: var(--bad-bg);
+      border-color: var(--bad);
+      color: var(--bad);
+    }
+    .btn-warn {
+      background: var(--warn-bg);
+      border-color: var(--warn);
+      color: var(--warn);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .pill-good { background: var(--good-bg); color: var(--good); border-color: transparent; }
+    .pill-warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+    .pill-bad  { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+    .pill-accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+    /* Page Container */
+    .container {
+      max-width: 1520px;
+      margin: 0 auto;
+      padding: 16px 18px 64px;
+    }
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* KPI Banner */
+    .hero-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      margin-bottom: 16px;
+      box-shadow: var(--shadow);
+    }
+    .hero-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .hero-title {
+      margin: 0 0 4px;
+      font-size: 17px;
+      font-weight: 700;
+    }
+    .hero-desc {
+      margin: 0;
+      color: var(--muted);
+      max-width: 980px;
+      font-size: 13.5px;
+    }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 10px;
+    }
+    .kpi-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+    }
+    .kpi-val {
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+    .kpi-lbl {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    /* Filter Toolbar */
+    .toolbar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .input, .select {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    .input { min-width: 250px; flex: 1 1 250px; }
+
+    /* Account Audit Card (Tab 1 & Modal) */
+    .audit-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .acct-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+    }
+    .acct-card.is-excluded {
+      opacity: 0.48;
+      border-style: dashed;
+    }
+    .acct-card.is-approved {
+      border-left: 4px solid var(--good);
+    }
+    .acct-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .acct-id-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 11px;
+      min-width: 260px;
+      flex: 1 1 420px;
+    }
+    .avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .avatar-sm {
+      width: 32px;
+      height: 32px;
+      font-size: 12px;
+    }
+    .acct-names {
+      min-width: 0;
+      flex: 1;
+    }
+    .acct-name-line {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .acct-disp {
+      font-weight: 700;
+      font-size: 14.5px;
+    }
+    .acct-handle {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .acct-stats {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .acct-bio {
+      margin-top: 5px;
+      font-size: 13px;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .acct-scene-callout {
+      margin-top: 9px;
+      padding: 8px 11px;
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12.5px;
+    }
+    .signal-row {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    /* Live Author Feed Strip */
+    .feed-strip {
+      margin-top: 11px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    .feed-strip-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .posts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(275px, 1fr));
+      gap: 9px;
+    }
+    .post-box {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 9px 11px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 7px;
+      font-size: 12.5px;
+    }
+    .post-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+    .post-text {
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+      display: -webkit-box;
+      -webkit-line-clamp: 5;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .post-quote {
+      border-left: 3px solid var(--accent);
+      padding-left: 8px;
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+    .post-thumbs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+    }
+    .post-thumb {
+      height: 86px;
+      width: auto;
+      max-width: 150px;
+      border-radius: 6px;
+      object-fit: cover;
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .post-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+
+    /* Tab 2: Explorer + Sticky Bundle Rail */
+    .explorer-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 390px;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (max-width: 1120px) {
+      .explorer-layout { grid-template-columns: 1fr; }
+    }
+    .scene-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .scene-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .scene-hdr h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 12px;
+    }
+    @media (max-width: 600px) {
+      .cards-grid { grid-template-columns: 1fr; }
+    }
+    .scene-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 13px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .scene-card.picked {
+      border: 2px solid var(--accent);
+      background: var(--accent-soft);
+    }
+    .sc-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .sc-title {
+      font-weight: 700;
+      font-size: 15px;
+      margin: 0;
+    }
+    .sc-lists {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .sc-desc {
+      font-size: 12.8px;
+      color: var(--text);
+      margin: 0;
+    }
+    .sc-mini-accts {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+    }
+    .mini-acct {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12.5px;
+    }
+    .mini-acct-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .mini-bio {
+      color: var(--muted);
+      font-size: 11.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260px;
+    }
+
+    .sticky-rail {
+      position: sticky;
+      top: 68px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      max-height: calc(100vh - 84px);
+      overflow-y: auto;
+      box-shadow: var(--shadow);
+    }
+
+    /* Tab 3: Unblinded 30-Card Sign-Off */
+    .r30-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: var(--shadow);
+    }
+    .r30-card.signed-ok { border-left: 4px solid var(--good); }
+    .r30-card.signed-flag { border-left: 4px solid var(--bad); }
+
+    /* 3. Native Modal Dialog (`light-dismiss-a-dialog` modern-web-guidance: padding:0 on dialog so backdrop click rect is exact) */
+    dialog#card-dialog {
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+      color: var(--text);
+      width: min(1240px, 95vw);
+      max-height: 90vh;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    }
+    dialog#card-dialog::backdrop {
+      background: rgba(9, 13, 22, 0.62);
+      backdrop-filter: blur(2px);
+    }
+    .dlg-inner {
+      display: flex;
+      flex-direction: column;
+      max-height: 90vh;
+    }
+    .dlg-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      background: var(--surface);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+    .dlg-body {
+      padding: 16px 18px 24px;
+      overflow-y: auto;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      z-index: 90;
+      background: var(--text);
+      color: var(--surface);
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: var(--shadow);
+      display: none;
+    }
+    .toast.show { display: block; }
+  </style>
 </head>
 <body>
-<header class="top">
-  <div class="wrap">
-    <h1>
-      Catbird Onboarding &amp; Local For You Harness v1
-      <span class="badge">S17 · 127.0.0.1 only</span>
-      <span class="badge" id="stat-badge">Loading catalog…</span>
-    </h1>
-    <p class="sub">
-      Frozen <b>cand5-full-matched</b> partition · Locked S13 <code>(k=3, m=3, θ=0.5, w_lin_plus_curators)</code> ·
-      Validated S14 <b>H-matrix</b> active · All 8 Y3 sensitive classes excluded in v0 ·
-      <code>hideFromAlgorithmicRecommendations</code> posts hidden (A1).
-    </p>
-    <div class="tabs" role="tablist">
-      <button class="tab active" data-tab="picker">1. Scene Picker &amp; Bundle (25–50)</button>
-      <button class="tab" data-tab="preview">2. Local For You ("Preview from Oct 22 data")</button>
-      <button class="tab" data-tab="review">3. Blind S17 Review (30 Rule-Drawn Cards)</button>
-      <button class="tab" data-tab="comparator">4. Bluesky Onboarding Comparator</button>
-    </div>
-  </div>
-</header>
-
-<section id="tab-picker">
-  <div class="toolbar">
-    <div class="wrap row">
-      <input type="search" id="q" placeholder="Search scenes, communities, handles, or list names…">
-      <select id="lang"><option value="">All languages</option></select>
-      <select id="jump"><option value="">Jump to scene…</option></select>
-      <label>Bundle size:
-        <select id="bsize"><option value="25" selected>25 (default)</option><option value="50">50 (max)</option></select>
-      </label>
-      <span class="count" id="count"></span>
-    </div>
-  </div>
-  <div class="wrap layout">
-    <main id="main"></main>
-    <aside class="side" id="side"></aside>
-  </div>
-</section>
-
-<section id="tab-preview" class="wrap hidden" style="padding:18px 16px 60px;">
-  <div class="score-bar">
-    <div>
-      <b style="font-size:17px;">Preview from Oct 22 data</b>
-      <div class="meta">Ranked by community-InterestedIn excess engagement residual · ≤2 posts/author · ≤5% high-H community cap · Hydrated live via <code>getPosts</code> so deleted/labelled posts vanish.</div>
-    </div>
-    <button class="btn on" id="refresh-preview">Refresh Live Preview</button>
-    <span id="preview-stats" class="meta"></span>
-  </div>
-  <div id="preview-body"></div>
-</section>
-
-<section id="tab-review" class="wrap hidden" style="padding:18px 16px 60px;">
-  <div class="score-bar" id="review-summary">
-    <div>
-      <b>30 Rule-Drawn Cards (`cityHash64(community)`) — Blind S17 Audit</b>
-      <div class="meta">Bars: ≥70% real scene recognised · ≥85% label accepted · ≥60% Opus preferred in blind A/B (else ship list names) · 0 missed sensitive cards · ≥80% bundle accounts on-scene &amp; active (≤10% junk/dormant).</div>
-    </div>
-    <button class="btn" id="btn-reveal">Reveal Blind A/B Tallies</button>
-    <span id="save-status" class="meta">Auto-saved to ratings.json</span>
-  </div>
-  <div id="reveal-box" class="score-bar hidden"></div>
-  <div id="review-list"></div>
-</section>
-
-<section id="tab-comparator" class="wrap hidden" style="padding:18px 16px 60px;">
-  <div id="comp-body"></div>
-</section>
-
-<div class="modal-bg" id="pack-modal">
-  <div class="modal">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <b id="pm-title">Starter pack inspection (never follow-all)</b>
-      <button class="btn-sm" id="pm-close">Close</button>
-    </div>
-    <p class="meta" style="margin-top:0;">Inspect-only per Whole-Network Plan §3.3 (never bulk follow-all). Every member passed S5 live checks.</p>
-    <div id="pm-body"></div>
-  </div>
-</div>
-
-<script>
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const fmt = (n) => n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
-const num = (n) => Number(n || 0).toLocaleString("en-US");
-const B32 = "abcdefghijklmnopqrstuvwxyz234567";
-function expDid(s) {
-  if (s.startsWith("did:")) return s;
-  const pad = "=".repeat((4 - (s.length % 4)) % 4);
-  const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + pad);
-  let bits = 0, val = 0, out = "did:plc:";
-  for (let i = 0; i < bin.length; i++) {
-    val = (val << 8) | bin.charCodeAt(i);
-    bits += 8;
-    while (bits >= 5) { bits -= 5; out += B32[(val >>> bits) & 31]; }
-  }
-  return out;
-}
-const expHdl = (s) => s.endsWith("~") ? s.slice(0, -1) + ".bsky.social" : s;
-const expPackUri = (s) => {
-  if (s.startsWith("at://")) return s;
-  const i = s.indexOf("/");
-  return `at://${expDid(s.slice(0, i))}/app.bsky.graph.starterpack/${s.slice(i + 1)}`;
-};
-const expFeedUri = (s) => {
-  if (s.startsWith("at://")) return s;
-  const i = s.indexOf("/");
-  return `at://${expDid(s.slice(0, i))}/app.bsky.feed.generator/${s.slice(i + 1)}`;
-};
-
-let DATA = null;
-let HIGH_H = new Set();
-let RATINGS = {cards: {}, accounts: {}, comparator: {}};
-const picked = [];
-const POP_LIMIT = 500000, POP_MAX = 2, SUP_MAX = 2, PICK_MAX = 5;
-
-function acct(aid) {
-  const r = DATA.accts[aid];
-  const fl = r[4] || 0;
-  return {did: expDid(r[0]), handle: expHdl(r[1]), followers: r[2], name: r[3] || "", hfr: !!(fl & 1), sup: !!(fl & 2)};
-}
-function expMedoidUri(pair) {
-  return `at://${acct(pair[0]).did}/app.bsky.feed.post/${pair[1]}`;
-}
-
-function badges(m) {
-  let b = "";
-  if (m.hfr) b += `<span class="flag" title="hideFromAlgorithmicRecommendations: posts never shown (A1); profile eligible">posts hidden</span>`;
-  if (m.sup) b += `<span class="flag sup-flag" title="Supplement producer verified active via S5(vi)">supplement</span>`;
-  return b;
-}
-
-function who(m) {
-  return m.name ? `<span class="nm">${esc(m.name)}</span> <span class="hd">@${esc(m.handle)}</span>` : `<span class="nm">@${esc(m.handle)}</span>`;
-}
-
-function hasHighH(c1, c2) {
-  const a = Math.min(c1, c2), b = Math.max(c1, c2);
-  return HIGH_H.has(a + ":" + b);
-}
-
-/* Registered Y6 + S14 H-aware bundle solver */
-function solveBundle(picks, targetSize) {
-  if (!picks.length) return {items: [], counts: {}, filled: 0, suggestedNext: []};
-  const k = picks.length;
-  const quotas = [];
-  if (k <= 2) {
-    for (let i = 0; i < k; i++) quotas.push(Math.floor(targetSize / k) + (i < (targetSize % k) ? 1 : 0));
-  } else {
-    const cap = Math.floor(0.40 * targetSize);
-    let rem = targetSize;
-    for (let i = 0; i < k; i++) {
-      const q = Math.min(cap, Math.max(3, Math.floor(rem / (k - i))));
-      quotas.push(q);
-      rem -= q;
-    }
-  }
-  const perCardCap = k >= 3 ? Math.floor(0.40 * targetSize) : targetSize;
-  const chosen = [];
-  const seen = new Set();
-  const counts = {};
-  let big = 0;
-  let sup = 0;
-
-  for (let i = 0; i < k; i++) {
-    const cid = picks[i], cd = DATA.cards[cid];
-    if (!cd) continue;
-    let got = 0;
-    for (const aid of cd.m) {
-      if (got >= quotas[i] || chosen.length >= targetSize) break;
-      const m = acct(aid);
-      if (seen.has(m.did)) continue;
-      if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
-      if (m.sup && sup >= SUP_MAX) continue;
-      if (m.followers > POP_LIMIT) big++;
-      if (m.sup) sup++;
-      seen.add(m.did);
-      counts[cid] = (counts[cid] || 0) + 1;
-      chosen.push({...m, srcCard: cid, viaFill: false});
-      got++;
-    }
-  }
-
-  /* Second pass across picked cards up to perCardCap if needed */
-  if (chosen.length < targetSize) {
-    for (const cid of picks) {
-      const cd = DATA.cards[cid];
-      if (!cd) continue;
-      for (const aid of cd.m) {
-        if (chosen.length >= targetSize || (counts[cid] || 0) >= perCardCap) break;
-        const m = acct(aid);
-        if (seen.has(m.did)) continue;
-        if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
-        if (m.sup && sup >= SUP_MAX) continue;
-        if (m.followers > POP_LIMIT) big++;
-        if (m.sup) sup++;
-        seen.add(m.did);
-        counts[cid] = (counts[cid] || 0) + 1;
-        chosen.push({...m, srcCard: cid, viaFill: false});
-      }
-    }
-  }
-
-  /* Build H-compatible KnownFor co-membership neighbor queue (for both Suggested Next Cards & Shortfall Fill) */
-  const nbScore = {};
-  const pickSet = new Set(picks);
-  for (const cid of picks) {
-    const cd = DATA.cards[cid];
-    if (!cd) continue;
-    (cd.nb || []).forEach((nb, idx) => {
-      if (pickSet.has(nb) || !DATA.cards[nb]) return;
-      if (picks.some((p) => hasHighH(p, nb))) return;
-      nbScore[nb] = (nbScore[nb] || 0) + (10 - idx);
-    });
-  }
-  const orderedNbs = Object.keys(nbScore).map(Number).sort((a, b) => nbScore[b] - nbScore[a] || a - b);
-
-  let filled = 0;
-  if (chosen.length < targetSize) {
-    for (const nb of orderedNbs) {
-      if (chosen.length >= targetSize) break;
-      const cd = DATA.cards[nb];
-      for (const aid of cd.m) {
-        if (chosen.length >= targetSize) break;
-        const m = acct(aid);
-        if (seen.has(m.did)) continue;
-        if (m.followers > POP_LIMIT && big >= POP_MAX) continue;
-        if (m.sup && sup >= SUP_MAX) continue;
-        if (m.followers > POP_LIMIT) big++;
-        if (m.sup) sup++;
-        seen.add(m.did);
-        counts[nb] = (counts[nb] || 0) + 1;
-        chosen.push({...m, srcCard: nb, viaFill: true});
-        filled++;
-      }
-    }
-  }
-  return {items: chosen, counts, filled, suggestedNext: orderedNbs.slice(0, 5)};
-}
-
-function renderPicker() {
-  const q = $("#q").value.trim().toLowerCase();
-  const lg = $("#lang").value;
-  let shownCards = 0;
-  const scenesHtml = [];
-  const jumpOpts = [`<option value="">Jump to scene…</option>`];
-
-  for (const sc of DATA.scenes) {
-    const cards = sc.cs.map((c) => DATA.cards[c]).filter(Boolean).filter((cd) => {
-      if (lg && cd.lg !== lg) return false;
-      if (!q) return true;
-      if (cd.t.toLowerCase().includes(q) || (cd.d || "").toLowerCase().includes(q)) return true;
-      for (const [ln] of (cd.ln || [])) if (ln.toLowerCase().includes(q)) return true;
-      for (const aid of cd.m.slice(0, 10)) {
-        const m = acct(aid);
-        if (m.handle.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)) return true;
-      }
-      return false;
-    });
-    if (!cards.length) continue;
-    shownCards += cards.length;
-    jumpOpts.push(`<option value="sc-${sc.s}">${esc(sc.n)} (${cards.length})</option>`);
-    scenesHtml.push(`<section class="scene" id="sc-${sc.s}">
-      <div class="scene-h"><h2>${esc(sc.n)}</h2><span>${cards.length} card${cards.length > 1 ? "s" : ""}</span></div>
-      <div class="grid">${cards.map(renderCard).join("")}</div>
-    </section>`);
-  }
-  $("#jump").innerHTML = jumpOpts.join("");
-  $("#count").textContent = `${num(shownCards)} of ${num(DATA.counts.v0_cards)} v0 cards`;
-  $("#main").innerHTML = scenesHtml.join("") || `<p class="meta">No matching scenes.</p>`;
-  renderSide();
-}
-
-function renderCard(cd) {
-  const on = picked.includes(cd.c);
-  const conflict = !on && picked.some((p) => hasHighH(p, cd.c));
-  const full = picked.length >= PICK_MAX && !on;
-  const top5 = cd.m.slice(0, 5).map((aid) => {
-    const m = acct(aid);
-    return `<li>${who(m)} <span class="hd">· ${fmt(m.followers)}</span>${badges(m)}</li>`;
-  }).join("");
-  const lists = (cd.ln || []).map(([n, k]) => `${esc(n)} (${k})`).join(", ");
-  const pks = cd.pk || [], fds = cd.fd || [], mds = cd.md || [];
-  const packsHtml = pks.map((p) =>
-    `<div><button class="btn-sm" data-pack="${esc(expPackUri(p[0]))}">Inspect pack</button> <b>${esc(p[1])}</b> <span class="hd">by @${esc(expHdl(p[2]))} (${p[3]} accts)</span></div>`
-  ).join("");
-  const feedsHtml = fds.map((f) =>
-    `<div><b>${esc(f[1])}</b> <span class="hd">by @${esc(expHdl(f[2]))} · ${num(f[3])} community likers</span></div>`
-  ).join("");
-  const medUris = mds.map(expMedoidUri);
-  const medBtn = medUris.length ? `<button class="btn-sm" data-medoids="${esc(medUris.join(","))}">Hydrate ${medUris.length} sample post(s)</button><div class="med-slot"></div>` : "";
-
-  return `<article class="card${on ? " picked" : ""}">
-    <div class="card-top">
-      <h3>${esc(cd.t)}</h3>
-      <button class="btn${on ? " on" : ""}" data-pick="${cd.c}" ${full ? "disabled" : ""}>${on ? "Picked ✓" : "Pick"}</button>
-    </div>
-    ${cd.d ? `<p class="desc">${esc(cd.d)}</p>` : ""}
-    <div class="meta">${num(cd.sz)} producers (${num(cd.el)} eligible) · ${esc(cd.lg)}${conflict ? ` · <span class="flag">high-H w/ pick</span>` : ""}</div>
-    <ul class="samples">${top5}</ul>
-    ${lists ? `<div class="meta">Curated lists: ${lists}</div>` : ""}
-    <details class="more" data-card-more="${cd.c}">
-      <summary>Details · all ${cd.m.length} ranked · ${pks.length} pack(s) · ${fds.length} feed(s)</summary>
-      <div class="more-body">
-        ${medBtn}
-        ${packsHtml ? `<h4>Starter packs (inspect-only)</h4>${packsHtml}` : ""}
-        ${feedsHtml ? `<h4>Community-liked feeds (O7)</h4>${feedsHtml}` : ""}
-        <h4>Top ${cd.m.length} S13 candidates</h4>
-        <ol>${cd.m.map((aid) => { const m = acct(aid); return `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span>${badges(m)}</li>`; }).join("")}</ol>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-badge">S17 REV 3</span>
+        <div>
+          <div class="brand-title">Catbird Scene &amp; Author-Feed Inspector</div>
+          <div class="brand-sub" id="hdr-subtitle">Loading verified onboarding catalog &amp; live feed cache…</div>
+        </div>
       </div>
-    </details>
-  </article>`;
-}
 
-function renderSide() {
-  const bsize = Number($("#bsize").value || 25);
-  if (!picked.length) {
-    $("#side").innerHTML = `<h2>Your Onboarding Bundle</h2>
-      <p class="meta">Pick 1 to 5 scenes on the left to solve your ${bsize}-account bundle (with H-compatible neighbor suggestions, starter packs, feeds, and live Oct 22 For You preview).</p>`;
-    return;
-  }
-  const res = solveBundle(picked, bsize);
-  const chips = picked.map((c) => `<span class="chip">${esc(DATA.cards[c].t)} <button data-unpick="${c}" title="Remove">×</button></span>`).join("");
-  const sug = picked.length < PICK_MAX && res.suggestedNext.length
-    ? `<div class="suggest-box"><b>Suggested next cards (KnownFor co-membership, H-compatible):</b>
-        <div class="chips">${res.suggestedNext.map((nb) => `<button class="btn-sm" data-pick="${nb}">+ ${esc(DATA.cards[nb].t)}</button>`).join("")}</div>
-       </div>`
-    : "";
+      <nav class="nav-tabs" role="tablist" aria-label="Inspector views">
+        <button type="button" class="tab-btn" role="tab" id="tabbtn-radar" aria-selected="true" data-tab="radar">
+          1. Discrepancy &amp; Spam Radar <span class="tab-count" id="cnt-radar">…</span>
+        </button>
+        <button type="button" class="tab-btn" role="tab" id="tabbtn-explorer" aria-selected="false" data-tab="explorer">
+          2. Scene Explorer &amp; Bundle Simulator <span class="tab-count" id="cnt-explorer">…</span>
+        </button>
+        <button type="button" class="tab-btn" role="tab" id="tabbtn-signoff" aria-selected="false" data-tab="signoff">
+          3. 30-Card Gate Sign-Off <span class="tab-count" id="cnt-signoff">0/30</span>
+        </button>
+      </nav>
 
-  const feeds = [];
-  const packs = [];
-  for (const c of picked) {
-    for (const f of (DATA.cards[c].fd || [])) feeds.push({u: expFeedUri(f[0]), n: f[1], ch: f[2], lk: f[3], cardTitle: DATA.cards[c].t});
-    for (const p of (DATA.cards[c].pk || [])) packs.push({u: expPackUri(p[0]), n: p[1], ch: p[2], mc: p[3], cardTitle: DATA.cards[c].t});
-  }
-
-  $("#side").innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:baseline;">
-      <h2>Bundle (${res.items.length}/${bsize} accounts)</h2>
-      <button class="btn-sm" id="clear-picks">Clear</button>
+      <div class="top-actions">
+        <button type="button" class="btn btn-warn" id="btn-rebuild" hidden title="Re-run build_s17.py with your manual exclusions and hot-reload">
+          Rebuild Catalog (<span id="pending-ov-count">0</span> overrides)
+        </button>
+        <select id="theme-select" class="select" aria-label="Color theme">
+          <option value="system">Theme: System</option>
+          <option value="light">Theme: Light</option>
+          <option value="dark">Theme: Dark</option>
+        </select>
+      </div>
     </div>
-    <div class="chips">${chips}</div>
-    <div style="margin:8px 0;">
-      <button class="btn on" id="goto-preview" style="width:100%;">Open Live "Preview from Oct 22 data" →</button>
-    </div>
-    ${sug}
-    <div class="meta">Quota rule: ${picked.length <= 2 ? "even split (1–2 cards)" : "≥3/card, ≤40%/card"} · ≤2 &gt;500k followers${res.filled ? ` · ${res.filled} filled via H-safe neighbors` : ""}.</div>
-    ${feeds.length ? `<div class="more-body"><h4>Suggested Feeds (${feeds.length})</h4>${feeds.slice(0, 6).map((f) => `<div><b>${esc(f.n)}</b> <span class="hd">@${esc(expHdl(f.ch))} (${esc(f.cardTitle)})</span></div>`).join("")}</div>` : ""}
-    ${packs.length ? `<div class="more-body"><h4>Inspectable Starter Packs (${packs.length})</h4>${packs.slice(0, 4).map((p) => `<div><button class="btn-sm" data-pack="${esc(p.u)}">Inspect</button> <b>${esc(p.n)}</b></div>`).join("")}</div>` : ""}
-    <ol class="bundle-list">
-      ${res.items.map((m) => {
-        const curRate = (RATINGS.accounts || {})[m.did] || "";
-        return `<li>${who(m)} <span class="hd">· ${fmt(m.followers)}</span>${badges(m)}
-          <span class="src-tag">${esc(DATA.cards[m.srcCard]?.t || "c"+m.srcCard)}${m.viaFill ? " (neighbor fill)" : ""}</span>
-          <div style="margin-top:2px;display:flex;gap:4px;">
-            <button class="btn-sm${curRate==="on_scene_active"?" sel":""}" data-rate-acct="${esc(m.did)}" data-val="on_scene_active">On-scene</button>
-            <button class="btn-sm${curRate==="off_scene"?" sel":""}" data-rate-acct="${esc(m.did)}" data-val="off_scene">Off-scene</button>
-            <button class="btn-sm${curRate==="junk_or_dormant"?" sel":""}" data-rate-acct="${esc(m.did)}" data-val="junk_or_dormant">Junk/dormant</button>
+  </header>
+
+  <main class="container">
+    <!-- TAB 1: DISCREPANCY & SPAM RADAR -->
+    <section id="panel-radar" class="panel active" role="tabpanel" aria-labelledby="tabbtn-radar">
+      <div class="hero-box">
+        <div class="hero-head">
+          <div>
+            <h2 class="hero-title">Full-Data Embedding + Live <code>getAuthorFeed</code> Audit</h2>
+            <p class="hero-desc">
+              Every candidate across the <code>v0</code> catalog was screened against centered <code>S12m</code> multimodal post embeddings (<code>36.3M</code> posts),
+              <code>S16</code> Tier-1 social-graph projections, 64-bucket per-post duplicate-template cosines, follow-churn ratios, and live
+              <code>app.bsky.feed.getAuthorFeed</code> timelines (catching hidden post-level NSFW labels, repost walls, and template bots).
+              Spot-check remaining borderline edge cases below or inspect the receipts of what <code>rev 3</code> automatically evicted.
+            </p>
           </div>
-        </li>`;
-      }).join("")}
-    </ol>`;
-}
+        </div>
+        <div class="kpi-grid" id="radar-kpis"></div>
+      </div>
 
-async function loadPreview() {
-  const body = $("#preview-body");
-  if (!picked.length) {
-    body.innerHTML = `<p class="meta">Pick 1–5 scenes in Tab 1 first, then view their live-hydrated Oct 22 residual preview here.</p>`;
-    $("#preview-stats").textContent = "";
-    return;
-  }
-  body.innerHTML = `<p class="meta">Hydrating live posts via public AppView <code>getPosts</code>…</p>`;
-  const r = await fetch(`/api/preview?cards=${picked.join(",")}`);
-  const d = await r.json();
-  $("#preview-stats").textContent = `${d.live_posts_returned} live posts (${d.candidate_uris_checked} candidates checked) · Measured political share: ${(d.political_share * 100).toFixed(1)}% (${d.political_posts_count}/${d.live_posts_returned})`;
-  if (!d.posts.length) {
-    body.innerHTML = `<p class="meta">No live posts returned for the selected cards.</p>`;
-    return;
-  }
-  body.innerHTML = d.posts.map((p) => `<article class="post-card">
-    <div class="post-head">
-      <span><b>${esc(p.name || "@" + p.handle)}</b> <span class="hd">@${esc(p.handle)}</span> · <span class="badge">${esc(p.community_title)}</span></span>
-      <span>residual ${p.residual} (in-comm ${p.n_comm} / global ${p.n_all})</span>
+      <div class="toolbar">
+        <button type="button" class="btn btn-primary" id="mode-borderline">Remaining Borderline Queue (Kept Accounts)</button>
+        <button type="button" class="btn" id="mode-evicted">Automated Eviction Receipts (Dropped by Rev 3)</button>
+        <select id="radar-filter" class="select" aria-label="Discrepancy category filter">
+          <option value="all">All Categories</option>
+        </select>
+        <input type="search" id="radar-search" class="input" placeholder="Filter by @handle, bio, scene title, domain, or flag…">
+        <label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--muted);cursor:pointer;">
+          <input type="checkbox" id="radar-hide-reviewed"> Hide accounts I already marked OK / Excluded
+        </label>
+      </div>
+
+      <div id="radar-summary-line" style="margin:0 0 10px;font-size:12.5px;color:var(--muted);"></div>
+      <div id="radar-list" class="audit-list"></div>
+      <div style="margin-top:14px;text-align:center;">
+        <button type="button" class="btn" id="radar-more-btn" hidden>Show More Accounts</button>
+      </div>
+    </section>
+
+    <!-- TAB 2: SCENE EXPLORER & ONBOARDING SIMULATOR -->
+    <section id="panel-explorer" class="panel" role="tabpanel" aria-labelledby="tabbtn-explorer">
+      <div class="explorer-layout">
+        <div>
+          <div class="toolbar">
+            <input type="search" id="exp-search" class="input" placeholder="Search 1,103 cards by Opus title, description, list name, @handle, or bio…">
+            <select id="exp-lang" class="select" aria-label="Language filter">
+              <option value="all">All Languages</option>
+            </select>
+            <select id="exp-sort" class="select" aria-label="Sort cards">
+              <option value="scenes">Grouped by Scene (Most Engaged)</option>
+              <option value="low_coh">Audit: Lowest Post Coherence First</option>
+              <option value="most_sup">Audit: Most D17 Supplement Accounts</option>
+              <option value="most_eng">Flat: Largest Engaged Audience</option>
+            </select>
+          </div>
+          <div id="exp-meta" style="margin:0 0 10px;font-size:12.5px;color:var(--muted);"></div>
+          <div id="exp-container"></div>
+          <div style="margin-top:14px;text-align:center;">
+            <button type="button" class="btn" id="exp-more-btn" hidden>Load More Scenes / Cards</button>
+          </div>
+        </div>
+
+        <aside class="sticky-rail" aria-label="Onboarding bundle simulator">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+            <strong style="font-size:15px;">Onboarding Bundle Simulator</strong>
+            <button type="button" class="btn" id="bundle-clear">Clear</button>
+          </div>
+          <p style="margin:0 0 10px;font-size:12px;color:var(--muted);">
+            Pick 1–5 scene cards to solve a 25- or 50-account starter follow bundle (<code>&le;2 &gt;500k</code> per card, H-matrix hostility guard active), then inspect live posts!
+          </p>
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+            <label style="font-size:12px;font-weight:600;">Target size:</label>
+            <select id="bundle-size" class="select">
+              <option value="25">25 accounts (default)</option>
+              <option value="50">50 accounts (expanded)</option>
+            </select>
+          </div>
+          <div id="bundle-picked-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;"></div>
+          <div id="bundle-actions" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;" hidden>
+            <button type="button" class="btn btn-primary" id="btn-bundle-live-feeds">Hydrate Live Author Feeds</button>
+            <button type="button" class="btn" id="btn-bundle-oct22">Oct 22 Excess-Engagement Preview</button>
+          </div>
+          <div id="bundle-output"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 3: UNBLINDED 30-CARD GATE SIGN-OFF -->
+    <section id="panel-signoff" class="panel" role="tabpanel" aria-labelledby="tabbtn-signoff">
+      <div class="hero-box">
+        <div class="hero-head">
+          <div>
+            <h2 class="hero-title">30-Card Deterministic Gate Sign-Off (Unblinded + Pre-Hydrated Live Feeds)</h2>
+            <p class="hero-desc">
+              These 30 cards are the deterministic <code>cityHash64(community)</code> sample across the catalog.
+              Every card is shown unblinded with its <strong>Opus Title</strong> vs. <strong>Curated List Title</strong>, uncut description, coherence metrics,
+              and pre-hydrated live <code>getAuthorFeed</code> posts so you can verify quality at a glance.
+            </p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-good" id="btn-autofill-clean">
+              Approve All Unrated Cards as Clean
+            </button>
+          </div>
+        </div>
+        <div class="kpi-grid" id="signoff-kpis"></div>
+      </div>
+
+      <div id="signoff-list"></div>
+    </section>
+  </main>
+
+  <!-- Native Modal Dialog for Deep 25-Account Card Inspection (`light-dismiss-a-dialog`) -->
+  <dialog id="card-dialog" closedby="any" aria-labelledby="dlg-title">
+    <div class="dlg-inner">
+      <div class="dlg-header">
+        <div style="min-width:0;flex:1;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <h2 id="dlg-title" style="margin:0;font-size:17px;">Card Inspector</h2>
+            <span id="dlg-badges"></span>
+          </div>
+          <div id="dlg-sub" style="font-size:12.5px;color:var(--muted);margin-top:4px;"></div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button type="button" class="btn btn-primary" id="dlg-hydrate-all">Hydrate Remaining Live Feeds</button>
+          <button type="button" class="btn btn-bad" id="dlg-exclude-card">Exclude Whole Card</button>
+          <button type="button" class="btn" id="dlg-close" aria-label="Close modal">✕ Close</button>
+        </div>
+      </div>
+      <div class="dlg-body" id="dlg-body"></div>
     </div>
-    <div class="post-txt">${esc(p.text || "[media-only post]")}</div>
-    <div class="post-foot">
-      <span>Preview from Oct 22 data</span>
-      <span>♥ ${num(p.likes)} · ↻ ${num(p.reposts)} · 💬 ${num(p.replies)}</span>
-      ${p.media_badge ? `<span>[${esc(p.media_badge)} attachment — bytes not fetched]</span>` : ""}
-      ${p.is_political ? `<span class="flag">political-keyword/score</span>` : ""}
-    </div>
-  </article>`).join("");
-}
+  </dialog>
 
-function renderBlindReview() {
-  const html = (DATA.blind_review_30 || []).map((item) => {
-    const cd = DATA.cards[item.c];
-    if (!cd) return "";
-    const cr = (RATINGS.cards || {})[item.c] || {};
-    const samples = cd.m.slice(0, 8).map((aid) => { const m = acct(aid); return `${m.name ? esc(m.name)+" " : ""}<span class="hd">@${esc(m.handle)} (${fmt(m.followers)})</span>`; }).join(" · ");
-    const lists = (cd.ln || []).map(([n, k]) => `${esc(n)} (${k})`).join(", ");
-    return `<div class="review-card" id="rev-${item.c}">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <b>Card #${item.slot} of 30 · Community c${item.c} (${num(cd.sz)} members, ${esc(cd.lg)})</b>
-        ${(cd.md && cd.md.length) ? `<button class="btn-sm" data-medoids="${esc(cd.md.map(expMedoidUri).join(","))}">Hydrate sample posts</button>` : ""}
-      </div>
-      <div class="med-slot"></div>
-      <p class="meta" style="margin:6px 0;">Top ranked accounts: ${samples}</p>
-      ${lists ? `<p class="meta" style="margin:4px 0;">A-half curated lists: ${lists}</p>` : ""}
-      <div class="ab-box">
-        <div class="ab-opt"><b>Title Option A:</b><div>${esc(item.option_a)}</div></div>
-        <div class="ab-opt"><b>Title Option B:</b><div>${esc(item.option_b)}</div></div>
-      </div>
-      ${cd.d ? `<details class="more" style="margin:4px 0 8px;"><summary>Show full uncut scene summary (inspect after picking A/B)</summary><p class="desc" style="margin-top:6px;">${esc(cd.d)}</p></details>` : ""}
-      <div class="rate-row">
-        <span>1. Real scene I recognise?</span>
-        <button class="btn-sm${cr.recognise==="yes"?" sel":""}" data-rc="${item.c}" data-k="recognise" data-v="yes">Yes</button>
-        <button class="btn-sm${cr.recognise==="no"?" sel":""}" data-rc="${item.c}" data-k="recognise" data-v="no">No</button>
-        <span style="margin-left:12px;">2. Blind A/B preference:</span>
-        <button class="btn-sm${cr.prefer==="A"?" sel":""}" data-rc="${item.c}" data-k="prefer" data-v="A">Prefer A</button>
-        <button class="btn-sm${cr.prefer==="B"?" sel":""}" data-rc="${item.c}" data-k="prefer" data-v="B">Prefer B</button>
-        <button class="btn-sm${cr.prefer==="tie"?" sel":""}" data-rc="${item.c}" data-k="prefer" data-v="tie">Tie</button>
-      </div>
-      <div class="rate-row">
-        <span>3. Winning title acceptable?</span>
-        <button class="btn-sm${cr.label_ok==="yes"?" sel":""}" data-rc="${item.c}" data-k="label_ok" data-v="yes">Yes (acceptable)</button>
-        <button class="btn-sm${cr.label_ok==="no"?" sel":""}" data-rc="${item.c}" data-k="label_ok" data-v="no">No</button>
-        <span style="margin-left:12px;">4. Missed Y3 sensitivity?</span>
-        <button class="btn-sm${(cr.sensitive_missed||"no")==="no"?" sel":""}" data-rc="${item.c}" data-k="sensitive_missed" data-v="no">Safe (none)</button>
-        <button class="btn-sm${cr.sensitive_missed==="yes"?" sel":""}" data-rc="${item.c}" data-k="sensitive_missed" data-v="yes">Should be sensitive!</button>
-      </div>
-    </div>`;
-  }).join("");
-  $("#review-list").innerHTML = html;
-}
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-function renderComparator() {
-  const c = DATA.comparator || {};
-  if (!c.available) {
-    $("#comp-body").innerHTML = `<div class="review-card">
-      <h3>Bluesky Suggested Onboarding Comparator</h3>
-      <p>${esc(c.note || "Comparator unavailable unauthenticated.")}</p>
-      <p class="meta">HTTP status recorded in <code>receipt.json</code>: <b>${c.http_status}</b>. Per Whole-Network Plan row S17 ("if the Bluesky comparator works, ours preferred in ≥15/20"), side-by-side authenticated comparison runs in S18 dev build.</p>
-    </div>`;
-    return;
-  }
-  const bundle = solveBundle(picked.length ? picked : [DATA.blind_review_30[0].c], 25).items;
-  $("#comp-body").innerHTML = `<div class="review-card">
-    <h3>Bluesky <code>getSuggestedOnboardingUsers</code> (${c.actors.length} clean accounts) vs Catbird v0 Bundle</h3>
-    <div class="ab-box">
-      <div class="ab-opt"><b>Catbird v0 Bundle (${bundle.length})</b><ol>${bundle.map((m) => `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span></li>`).join("")}</ol></div>
-      <div class="ab-opt"><b>Bluesky Default Onboarding (${c.actors.length})</b><ol>${c.actors.map((m) => `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span></li>`).join("")}</ol></div>
-    </div>
-  </div>`;
-}
+  <script>
+  (() => {
+    "use strict";
 
-async function saveRatings(patch) {
-  $("#save-status").textContent = "Saving…";
-  const r = await fetch("/api/ratings", {
-    method: "POST",
-    headers: {"Content-Type": "application/json", "X-S17-Client": "same-origin"},
-    body: JSON.stringify(patch),
-  });
-  const d = await r.json();
-  $("#save-status").textContent = d.ok ? `Saved ${d.updated_utc.slice(11, 19)}Z` : "Save error";
-}
+    // --- Base32 / Compact URI decoders matching build_s17.py bit-for-bit ---
+    const B32_ALPHA = "abcdefghijklmnopqrstuvwxyz234567";
+    function expandDid(s) {
+      if (!s || s.startsWith("did:")) return s || "";
+      const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
+      const bin = atob(b64);
+      let bits = 0, val = 0, out = "";
+      for (let i = 0; i < bin.length; i++) {
+        val = (val << 8) | bin.charCodeAt(i);
+        bits += 8;
+        while (bits >= 5) {
+          bits -= 5;
+          out += B32_ALPHA[(val >>> bits) & 31];
+        }
+      }
+      return "did:plc:" + out;
+    }
+    function expandHandle(h) {
+      if (!h) return "";
+      return h.includes(".") ? h : (h + ".bsky.social");
+    }
+    function expandPackUri(s) {
+      if (!s || s.startsWith("at://")) return s || "";
+      const [cd, rkey] = s.split("/");
+      return `at://${expandDid(cd)}/app.bsky.graph.starterpack/${rkey}`;
+    }
+    function expandFeedUri(s) {
+      if (!s || s.startsWith("at://")) return s || "";
+      const [cd, rkey] = s.split("/");
+      return `at://${expandDid(cd)}/app.bsky.feed.generator/${rkey}`;
+    }
 
-document.addEventListener("click", async (e) => {
-  const t = e.target.closest("button");
-  if (!t) return;
-  if (t.dataset.tab) {
-    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === t));
-    ["picker", "preview", "review", "comparator"].forEach((nm) => {
-      $("#tab-" + nm).classList.toggle("hidden", nm !== t.dataset.tab);
+    function esc(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    function fmtNum(n) {
+      n = Number(n || 0);
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+      if (n >= 10_000) return Math.round(n / 1_000) + "k";
+      if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+      return String(n);
+    }
+    function fmtCos(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+      const num = Number(v);
+      return (num >= 0 ? "+" : "") + num.toFixed(2);
+    }
+    function relAge(iso) {
+      if (!iso) return "";
+      const ms = Date.now() - Date.parse(iso);
+      if (!Number.isFinite(ms) || ms < 0) return "now";
+      const mins = Math.floor(ms / 60000);
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 48) return `${hrs}h ago`;
+      const days = Math.floor(hrs / 24);
+      if (days < 365) return `${days}d ago`;
+      return `${(days / 365).toFixed(1)}y ago`;
+    }
+    function bskyProfileUrl(handleOrDid) {
+      return `https://bsky.app/profile/${encodeURIComponent(handleOrDid)}`;
+    }
+    function bskyPostUrl(post) {
+      if (post.rkey && post.author_handle) {
+        return `https://bsky.app/profile/${encodeURIComponent(post.author_handle)}/post/${encodeURIComponent(post.rkey)}`;
+      }
+      if (post.uri && post.uri.startsWith("at://")) {
+        const parts = post.uri.split("/");
+        if (parts.length >= 5) return `https://bsky.app/profile/${encodeURIComponent(parts[2])}/post/${encodeURIComponent(parts[4])}`;
+      }
+      return bskyProfileUrl(post.author_handle || "");
+    }
+
+    // --- State ---
+    let CAT = null;
+    let DESCS = {};
+    let IDX = null;
+    let BKEY = {};
+    let RATINGS = { cards: {}, accounts: {}, comparator: {} };
+    let OVERRIDES = { excluded_dids: {}, excluded_cards: {}, approved_dids: [] };
+    let ACCTS_EXPANDED = []; // aid -> { aid, did, handle, followers, name, isHfr, isSup, meta }
+    const FEED_CACHE = new Map(); // did -> feed object
+    const INFLIGHT_DIDS = new Set();
+
+    let activeTab = "radar";
+    let radarMode = "borderline"; // "borderline" | "evicted"
+    let radarLimit = 25;
+    let expLimit = 18;
+    const pickedBundleCards = []; // array of int cid (max 5)
+    let currentModalCid = null;
+
+    // --- Theme Toggle (`dark-mode`) ---
+    const themeSel = document.getElementById("theme-select");
+    const savedTheme = localStorage.getItem("s17_theme") || "system";
+    document.documentElement.dataset.theme = savedTheme;
+    themeSel.value = savedTheme;
+    themeSel.addEventListener("change", () => {
+      document.documentElement.dataset.theme = themeSel.value;
+      localStorage.setItem("s17_theme", themeSel.value);
     });
-    if (t.dataset.tab === "preview") loadPreview();
-    if (t.dataset.tab === "comparator") renderComparator();
-    return;
-  }
-  if (t.dataset.pick) {
-    const cid = Number(t.dataset.pick);
-    const i = picked.indexOf(cid);
-    if (i >= 0) picked.splice(i, 1);
-    else if (picked.length < PICK_MAX) picked.push(cid);
-    renderPicker();
-    return;
-  }
-  if (t.dataset.unpick) {
-    const i = picked.indexOf(Number(t.dataset.unpick));
-    if (i >= 0) picked.splice(i, 1);
-    renderPicker();
-    return;
-  }
-  if (t.id === "clear-picks") { picked.length = 0; renderPicker(); return; }
-  if (t.id === "goto-preview") { document.querySelector('[data-tab="preview"]').click(); return; }
-  if (t.id === "refresh-preview") { loadPreview(); return; }
-  if (t.dataset.pack) {
-    const r = await fetch(`/api/pack?uri=${encodeURIComponent(t.dataset.pack)}`);
-    const pk = await r.json();
-    $("#pm-title").textContent = `${pk.name || "Starter pack"} (@${pk.creator_handle}) — ${pk.members?.length || 0} accounts`;
-    $("#pm-body").innerHTML = `<ol>${(pk.members || []).map((m) => `<li>${who(m)} <span class="hd">(${fmt(m.followers)})</span>${badges(m)}</li>`).join("")}</ol>`;
-    $("#pack-modal").classList.add("open");
-    return;
-  }
-  if (t.id === "pm-close") { $("#pack-modal").classList.remove("open"); return; }
-  if (t.dataset.medoids) {
-    const slot = t.parentElement.querySelector(".med-slot") || t.closest(".review-card")?.querySelector(".med-slot");
-    if (!slot) return;
-    slot.innerHTML = `<div class="meta">Hydrating live via getPosts…</div>`;
-    const r = await fetch(`/api/medoids?uris=${encodeURIComponent(t.dataset.medoids)}`);
-    const d = await r.json();
-    slot.innerHTML = (d.posts || []).map((p) => `<div class="post-card" style="margin-top:6px;">
-      <div class="post-head"><b>@${esc(p.handle)}</b><span>♥ ${num(p.likes)}</span></div>
-      <div class="post-txt">${esc(p.text || "[media post]")}</div>
-    </div>`).join("") || `<div class="meta">Posts deleted or unavailable live.</div>`;
-    return;
-  }
-  if (t.dataset.rc) {
-    const cid = t.dataset.rc, k = t.dataset.k, v = t.dataset.v;
-    RATINGS.cards = RATINGS.cards || {};
-    RATINGS.cards[cid] = {...(RATINGS.cards[cid] || {}), [k]: v};
-    renderBlindReview();
-    await saveRatings({cards: {[cid]: RATINGS.cards[cid]}});
-    return;
-  }
-  if (t.dataset.rateAcct) {
-    const did = t.dataset.rateAcct, v = t.dataset.val;
-    RATINGS.accounts = RATINGS.accounts || {};
-    RATINGS.accounts[did] = v;
-    renderSide();
-    await saveRatings({accounts: {[did]: v}});
-    return;
-  }
-  if (t.id === "btn-reveal") {
-    const r = await fetch("/api/ratings?reveal=1");
-    const d = await r.json();
-    const b = d.reveal?.bars || {};
-    const box = $("#reveal-box");
-    box.classList.remove("hidden");
-    box.innerHTML = `
-      <div><b>Scene recognised:</b> ${b.scene_recognised_pct ?? "—"}% (n=${b.scene_rated_n}, bar ≥70%)</div>
-      <div><b>Label accepted:</b> ${b.label_accepted_pct ?? "—"}% (n=${b.label_rated_n}, bar ≥85%)</div>
-      <div><b>Opus vs List A/B:</b> ${b.opus_preferred_pct ?? "—"}% Opus (n=${b.ab_decided_n}, bar ≥60%)</div>
-      <div><b>Missed sensitive:</b> ${b.sensitive_missed_count} (bar = 0)</div>
-      <div><b>Bundle accounts:</b> ${b.bundle_on_scene_pct ?? "—"}% on-scene · ${b.bundle_junk_pct ?? "—"}% junk (n=${b.bundle_rated_n})</div>`;
-  }
-});
 
-$("#q").addEventListener("input", renderPicker);
-$("#lang").addEventListener("change", renderPicker);
-$("#bsize").addEventListener("change", renderSide);
-$("#jump").addEventListener("change", (e) => {
-  if (e.target.value) document.getElementById(e.target.value)?.scrollIntoView({behavior: "smooth"});
-});
+    // --- Native Modal Dialog + Safari Light-Dismiss Fallback (`light-dismiss-a-dialog`) ---
+    const dialogEl = document.getElementById("card-dialog");
+    document.getElementById("dlg-close").addEventListener("click", () => dialogEl.close());
+    if (!("closedBy" in HTMLDialogElement.prototype)) {
+      dialogEl.addEventListener("click", (event) => {
+        const rect = dialogEl.getBoundingClientRect();
+        const clickedInside = (
+          rect.top <= event.clientY &&
+          event.clientY <= rect.top + rect.height &&
+          rect.left <= event.clientX &&
+          event.clientX <= rect.left + rect.width
+        );
+        if (!clickedInside) {
+          dialogEl.close();
+        }
+      });
+    }
 
-(async function init() {
-  const [cRes, dRes, rRes] = await Promise.all([
-    fetch("/cards_v1.json"),
-    fetch("/cards_descriptions.json"),
-    fetch("/api/ratings"),
-  ]);
-  DATA = await cRes.json();
-  const DESCS = dRes.ok ? await dRes.json() : {};
-  RATINGS = await rRes.json();
-  for (const [k, cd] of Object.entries(DATA.cards)) {
-    cd.c = Number(k);
-    cd.lg = cd.lg || "en";
-    const dm = DESCS[k] || {};
-    if (dm.d) cd.d = dm.d;
-    if (dm.ct) cd.ct = dm.ct;
-    if (dm.fit) cd.fit = dm.fit;
-    if (dm.cf) cd.cf = dm.cf;
-  }
-  for (const [a, b] of (DATA.high_h_pairs || [])) HIGH_H.add(Math.min(a,b) + ":" + Math.max(a,b));
-  $("#stat-badge").textContent = `${num(DATA.counts.v0_cards)} organic v0 cards · ${num(DATA.counts.unique_candidate_accounts)} human accounts · 0 violations`;
-  const langs = {};
-  for (const cd of Object.values(DATA.cards)) langs[cd.lg] = (langs[cd.lg] || 0) + 1;
-  $("#lang").innerHTML = `<option value="">All languages</option>` + Object.entries(langs).sort((a,b)=>b[1]-a[1]).map(([l,n]) => `<option value="${esc(l)}">${esc(l)} (${n})</option>`).join("");
-  renderPicker();
-  renderBlindReview();
-  renderComparator();
-})();
-</script>
+    function showToast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      clearTimeout(showToast._tid);
+      showToast._tid = setTimeout(() => t.classList.remove("show"), 2600);
+    }
+
+    async function apiPost(path, bodyObj) {
+      const resp = await fetch(path, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-S17-Client": "same-origin",
+        },
+        body: JSON.stringify(bodyObj),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return resp.json();
+    }
+
+    // --- Batch Live Feed Loader (SQLite first, polite <=8.5 req/s fallback) ---
+    async function ensureFeedsLoaded(dids, fetchMissing = true, onBatchUpdate = null) {
+      const todo = dids.filter((d) => d && !FEED_CACHE.has(d) && !INFLIGHT_DIDS.has(d));
+      if (!todo.length) {
+        if (onBatchUpdate) onBatchUpdate();
+        return;
+      }
+      todo.forEach((d) => INFLIGHT_DIDS.add(d));
+      try {
+        for (let i = 0; i < todo.length; i += 28) {
+          const slice = todo.slice(i, i + 28);
+          let rem = slice;
+          let guard = 0;
+          while (rem.length > 0 && guard < 5) {
+            guard += 1;
+            const qs = `dids=${encodeURIComponent(rem.join(","))}&fetch_missing=${fetchMissing ? "1" : "0"}`;
+            const res = await fetch(`/api/author_feeds_batch?${qs}`).then((r) => r.json());
+            const feeds = res.feeds || {};
+            for (const [d, fobj] of Object.entries(feeds)) {
+              FEED_CACHE.set(d, fobj);
+              updateFeedDomForDid(d);
+            }
+            if (onBatchUpdate) onBatchUpdate();
+            if (!fetchMissing) break;
+            rem = (res.remaining_uncached || []).filter((d) => !FEED_CACHE.has(d));
+          }
+        }
+      } finally {
+        todo.forEach((d) => INFLIGHT_DIDS.delete(d));
+      }
+    }
+
+    // Lazy viewport observer to auto-populate live author feeds as cards scroll into view
+    const feedObserver = new IntersectionObserver((entries) => {
+      const visibleDids = [];
+      for (const ent of entries) {
+        if (ent.isIntersecting) {
+          const d = ent.target.dataset.observeDid;
+          if (d && !FEED_CACHE.has(d)) visibleDids.push(d);
+          feedObserver.unobserve(ent.target);
+        }
+      }
+      if (visibleDids.length) {
+        ensureFeedsLoaded(visibleDids, true);
+      }
+    }, { rootMargin: "280px 0px" });
+
+    function observeFeedContainers(rootEl) {
+      rootEl.querySelectorAll("[data-observe-did]").forEach((el) => {
+        const d = el.dataset.observeDid;
+        if (FEED_CACHE.has(d)) {
+          el.innerHTML = renderFeedStripInner(d, el.dataset.inHidden === "1");
+        } else {
+          feedObserver.observe(el);
+        }
+      });
+    }
+
+    function updateFeedDomForDid(did) {
+      const f = FEED_CACHE.get(did);
+      if (!f) return;
+      document.querySelectorAll(`[data-feed-slot="${CSS.escape(did)}"]`).forEach((el) => {
+        el.innerHTML = renderFeedStripInner(did, el.dataset.inHidden === "1");
+      });
+      if (f.avatar_url) {
+        document.querySelectorAll(`span.avatar[data-av-did="${CSS.escape(did)}"]`).forEach((sp) => {
+          const img = document.createElement("img");
+          img.className = sp.className;
+          img.src = f.avatar_url;
+          img.alt = "";
+          img.decoding = "async";
+          img.referrerPolicy = "no-referrer";
+          if (sp.dataset.inHidden === "1") img.setAttribute("fetchpriority", "low");
+          else img.loading = "lazy";
+          sp.replaceWith(img);
+        });
+      }
+    }
+
+    // `optimize-image-priority`: standard below-the-fold lazy images use `loading="lazy"` ONLY (never `fetchpriority="low"`),
+    // while images rendered inside hidden/modal drawers use `fetchpriority="low"`.
+    function renderAvatarHtml(did, name, handle, avatarUrl, small = false, inHidden = false) {
+      const cls = small ? "avatar avatar-sm" : "avatar";
+      const f = FEED_CACHE.get(did);
+      const url = avatarUrl || (f && f.avatar_url) || "";
+      if (url && url.startsWith("https://cdn.bsky.app/")) {
+        const prioAttr = inHidden ? `fetchpriority="low"` : `loading="lazy"`;
+        return `<img class="${cls}" src="${esc(url)}" alt="" ${prioAttr} decoding="async" referrerpolicy="no-referrer">`;
+      }
+      const init = ((name || handle || "?").trim()[0] || "?").toUpperCase();
+      return `<span class="${cls}" data-av-did="${esc(did)}" data-in-hidden="${inHidden ? "1" : "0"}">${esc(init)}</span>`;
+    }
+
+    function renderFeedStripInner(did, inHidden = false) {
+      const f = FEED_CACHE.get(did);
+      if (!f) {
+        return `<div class="feed-strip-hdr"><span>Loading live <code>getAuthorFeed</code> timeline…</span></div>`;
+      }
+      if (f.is_hfr) {
+        return `<div class="feed-strip-hdr"><span class="pill pill-warn">A1 Opt-Out: hideFromAlgorithmicRecommendations — post content withheld</span></div>`;
+      }
+      const posts = f.posts || [];
+      const vd = f.live_verdict || "clean";
+      const vdCls = vd === "clean" ? "pill-good" : (vd.startsWith("drop_") ? "pill-bad" : "pill-warn");
+      const mixTxt = `${f.n_items || 0} recent items · ${Math.round((f.authored_frac || 0) * 100)}% authored (${f.n_orig || 0} orig, ${f.n_quote || 0} quote, ${f.n_reply || 0} reply) · ${Math.round((f.repost_frac || 0) * 100)}% reposts` +
+        (f.days_since_last_any < 9000 ? ` · last active ${f.days_since_last_any.toFixed(1)}d ago` : "") +
+        (f.top_ext_domain ? ` · top link: ${esc(f.top_ext_domain)}` : "");
+
+      if (!posts.length) {
+        return `<div class="feed-strip-hdr">
+          <span>Live Feed: <span class="pill ${vdCls}">${esc(vd)}</span> · ${mixTxt}</span>
+          <button type="button" class="btn" data-refresh-did="${esc(did)}">↻ Refresh Live</button>
+        </div>
+        <div style="font-size:12px;color:var(--muted);">No public unlabelled posts returned by <code>getAuthorFeed</code>.</div>`;
+      }
+
+      const prioAttr = inHidden ? `fetchpriority="low"` : `loading="lazy"`;
+      const cardsHtml = posts.slice(0, 4).map((p) => {
+        const kBadge = p.kind === "post" ? `<span class="pill pill-good">Original</span>`
+          : p.kind === "quote" ? `<span class="pill pill-accent">Quote</span>`
+          : p.kind === "reply" ? `<span class="pill">Reply</span>`
+          : `<span class="pill pill-warn">Repost @${esc(p.author_handle || "")}</span>`;
+        const polBadge = p.is_political ? `<span class="pill pill-warn">Political kw</span>` : "";
+        const thumbsHtml = (p.thumbs && p.thumbs.length)
+          ? `<div class="post-thumbs">${p.thumbs.map((u, idx) =>
+              `<img class="post-thumb" src="${esc(u)}" alt="${esc((p.alts && p.alts[idx]) || "")}" title="${esc((p.alts && p.alts[idx]) || "")}" ${prioAttr} decoding="async" referrerpolicy="no-referrer">`
+            ).join("")}</div>`
+          : "";
+        const quoteHtml = p.quote
+          ? `<div class="post-quote"><strong>@${esc(p.quote.handle)}</strong>: ${esc(p.quote.text)}</div>`
+          : "";
+        const extHtml = p.ext_uri
+          ? `<div style="font-size:11.5px;"><a href="${esc(p.ext_uri)}" target="_blank" rel="noopener noreferrer">🔗 ${esc(p.ext_title || p.ext_domain || p.ext_uri)} ↗</a></div>`
+          : "";
+        return `<article class="post-box">
+          <div>
+            <div class="post-meta">
+              <span>${kBadge} ${polBadge}</span>
+              <span>${esc(relAge(p.created_at))}</span>
+            </div>
+            <div class="post-text" style="margin-top:6px;">${esc(p.text || "(media-only post)")}</div>
+            ${quoteHtml}
+            ${extHtml}
+          </div>
+          ${thumbsHtml}
+          <div class="post-foot">
+            <span>♥ ${fmtNum(p.likes)} · ↻ ${fmtNum(p.reposts)} · 💬 ${fmtNum(p.replies)}</span>
+            <a href="${esc(bskyPostUrl(p))}" target="_blank" rel="noopener noreferrer">View post ↗</a>
+          </div>
+        </article>`;
+      }).join("");
+
+      return `<div class="feed-strip-hdr">
+        <span>Live <code>getAuthorFeed</code>: <span class="pill ${vdCls}">${esc(vd)}</span> · ${mixTxt}${f.live_sem_cos !== null && f.live_sem_cos !== undefined ? ` · Live EG2 cos: <strong>${fmtCos(f.live_sem_cos)}</strong>` : ""}</span>
+        <button type="button" class="btn" data-refresh-did="${esc(did)}">↻ Refresh</button>
+      </div>
+      <div class="posts-grid">${cardsHtml}</div>`;
+    }
+
+    // --- Account Audit Card Renderer (used in Tab 1 & Modal) ---
+    function renderFullAccountCard(item, opts = {}) {
+      const did = item.did;
+      const isExcluded = Boolean(OVERRIDES.excluded_dids[did]);
+      const isApproved = OVERRIDES.approved_dids.includes(did);
+      const cls = ["acct-card", isExcluded ? "is-excluded" : "", isApproved ? "is-approved" : ""].filter(Boolean).join(" ");
+      const inHidden = Boolean(opts.inHidden);
+
+      const handle = item.handle || "";
+      const dispName = item.name || handle;
+      const bio = item.bio || "";
+      const followers = item.followers ?? 0;
+      const follows = item.follows ?? 0;
+      const postsCnt = item.posts ?? 0;
+      const ppd = item.ppd ?? 0;
+      const fr = item.fr ?? (follows / Math.max(followers, 1));
+      const sp = item.sp;
+      const t1 = item.t1;
+      const dup = item.dup ?? 0;
+      const cardCid = item.card_cid;
+      const cardObj = cardCid !== undefined && CAT.cards[String(cardCid)] ? CAT.cards[String(cardCid)] : null;
+      const cardTitle = item.card_title || (cardObj ? cardObj.t : `c${cardCid}`);
+
+      const spCls = sp === null || sp === undefined ? "" : (sp >= 0.25 ? "pill-good" : (sp < 0.14 ? "pill-bad" : "pill-warn"));
+      const t1Cls = t1 === null || t1 === undefined ? "" : (t1 >= 0.22 ? "pill-good" : (t1 < 0.12 ? "pill-bad" : "pill-warn"));
+      const dupCls = dup >= 0.70 ? "pill-bad" : (dup >= 0.50 ? "pill-warn" : "");
+
+      let closerHtml = "";
+      if (item.boc && item.bol) {
+        closerHtml = `<span class="pill pill-warn" title="Account's centered S12m post vector is closer to another community centroid">
+          ⚠ Closer to [${item.boc}] ${esc(item.bol)} (${fmtCos(item.bos)} vs ${fmtCos(sp)})
+        </span>`;
+      }
+
+      const reasonBanner = item.evicted_reason
+        ? `<span class="pill pill-bad">Evicted by Rev 3: ${esc(item.evicted_reason)}</span>`
+        : (item.flags && item.flags.length
+            ? item.flags.map((fl) => `<span class="pill pill-warn">${esc(fl)}</span>`).join(" ")
+            : `<span class="pill pill-good">Clean signals</span>`);
+
+      const actionBtns = item.evicted_reason
+        ? `<a class="btn" href="${esc(bskyProfileUrl(handle || did))}" target="_blank" rel="noopener noreferrer">Open @${esc(handle)} on Bluesky ↗</a>`
+        : `<button type="button" class="btn btn-good" data-act="approve-did" data-did="${esc(did)}">${isApproved ? "✓ Marked OK" : "✓ Looks Good"}</button>
+           <button type="button" class="btn ${isExcluded ? "" : "btn-bad"}" data-act="${isExcluded ? "restore-did" : "exclude-did"}" data-did="${esc(did)}">
+             ${isExcluded ? "↩ Restore Account" : "✕ Exclude Account"}
+           </button>`;
+
+      return `<div class="${cls}" data-acct-card="${esc(did)}">
+        <div class="acct-top">
+          <div class="acct-id-row">
+            ${renderAvatarHtml(did, dispName, handle, item.avatar_url || "", false, inHidden)}
+            <div class="acct-names">
+              <div class="acct-name-line">
+                <span class="acct-disp">${esc(dispName)}</span>
+                <a class="acct-handle" href="${esc(bskyProfileUrl(handle || did))}" target="_blank" rel="noopener noreferrer">@${esc(handle)} ↗</a>
+                ${item.rank_pos ? `<span class="pill">Rank #${item.rank_pos}/25</span>` : ""}
+                ${item.is_sup ? `<span class="pill pill-accent" title="Late-fetched D17 supplement account (capped at <=2/card)">D17 Supplement</span>` : ""}
+                ${isExcluded ? `<span class="pill pill-bad">Manually Excluded</span>` : ""}
+              </div>
+              <div class="acct-stats">
+                <strong>${fmtNum(followers)}</strong> followers · <strong>${fmtNum(follows)}</strong> following (${Number(fr).toFixed(1)}×) ·
+                <strong>${fmtNum(postsCnt)}</strong> posts (${Number(ppd).toFixed(1)}/day) · <code>${esc(did)}</code>
+              </div>
+              ${bio ? `<div class="acct-bio">${esc(bio)}</div>` : `<div class="acct-bio" style="color:var(--muted);font-style:italic;">(No profile bio)</div>`}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            ${actionBtns}
+          </div>
+        </div>
+
+        <div class="acct-scene-callout">
+          <div>
+            Assigned Scene Card:
+            ${cardObj
+              ? `<button type="button" class="btn" style="padding:2px 8px;margin-left:4px;" data-open-card="${cardCid}">[${cardCid}] ${esc(cardTitle)} (Inspect 25 accts)</button>`
+              : `<strong>[${cardCid}] ${esc(cardTitle)}</strong>`}
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">${closerHtml} ${reasonBanner}</div>
+        </div>
+
+        <div class="signal-row">
+          <span class="pill ${spCls}" title="Centered S12m EmbeddingGemma-2 cosine between this author's 90-day posts and the card centroid">90d Post Match: ${fmtCos(sp)}</span>
+          <span class="pill ${t1Cls}" title="Centered S16 Tier-1 social-head cosine to the card centroid">Social Graph Match: ${fmtCos(t1)}</span>
+          <span class="pill ${dupCls}" title="Fraction of this author's S12m posts with >=0.92 cosine to another of their own posts (catches template/slop bots)">90d Template Dup: ${Math.round(dup * 100)}%</span>
+          ${item.s13 !== undefined ? `<span class="pill" title="Locked S13 authority + curator score">S13 Score: ${Number(item.s13).toFixed(2)}</span>` : ""}
+        </div>
+
+        <div class="feed-strip" data-feed-slot="${esc(did)}" data-observe-did="${esc(did)}" data-in-hidden="${inHidden ? "1" : "0"}">
+          ${renderFeedStripInner(did, inHidden)}
+        </div>
+      </div>`;
+    }
+
+    // --- Tab 1: Discrepancy & Spam Radar ---
+    function populateRadarKpis() {
+      const ev = IDX.evicted_counts_in_kept_cards || {};
+      const nsfwLive = Object.entries(ev).reduce((s, [k, v]) => s + (k.startsWith("live_post_adult_label") ? v : 0), 0);
+      const interlopers = (ev.embedding_y3_bleed_interloper || 0) + (ev.embedding_off_scene_interloper || 0);
+      const botsEv = (ev.stealth_follow_churn || 0) + (ev.slab_template_dup_bot || 0) + (ev.automated_firehose_cadence || 0) +
+        (ev.live_live_template_spam || 0) + (ev.live_repost_wall || 0) + (ev.automated_bot_or_mirror || 0) + (ev.bot_or_mirror_handle || 0);
+
+      document.getElementById("radar-kpis").innerHTML = `
+        <div class="kpi-card">
+          <div class="kpi-val">${CAT.counts.v0_cards.toLocaleString()}</div>
+          <div class="kpi-lbl">Clean <code>v0</code> Cards (${CAT.counts.scenes} scenes)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val">${CAT.counts.unique_candidate_accounts.toLocaleString()}</div>
+          <div class="kpi-lbl">Live-Verified Candidate Accounts</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:var(--accent);">${(IDX.hydrated_feeds_count || 0).toLocaleString()}</div>
+          <div class="kpi-lbl">Pre-Hydrated <code>getAuthorFeed</code> Timelines</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:var(--good);">${interlopers.toLocaleString()}</div>
+          <div class="kpi-lbl">Off-Scene / Y3-Bleed Interlopers Evicted</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:var(--good);">${botsEv.toLocaleString()}</div>
+          <div class="kpi-lbl">Template, Churn &amp; Repost Bots Evicted</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:var(--good);">${nsfwLive.toLocaleString()}</div>
+          <div class="kpi-lbl">Hidden Post-Level NSFW Accounts Caught Live</div>
+        </div>
+      `;
+    }
+
+    function rebuildRadarFilterOptions() {
+      const sel = document.getElementById("radar-filter");
+      const prev = sel.value;
+      if (radarMode === "borderline") {
+        sel.innerHTML = `
+          <option value="all">All Borderline Flags (${IDX.borderline_suspects.length})</option>
+          <option value="closer_to_">Closer to Another Card</option>
+          <option value="low_sem_cos">Low 90d Post Cosine (&lt; +0.16)</option>
+          <option value="warn_heavy_reposter">Live Heavy Reposter (78–91%)</option>
+          <option value="warn_single_domain_promo">Single-Domain Link Promo</option>
+          <option value="warn_low_live_coherence">Casual / Off-Topic Last 6 Posts</option>
+          <option value="repetitive_slab">Repetitive Post Cadence (55–84%)</option>
+          <option value="follow_heavy">Follow-Heavy (&ge;1.8&times;)</option>
+        `;
+      } else {
+        const ev = IDX.evicted_counts_in_kept_cards || {};
+        const opts = [`<option value="all">All Eviction Categories</option>`];
+        for (const [rsn, cnt] of Object.entries(ev)) {
+          if (IDX.evicted_showcase[rsn] && IDX.evicted_showcase[rsn].length) {
+            opts.push(`<option value="${esc(rsn)}">${esc(rsn)} (${cnt.toLocaleString()} evicted)</option>`);
+          }
+        }
+        sel.innerHTML = opts.join("");
+      }
+      if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+    }
+
+    function getRadarItems() {
+      const catFilter = document.getElementById("radar-filter").value;
+      const q = document.getElementById("radar-search").value.trim().toLowerCase();
+      const hideRev = document.getElementById("radar-hide-reviewed").checked;
+
+      let rows = [];
+      if (radarMode === "borderline") {
+        for (const b of (IDX.borderline_suspects || [])) {
+          const acc = ACCTS_EXPANDED[b.aid];
+          if (!acc) continue;
+          const m = acc.meta;
+          rows.push({
+            did: b.did,
+            handle: acc.handle,
+            name: m.nm || acc.name,
+            bio: m.bio || "",
+            followers: acc.followers,
+            follows: m.fw,
+            posts: m.pc,
+            ppd: m.ppd,
+            fr: m.fr,
+            sp: m.sp,
+            t1: m.t1,
+            boc: m.boc,
+            bol: m.bol,
+            bos: m.bos,
+            dup: m.dup,
+            s13: m.s13,
+            is_sup: acc.isSup,
+            avatar_url: (m.lf && m.lf.av) || "",
+            card_cid: b.card_cid,
+            card_title: (CAT.cards[String(b.card_cid)] || {}).t || "",
+            rank_pos: b.rank_pos,
+            flags: b.flags || [],
+          });
+        }
+        if (catFilter !== "all") {
+          rows = rows.filter((r) => r.flags.some((f) => f.startsWith(catFilter)));
+        }
+      } else {
+        const showcase = IDX.evicted_showcase || {};
+        for (const [rsn, list] of Object.entries(showcase)) {
+          if (catFilter !== "all" && rsn !== catFilter) continue;
+          for (const e of list) {
+            rows.push({
+              did: e.did,
+              handle: e.handle,
+              name: e.name,
+              bio: e.bio,
+              followers: e.followers,
+              follows: e.follows,
+              posts: e.posts,
+              ppd: e.posts_per_day,
+              fr: e.follow_ratio,
+              sp: e.sem_cos_posts,
+              t1: e.t1_cos,
+              boc: e.best_other_cid,
+              bol: e.best_other_label,
+              bos: e.best_other_sem_cos,
+              dup: e.slab_near_dup_frac,
+              s13: e.s13_score,
+              avatar_url: e.avatar_url || "",
+              card_cid: e.card_cid,
+              card_title: e.card_title,
+              evicted_reason: rsn,
+              flags: [],
+            });
+          }
+        }
+      }
+
+      if (hideRev && radarMode === "borderline") {
+        rows = rows.filter((r) => !OVERRIDES.excluded_dids[r.did] && !OVERRIDES.approved_dids.includes(r.did));
+      }
+      if (q) {
+        rows = rows.filter((r) =>
+          `${r.handle} ${r.name} ${r.bio} ${r.card_title} ${(r.flags || []).join(" ")} ${r.evicted_reason || ""} ${r.bol || ""}`
+            .toLowerCase()
+            .includes(q)
+        );
+      }
+      return rows;
+    }
+
+    function renderRadar() {
+      const rows = getRadarItems();
+      const shown = rows.slice(0, radarLimit);
+      document.getElementById("cnt-radar").textContent = String((IDX.borderline_suspects || []).length);
+      document.getElementById("radar-summary-line").textContent =
+        radarMode === "borderline"
+          ? `Showing ${shown.length} of ${rows.length} borderline edge-case accounts kept in v0 cards (sorted by discrepancy score; live feeds render inline).`
+          : `Showing ${shown.length} of ${rows.length} sample accounts automatically evicted by S17 rev 3 before card assembly.`;
+
+      const listEl = document.getElementById("radar-list");
+      listEl.innerHTML = shown.map((r, i) => {
+        const html = renderFullAccountCard(r, { inHidden: false });
+        return i >= 3 ? `<div class="cv-below-fold">${html}</div>` : html;
+      }).join("");
+      observeFeedContainers(listEl);
+
+      const moreBtn = document.getElementById("radar-more-btn");
+      moreBtn.hidden = shown.length >= rows.length;
+      moreBtn.textContent = `Show More (${rows.length - shown.length} remaining)`;
+    }
+
+    // --- Tab 2: Scene Explorer & Bundle Simulator ---
+    function renderSceneCardTile(cid) {
+      const cd = CAT.cards[String(cid)];
+      const ds = DESCS[String(cid)] || {};
+      const ch = (IDX.card_health || {})[String(cid)] || {};
+      const isPicked = pickedBundleCards.includes(Number(cid));
+      const isCardExcl = Boolean(OVERRIDES.excluded_cards[String(cid)]);
+
+      const listStr = ((ch.all_lists && ch.all_lists.length) ? ch.all_lists : (cd.ln || []))
+        .slice(0, 4)
+        .map(([nm, cnt]) => `${esc(nm)} (${cnt})`)
+        .join(" · ");
+
+      const cohCls = (ch.coh_posts ?? 0) >= 0.34 ? "pill-good" : ((ch.coh_posts ?? 0) < 0.24 ? "pill-warn" : "");
+      const topAids = (cd.m || []).slice(0, 5);
+      const miniRows = topAids.map((aid) => {
+        const a = ACCTS_EXPANDED[aid];
+        const m = a.meta;
+        const spCls = m.sp !== null && m.sp >= 0.25 ? "pill-good" : (m.sp !== null && m.sp < 0.14 ? "pill-warn" : "");
+        return `<div class="mini-acct">
+          <div class="mini-acct-left">
+            ${renderAvatarHtml(a.did, m.nm || a.name, a.handle, (m.lf && m.lf.av) || "", true, false)}
+            <div style="min-width:0;">
+              <div>
+                <strong>${esc(m.nm || a.name || a.handle)}</strong>
+                <a href="${esc(bskyProfileUrl(a.handle))}" target="_blank" rel="noopener noreferrer">@${esc(a.handle)} ↗</a>
+              </div>
+              <div class="mini-bio">${esc(m.bio || "")}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:5px;flex-shrink:0;">
+            <span class="pill ${spCls}" title="90d post cosine">${fmtCos(m.sp)}</span>
+            <span style="font-size:11.5px;color:var(--muted);">${fmtNum(a.followers)}</span>
+          </div>
+        </div>`;
+      }).join("");
+
+      return `<article class="scene-card ${isPicked ? "picked" : ""}" style="${isCardExcl ? "opacity:0.45;" : ""}">
+        <div class="sc-head">
+          <div>
+            <h4 class="sc-title">[${cid}] ${esc(cd.t)} ${cd.lg ? `<span class="pill">${esc(cd.lg)}</span>` : ""}</h4>
+            <div class="sc-lists">Curated lists: ${listStr || "—"}</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-shrink:0;">
+            <button type="button" class="btn ${isPicked ? "btn-primary" : ""}" data-pick-card="${cid}">
+              ${isPicked ? "✓ Picked" : "+ Bundle"}
+            </button>
+            <button type="button" class="btn" data-open-card="${cid}">Inspect 25 &amp; Feeds</button>
+          </div>
+        </div>
+        <p class="sc-desc">${esc(ds.d || cd.d || "")}</p>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;">
+          <span class="pill ${cohCls}" title="Mean 90d post embedding coherence of top-25 candidates">Post Coh: ${fmtCos(ch.coh_posts)}</span>
+          <span class="pill" title="Mean Tier-1 social projection coherence">Social Coh: ${fmtCos(ch.coh_t1)}</span>
+          <span class="pill">${cd.el} eligible / ${fmtNum(cd.sz)} total</span>
+          ${ch.sup_25 ? `<span class="pill pill-accent">D17 Sup: ${ch.sup_25}/2</span>` : ""}
+          ${ds.fit ? `<span class="pill">Fit: ${esc(ds.fit)}</span>` : ""}
+        </div>
+        <div class="sc-mini-accts">${miniRows}</div>
+      </article>`;
+    }
+
+    function renderExplorer() {
+      const q = document.getElementById("exp-search").value.trim().toLowerCase();
+      const lg = document.getElementById("exp-lang").value;
+      const sortMode = document.getElementById("exp-sort").value;
+      const container = document.getElementById("exp-container");
+
+      const matchesCard = (cid) => {
+        const cd = CAT.cards[String(cid)];
+        if (!cd) return false;
+        if (lg !== "all" && (cd.lg || "en") !== lg) return false;
+        if (!q) return true;
+        const ds = DESCS[String(cid)] || {};
+        const hay = `${cid} ${cd.t} ${ds.d || ""} ${ds.lt || ""} ${(cd.ln || []).map((x) => x[0]).join(" ")}`.toLowerCase();
+        if (hay.includes(q)) return true;
+        return (cd.m || []).slice(0, 12).some((aid) => {
+          const a = ACCTS_EXPANDED[aid];
+          return `${a.handle} ${a.meta.nm || ""} ${a.meta.bio || ""}`.toLowerCase().includes(q);
+        });
+      };
+
+      if (sortMode === "scenes") {
+        const matchedScenes = [];
+        for (const sc of CAT.scenes) {
+          const cids = sc.cs.filter(matchesCard);
+          if (cids.length) matchedScenes.push({ ...sc, cids });
+        }
+        const shownScenes = matchedScenes.slice(0, expLimit);
+        const totalCards = matchedScenes.reduce((s, x) => s + x.cids.length, 0);
+        document.getElementById("exp-meta").textContent =
+          `Showing ${shownScenes.length} of ${matchedScenes.length} scenes (${totalCards.toLocaleString()} matching cards). Click "Inspect 25 & Feeds" on any card to browse every candidate's live posts.`;
+
+        container.innerHTML = shownScenes.map((sc, idx) => `
+          <section class="scene-block ${idx >= 2 ? "cv-below-fold" : ""}">
+            <div class="scene-hdr">
+              <h3>Scene #${sc.s}: ${esc(sc.n)} <span class="pill">${sc.cids.length} cards</span></h3>
+              <span style="font-size:12px;color:var(--muted);">${fmtNum(sc.eg)} engaged network audience</span>
+            </div>
+            <div class="cards-grid">${sc.cids.map(renderSceneCardTile).join("")}</div>
+          </section>
+        `).join("");
+
+        const moreBtn = document.getElementById("exp-more-btn");
+        moreBtn.hidden = shownScenes.length >= matchedScenes.length;
+        moreBtn.textContent = `Show More Scenes (${matchedScenes.length - shownScenes.length} remaining)`;
+      } else {
+        let allCids = Object.keys(CAT.cards).map(Number).filter(matchesCard);
+        const chMap = IDX.card_health || {};
+        if (sortMode === "low_coh") {
+          allCids.sort((a, b) => ((chMap[a]?.coh_posts ?? 1) - (chMap[b]?.coh_posts ?? 1)));
+        } else if (sortMode === "most_sup") {
+          allCids.sort((a, b) => ((chMap[b]?.sup_25 ?? 0) - (chMap[a]?.sup_25 ?? 0)) || ((chMap[a]?.coh_posts ?? 1) - (chMap[b]?.coh_posts ?? 1)));
+        }
+        const shownCids = allCids.slice(0, expLimit * 2);
+        document.getElementById("exp-meta").textContent =
+          `Showing ${shownCids.length} of ${allCids.length} matching cards.`;
+        container.innerHTML = `<div class="cards-grid">${shownCids.map((cid, i) =>
+          i >= 6 ? `<div class="cv-below-fold">${renderSceneCardTile(cid)}</div>` : renderSceneCardTile(cid)
+        ).join("")}</div>`;
+        const moreBtn = document.getElementById("exp-more-btn");
+        moreBtn.hidden = shownCids.length >= allCids.length;
+        moreBtn.textContent = `Show More Cards (${allCids.length - shownCids.length} remaining)`;
+      }
+    }
+
+    // --- Bundle Solver & Live Feed Simulator ---
+    function solveBundle() {
+      const targetN = Number(document.getElementById("bundle-size").value || 25);
+      const chipsEl = document.getElementById("bundle-picked-chips");
+      const outEl = document.getElementById("bundle-output");
+      const actEl = document.getElementById("bundle-actions");
+
+      if (!pickedBundleCards.length) {
+        chipsEl.innerHTML = `<span style="font-size:12px;color:var(--muted);">No cards picked yet — click <strong>+ Bundle</strong> on 1–5 cards.</span>`;
+        actEl.hidden = true;
+        outEl.innerHTML = "";
+        return [];
+      }
+
+      actEl.hidden = false;
+      chipsEl.innerHTML = pickedBundleCards.map((cid) =>
+        `<span class="pill pill-accent">[${cid}] ${esc(CAT.cards[String(cid)]?.t || "")}
+          <button type="button" style="border:0;background:none;color:inherit;cursor:pointer;font-weight:700;" data-unpick="${cid}">✕</button>
+        </span>`
+      ).join("");
+
+      // Check high-H pairs among picked cards
+      const hhSet = new Set((CAT.high_h_pairs || []).map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
+      const conflicts = [];
+      for (let i = 0; i < pickedBundleCards.length; i++) {
+        for (let j = i + 1; j < pickedBundleCards.length; j++) {
+          const a = Math.min(pickedBundleCards[i], pickedBundleCards[j]);
+          const b = Math.max(pickedBundleCards[i], pickedBundleCards[j]);
+          if (hhSet.has(`${a}:${b}`)) conflicts.push(`[${a}] ↔ [${b}]`);
+        }
+      }
+
+      // Round-robin interleave across picked cards + H-safe neighbors if >25 needed
+      const pools = pickedBundleCards.map((cid) => ({ cid, m: [...(CAT.cards[String(cid)]?.m || [])], idx: 0 }));
+      if (targetN > 25 * pools.length) {
+        for (const cid of [...pickedBundleCards]) {
+          for (const nb of (CAT.cards[String(cid)]?.nb || []).slice(0, 2)) {
+            if (!pools.some((p) => p.cid === nb) && CAT.cards[String(nb)]) {
+              pools.push({ cid: nb, m: [...CAT.cards[String(nb)].m], idx: 0, isNb: true });
+            }
+          }
+        }
+      }
+
+      const solved = [];
+      const seenAid = new Set();
+      let progress = true;
+      while (solved.length < targetN && progress) {
+        progress = false;
+        for (const p of pools) {
+          while (p.idx < p.m.length) {
+            const aid = p.m[p.idx++];
+            const acc = ACCTS_EXPANDED[aid];
+            if (!seenAid.has(aid) && !OVERRIDES.excluded_dids[acc.did]) {
+              seenAid.add(aid);
+              solved.push({ ...acc, srcCid: p.cid, isNb: Boolean(p.isNb) });
+              progress = true;
+              break;
+            }
+          }
+          if (solved.length >= targetN) break;
+        }
+      }
+
+      const conflictHtml = conflicts.length
+        ? `<div class="pill pill-warn" style="margin-bottom:8px;white-space:normal;">⚡ High-H Hostility Pair Selected: ${esc(conflicts.join(", "))} — neighbors isolated</div>`
+        : `<div class="pill pill-good" style="margin-bottom:8px;">✓ 0 High-H Hostility Conflicts (${solved.length} solved accounts)</div>`;
+
+      outEl.innerHTML = conflictHtml + `<div style="display:flex;flex-direction:column;gap:7px;">` +
+        solved.map((s, idx) => `<div class="mini-acct" style="padding:5px 0;border-bottom:1px solid var(--border);">
+          <div class="mini-acct-left">
+            <span style="font-size:11px;color:var(--muted);width:20px;">${idx + 1}.</span>
+            ${renderAvatarHtml(s.did, s.meta.nm || s.name, s.handle, (s.meta.lf && s.meta.lf.av) || "", true, false)}
+            <div style="min-width:0;">
+              <div><a href="${esc(bskyProfileUrl(s.handle))}" target="_blank" rel="noopener noreferrer"><strong>@${esc(s.handle)}</strong> ↗</a></div>
+              <div class="mini-bio">[${s.srcCid}] ${esc(s.meta.bio || "")}</div>
+            </div>
+          </div>
+          <span class="pill">${fmtCos(s.meta.sp)}</span>
+        </div>`).join("") + `</div><div id="bundle-feed-sim" style="margin-top:12px;"></div>`;
+
+      return solved;
+    }
+
+    // --- Modal Inspector for All 25 Accounts + Packs + O7 Feeds ---
+    function openCardModal(cid) {
+      currentModalCid = Number(cid);
+      const cd = CAT.cards[String(cid)];
+      if (!cd) return;
+      const ds = DESCS[String(cid)] || {};
+      const ch = (IDX.card_health || {})[String(cid)] || {};
+
+      document.getElementById("dlg-title").textContent = `[${cid}] ${cd.t}`;
+      document.getElementById("dlg-badges").innerHTML = `
+        <span class="pill pill-good">Post Coh ${fmtCos(ch.coh_posts)}</span>
+        <span class="pill">Social Coh ${fmtCos(ch.coh_t1)}</span>
+        <span class="pill">${cd.el} eligible</span>
+      `;
+      const listsLine = ((ch.all_lists && ch.all_lists.length) ? ch.all_lists : (cd.ln || []))
+        .map(([n, k]) => `${esc(n)} (${k})`).join(" · ");
+      document.getElementById("dlg-sub").innerHTML =
+        `<div><strong>Curated Lists:</strong> ${listsLine || "—"}</div>` +
+        `<div style="margin-top:4px;">${esc(ds.d || cd.d || "")}</div>`;
+
+      const isCardExcl = Boolean(OVERRIDES.excluded_cards[String(cid)]);
+      const exclBtn = document.getElementById("dlg-exclude-card");
+      exclBtn.textContent = isCardExcl ? "↩ Restore Card" : "✕ Exclude Whole Card";
+      exclBtn.className = isCardExcl ? "btn" : "btn btn-bad";
+
+      const aids = cd.m || [];
+      const dids = aids.map((aid) => ACCTS_EXPANDED[aid].did);
+
+      const packsHtml = (cd.pk || []).length
+        ? `<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <strong style="font-size:12.5px;">Verified Starter Packs:</strong>
+            ${cd.pk.map(([cpk, nm, chdl, mc]) => {
+              const u = expandPackUri(cpk);
+              const parts = u.split("/");
+              const bskyPk = `https://bsky.app/starter-pack/${encodeURIComponent(expandHandle(chdl))}/${encodeURIComponent(parts[4])}`;
+              return `<a class="pill pill-accent" href="${esc(bskyPk)}" target="_blank" rel="noopener noreferrer">${esc(nm)} (${mc}) ↗</a>`;
+            }).join("")}
+          </div>`
+        : "";
+
+      const feedsHtml = (cd.fd || []).length
+        ? `<div style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <strong style="font-size:12.5px;">O7 Custom Feeds:</strong>
+            ${cd.fd.map(([cfd, nm, chdl, lk]) => {
+              const u = expandFeedUri(cfd);
+              const parts = u.split("/");
+              const bskyFd = `https://bsky.app/profile/${encodeURIComponent(expandHandle(chdl))}/feed/${encodeURIComponent(parts[4])}`;
+              return `<a class="pill" href="${esc(bskyFd)}" target="_blank" rel="noopener noreferrer">${esc(nm)} (♥ ${lk}) ↗</a>`;
+            }).join("")}
+          </div>`
+        : "";
+
+      const acctCardsHtml = aids.map((aid, idx) => {
+        const a = ACCTS_EXPANDED[aid];
+        const m = a.meta;
+        return renderFullAccountCard({
+          did: a.did,
+          handle: a.handle,
+          name: m.nm || a.name,
+          bio: m.bio || "",
+          followers: a.followers,
+          follows: m.fw,
+          posts: m.pc,
+          ppd: m.ppd,
+          fr: m.fr,
+          sp: m.sp,
+          t1: m.t1,
+          boc: m.boc,
+          bol: m.bol,
+          bos: m.bos,
+          dup: m.dup,
+          s13: m.s13,
+          is_sup: a.isSup,
+          avatar_url: (m.lf && m.lf.av) || "",
+          card_cid: cid,
+          card_title: cd.t,
+          rank_pos: idx + 1,
+          flags: m.fl || [],
+        }, { inHidden: true });
+      }).join("");
+
+      const bodyEl = document.getElementById("dlg-body");
+      bodyEl.innerHTML = packsHtml + feedsHtml + `<div class="audit-list">${acctCardsHtml}</div>`;
+      dialogEl.showModal();
+
+      // Immediately pull any SQLite-cached feeds, then politely stream missing ones for top 8 right away
+      ensureFeedsLoaded(dids, false).then(() => {
+        ensureFeedsLoaded(dids.slice(0, 8), true);
+      });
+    }
+
+    // --- Tab 3: Unblinded 30-Card Gate Sign-Off ---
+    function computeSignoffStats() {
+      const cr = RATINGS.cards || {};
+      let rated = 0, recYes = 0, lblYes = 0, abTot = 0, opusWins = 0, sensMissed = 0;
+      for (const item of (CAT.blind_review_30 || [])) {
+        const cidS = String(item.c);
+        const r = cr[cidS];
+        const bk = BKEY[cidS] || {};
+        if (!r || !r.recognise) continue;
+        rated += 1;
+        if (r.recognise === "yes") recYes += 1;
+        if (r.label_ok === "yes") lblYes += 1;
+        if (r.sensitive_missed === "yes") sensMissed += 1;
+        if (!item.same_text && (r.prefer === "A" || r.prefer === "B")) {
+          abTot += 1;
+          const src = r.prefer === "A" ? bk.option_a_source : bk.option_b_source;
+          if (src === "opus_llm") opusWins += 1;
+        }
+      }
+      return { rated, recYes, lblYes, abTot, opusWins, sensMissed };
+    }
+
+    function renderSignoffKpis() {
+      const st = computeSignoffStats();
+      document.getElementById("cnt-signoff").textContent = `${st.rated}/30`;
+      const recPct = st.rated ? Math.round((100 * st.recYes) / st.rated) : null;
+      const lblPct = st.rated ? Math.round((100 * st.lblYes) / st.rated) : null;
+      const opusPct = st.abTot ? Math.round((100 * st.opusWins) / st.abTot) : null;
+
+      document.getElementById("signoff-kpis").innerHTML = `
+        <div class="kpi-card">
+          <div class="kpi-val">${st.rated} / 30</div>
+          <div class="kpi-lbl">Cards Reviewed</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:${recPct === null ? "var(--text)" : (recPct >= 70 ? "var(--good)" : "var(--bad)")}">${recPct === null ? "—" : recPct + "%"}</div>
+          <div class="kpi-lbl">Coherent Scene (Bar &ge; 70%)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:${lblPct === null ? "var(--text)" : (lblPct >= 85 ? "var(--good)" : "var(--bad)")}">${lblPct === null ? "—" : lblPct + "%"}</div>
+          <div class="kpi-lbl">Label Accepted (Bar &ge; 85%)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:${opusPct === null ? "var(--text)" : (opusPct >= 60 ? "var(--good)" : "var(--warn)")}">${opusPct === null ? "—" : opusPct + "%"}</div>
+          <div class="kpi-lbl">Opus Preferred over Raw List (Bar &ge; 60%)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:${st.sensMissed === 0 ? "var(--good)" : "var(--bad)"}">${st.sensMissed}</div>
+          <div class="kpi-lbl">Missed Y3 Sensitive Scenes (Bar == 0)</div>
+        </div>
+      `;
+    }
+
+    function renderSignoffList() {
+      renderSignoffKpis();
+      const listEl = document.getElementById("signoff-list");
+      const items = CAT.blind_review_30 || [];
+
+      listEl.innerHTML = items.map((item, idx) => {
+        const cid = item.c;
+        const cidS = String(cid);
+        const cd = CAT.cards[cidS];
+        const ds = DESCS[cidS] || {};
+        const bk = BKEY[cidS] || {};
+        const ch = (IDX.card_health || {})[cidS] || {};
+        const r = (RATINGS.cards || {})[cidS] || {};
+
+        const opusOpt = bk.option_a_source === "opus_llm" ? "A" : "B";
+        const listOpt = opusOpt === "A" ? "B" : "A";
+        const isApprovedOpus = r.recognise === "yes" && r.label_ok === "yes" && r.sensitive_missed === "no" && (item.same_text || r.prefer === opusOpt);
+        const isApprovedList = r.recognise === "yes" && r.label_ok === "yes" && r.sensitive_missed === "no" && (!item.same_text && r.prefer === listOpt);
+        const isFlagged = r.recognise === "no" || r.sensitive_missed === "yes";
+
+        const stateCls = isFlagged ? "signed-flag" : ((isApprovedOpus || isApprovedList) ? "signed-ok" : "");
+        const top6 = (cd.m || []).slice(0, 6);
+
+        const acctsHtml = top6.map((aid, pos) => {
+          const a = ACCTS_EXPANDED[aid];
+          const m = a.meta;
+          return `<div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+              <div style="display:flex;align-items:center;gap:9px;">
+                ${renderAvatarHtml(a.did, m.nm || a.name, a.handle, (m.lf && m.lf.av) || "", true, false)}
+                <div>
+                  <strong>#${pos + 1} ${esc(m.nm || a.name || a.handle)}</strong>
+                  <a href="${esc(bskyProfileUrl(a.handle))}" target="_blank" rel="noopener noreferrer">@${esc(a.handle)} ↗</a>
+                  <span style="font-size:12px;color:var(--muted);">· ${fmtNum(a.followers)} followers · Post cos ${fmtCos(m.sp)}</span>
+                  <div style="font-size:12px;color:var(--muted);">${esc(m.bio || "")}</div>
+                </div>
+              </div>
+              <button type="button" class="btn ${OVERRIDES.excluded_dids[a.did] ? "" : "btn-bad"}" data-act="${OVERRIDES.excluded_dids[a.did] ? "restore-did" : "exclude-did"}" data-did="${esc(a.did)}">
+                ${OVERRIDES.excluded_dids[a.did] ? "↩ Restore" : "✕ Exclude Account"}
+              </button>
+            </div>
+            <div class="feed-strip" data-feed-slot="${esc(a.did)}" data-observe-did="${esc(a.did)}" data-in-hidden="0">
+              ${renderFeedStripInner(a.did, false)}
+            </div>
+          </div>`;
+        }).join("");
+
+        return `<section class="r30-card ${stateCls} ${idx >= 2 ? "cv-below-fold" : ""}" id="r30-${cid}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+            <div style="flex:1 1 520px;">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="pill pill-accent">Slot #${item.slot}/30</span>
+                <strong style="font-size:16px;">[${cid}] ${esc(bk.opus_label || cd.t)}</strong>
+                <span class="pill pill-good">Opus Title</span>
+                ${!item.same_text ? `<span class="pill">Curated Lists Title: "${esc(bk.curated_list_title || ds.lt || "")}"</span>` : `<span class="pill">Identical to List Title</span>`}
+                <span class="pill">Post Coh: ${fmtCos(ch.coh_posts)}</span>
+              </div>
+              <p style="margin:7px 0;font-size:13.5px;">${esc(ds.d || cd.d || "")}</p>
+            </div>
+
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="btn ${isApprovedOpus ? "btn-primary" : "btn-good"}"
+                data-rate-card="${cid}" data-rec="yes" data-lbl="yes" data-pref="${opusOpt}" data-sens="no">
+                ✓ Approve (Opus Title)
+              </button>
+              ${!item.same_text ? `<button type="button" class="btn ${isApprovedList ? "btn-primary" : ""}"
+                data-rate-card="${cid}" data-rec="yes" data-lbl="yes" data-pref="${listOpt}" data-sens="no">
+                ✓ Approve (Prefer List Title)
+              </button>` : ""}
+              <button type="button" class="btn ${r.recognise === "no" && r.sensitive_missed !== "yes" ? "btn-warn" : ""}"
+                data-rate-card="${cid}" data-rec="no" data-lbl="no" data-pref="tie" data-sens="no">
+                ⚠ Incoherent / Bad Card
+              </button>
+              <button type="button" class="btn ${r.sensitive_missed === "yes" ? "btn-bad" : ""}"
+                data-rate-card="${cid}" data-rec="no" data-lbl="no" data-pref="tie" data-sens="yes">
+                ⚑ Missed Sensitive (Y3)
+              </button>
+              <button type="button" class="btn" data-open-card="${cid}">All 25 Accounts</button>
+            </div>
+          </div>
+          ${acctsHtml}
+        </section>`;
+      }).join("");
+
+      observeFeedContainers(listEl);
+    }
+
+    // --- Event Delegation ---
+    function updateRebuildButton() {
+      const n = Object.keys(OVERRIDES.excluded_dids || {}).length + Object.keys(OVERRIDES.excluded_cards || {}).length;
+      const btn = document.getElementById("btn-rebuild");
+      document.getElementById("pending-ov-count").textContent = String(n);
+      btn.hidden = n === 0;
+    }
+
+    document.addEventListener("click", async (ev) => {
+      const tabBtn = ev.target.closest("[data-tab]");
+      if (tabBtn) {
+        activeTab = tabBtn.dataset.tab;
+        document.querySelectorAll(".tab-btn").forEach((b) => b.setAttribute("aria-selected", String(b === tabBtn)));
+        document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${activeTab}`));
+        if (activeTab === "explorer") renderExplorer();
+        if (activeTab === "signoff") renderSignoffList();
+        return;
+      }
+
+      const openCardBtn = ev.target.closest("[data-open-card]");
+      if (openCardBtn) {
+        openCardModal(Number(openCardBtn.dataset.openCard));
+        return;
+      }
+
+      const pickBtn = ev.target.closest("[data-pick-card]");
+      if (pickBtn) {
+        const cid = Number(pickBtn.dataset.pickCard);
+        const idx = pickedBundleCards.indexOf(cid);
+        if (idx >= 0) pickedBundleCards.splice(idx, 1);
+        else if (pickedBundleCards.length < 5) pickedBundleCards.push(cid);
+        else showToast("Max 5 cards per onboarding bundle.");
+        renderExplorer();
+        solveBundle();
+        return;
+      }
+
+      const unpickBtn = ev.target.closest("[data-unpick]");
+      if (unpickBtn) {
+        const cid = Number(unpickBtn.dataset.unpick);
+        const idx = pickedBundleCards.indexOf(cid);
+        if (idx >= 0) pickedBundleCards.splice(idx, 1);
+        renderExplorer();
+        solveBundle();
+        return;
+      }
+
+      const refBtn = ev.target.closest("[data-refresh-did]");
+      if (refBtn) {
+        const did = refBtn.dataset.refreshDid;
+        refBtn.disabled = true;
+        refBtn.textContent = "Refreshing…";
+        try {
+          const fresh = await fetch(`/api/author_feed?did=${encodeURIComponent(did)}&refresh=1`).then((r) => r.json());
+          FEED_CACHE.set(did, fresh);
+          updateFeedDomForDid(did);
+        } finally {
+          refBtn.disabled = false;
+        }
+        return;
+      }
+
+      const actBtn = ev.target.closest("[data-act]");
+      if (actBtn) {
+        const act = actBtn.dataset.act;
+        const did = actBtn.dataset.did;
+        const apiAction = act === "exclude-did" ? "exclude_did" : (act === "restore-did" ? "restore_did" : "approve_did");
+        const res = await apiPost("/api/overrides", { action: apiAction, did, reason: "manual_inspector_ui" });
+        OVERRIDES = res.overrides;
+        updateRebuildButton();
+        showToast(apiAction === "exclude_did" ? "Account marked for exclusion" : (apiAction === "approve_did" ? "Account marked OK" : "Account restored"));
+        if (activeTab === "radar") renderRadar();
+        if (activeTab === "signoff") renderSignoffList();
+        if (dialogEl.open && currentModalCid !== null) openCardModal(currentModalCid);
+        solveBundle();
+        return;
+      }
+
+      const rateBtn = ev.target.closest("[data-rate-card]");
+      if (rateBtn) {
+        const cidS = rateBtn.dataset.rateCard;
+        const payload = {
+          recognise: rateBtn.dataset.rec,
+          label_ok: rateBtn.dataset.lbl,
+          prefer: rateBtn.dataset.pref,
+          sensitive_missed: rateBtn.dataset.sens,
+        };
+        RATINGS.cards = RATINGS.cards || {};
+        RATINGS.cards[cidS] = payload;
+        await apiPost("/api/ratings", { cards: { [cidS]: payload } });
+        renderSignoffKpis();
+        const cardSec = document.getElementById(`r30-${cidS}`);
+        if (cardSec) {
+          cardSec.classList.remove("signed-ok", "signed-flag");
+          cardSec.classList.add(payload.recognise === "yes" && payload.sensitive_missed === "no" ? "signed-ok" : "signed-flag");
+        }
+        showToast(`Saved sign-off for card [${cidS}]`);
+        return;
+      }
+    });
+
+    // Toolbar controls
+    document.getElementById("mode-borderline").addEventListener("click", () => {
+      radarMode = "borderline";
+      radarLimit = 25;
+      document.getElementById("mode-borderline").classList.add("btn-primary");
+      document.getElementById("mode-evicted").classList.remove("btn-primary");
+      rebuildRadarFilterOptions();
+      renderRadar();
+    });
+    document.getElementById("mode-evicted").addEventListener("click", () => {
+      radarMode = "evicted";
+      radarLimit = 25;
+      document.getElementById("mode-evicted").classList.add("btn-primary");
+      document.getElementById("mode-borderline").classList.remove("btn-primary");
+      rebuildRadarFilterOptions();
+      renderRadar();
+    });
+    document.getElementById("radar-filter").addEventListener("change", () => { radarLimit = 25; renderRadar(); });
+    document.getElementById("radar-search").addEventListener("input", () => { radarLimit = 25; renderRadar(); });
+    document.getElementById("radar-hide-reviewed").addEventListener("change", renderRadar);
+    document.getElementById("radar-more-btn").addEventListener("click", () => { radarLimit += 30; renderRadar(); });
+
+    document.getElementById("exp-search").addEventListener("input", () => { expLimit = 18; renderExplorer(); });
+    document.getElementById("exp-lang").addEventListener("change", () => { expLimit = 18; renderExplorer(); });
+    document.getElementById("exp-sort").addEventListener("change", () => { expLimit = 18; renderExplorer(); });
+    document.getElementById("exp-more-btn").addEventListener("click", () => { expLimit += 20; renderExplorer(); });
+
+    document.getElementById("bundle-size").addEventListener("change", solveBundle);
+    document.getElementById("bundle-clear").addEventListener("click", () => {
+      pickedBundleCards.length = 0;
+      renderExplorer();
+      solveBundle();
+    });
+
+    document.getElementById("btn-bundle-live-feeds").addEventListener("click", async () => {
+      const solved = solveBundle();
+      const simEl = document.getElementById("bundle-feed-sim");
+      if (!solved.length || !simEl) return;
+      simEl.innerHTML = `<div style="font-size:12.5px;color:var(--muted);">Hydrating live <code>getAuthorFeed</code> posts across ${solved.length} solved accounts…</div>`;
+      await ensureFeedsLoaded(solved.map((s) => s.did), true);
+      const merged = [];
+      for (const s of solved) {
+        const f = FEED_CACHE.get(s.did);
+        for (const p of ((f && f.posts) || []).filter((x) => x.kind !== "repost").slice(0, 2)) {
+          merged.push({ ...p, bundleHandle: s.handle, bundleSrc: s.srcCid });
+        }
+      }
+      merged.sort((a, b) => Date.parse(b.created_at || "") - Date.parse(a.created_at || ""));
+      simEl.innerHTML = `<h4 style="margin:8px 0;">Merged Live Bundle Timeline (${merged.length} recent authored posts)</h4>` +
+        merged.slice(0, 24).map((p) => `<div class="post-box" style="margin-bottom:8px;">
+          <div class="post-meta">
+            <a href="${esc(bskyProfileUrl(p.bundleHandle))}" target="_blank" rel="noopener noreferrer"><strong>@${esc(p.bundleHandle)}</strong> ↗</a>
+            <span>[${p.bundleSrc}] · ${esc(relAge(p.created_at))}</span>
+          </div>
+          <div class="post-text">${esc(p.text || "")}</div>
+          ${(p.thumbs && p.thumbs.length) ? `<div class="post-thumbs">${p.thumbs.map((u) => `<img class="post-thumb" src="${esc(u)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">`).join("")}</div>` : ""}
+          <div class="post-foot">
+            <span>♥ ${fmtNum(p.likes)} · ↻ ${fmtNum(p.reposts)}</span>
+            <a href="${esc(bskyPostUrl(p))}" target="_blank" rel="noopener noreferrer">Post ↗</a>
+          </div>
+        </div>`).join("");
+    });
+
+    document.getElementById("btn-bundle-oct22").addEventListener("click", async () => {
+      const simEl = document.getElementById("bundle-feed-sim");
+      if (!pickedBundleCards.length || !simEl) return;
+      simEl.innerHTML = `<div style="font-size:12.5px;color:var(--muted);">Loading Oct 22 excess-engagement preview…</div>`;
+      const res = await fetch(`/api/preview?cards=${pickedBundleCards.join(",")}`).then((r) => r.json());
+      const polPct = ((res.political_share || 0) * 100).toFixed(1);
+      simEl.innerHTML = `<div style="margin:8px 0;">
+          <strong>${esc(res.label)}</strong> · <span class="pill ${Number(polPct) <= 5 ? "pill-good" : "pill-warn"}">Political share: ${polPct}%</span>
+        </div>` +
+        (res.posts || []).slice(0, 20).map((p) => `<div class="post-box" style="margin-bottom:8px;">
+          <div class="post-meta">
+            <a href="${esc(bskyProfileUrl(p.handle))}" target="_blank" rel="noopener noreferrer"><strong>@${esc(p.handle)}</strong> ↗</a>
+            <span>[${p.community}] · resid +${p.residual}</span>
+          </div>
+          <div class="post-text">${esc(p.text || "")}</div>
+          <div class="post-foot">
+            <span>♥ ${fmtNum(p.likes)} · ↻ ${fmtNum(p.reposts)}</span>
+            <a href="https://bsky.app/profile/${encodeURIComponent(p.handle)}/post/${encodeURIComponent(p.rkey || p.uri.split("/").pop())}" target="_blank" rel="noopener noreferrer">Post ↗</a>
+          </div>
+        </div>`).join("");
+    });
+
+    document.getElementById("dlg-hydrate-all").addEventListener("click", async () => {
+      if (currentModalCid === null) return;
+      const btn = document.getElementById("dlg-hydrate-all");
+      btn.disabled = true;
+      btn.textContent = "Hydrating 25 feeds…";
+      try {
+        const aids = CAT.cards[String(currentModalCid)]?.m || [];
+        await ensureFeedsLoaded(aids.map((i) => ACCTS_EXPANDED[i].did), true);
+        showToast("All 25 live author feeds hydrated!");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Hydrate Remaining Live Feeds";
+      }
+    });
+
+    document.getElementById("dlg-exclude-card").addEventListener("click", async () => {
+      if (currentModalCid === null) return;
+      const cidS = String(currentModalCid);
+      const isEx = Boolean(OVERRIDES.excluded_cards[cidS]);
+      const res = await apiPost("/api/overrides", {
+        action: isEx ? "restore_card" : "exclude_card",
+        cid: cidS,
+        reason: "manual_card_exclude",
+      });
+      OVERRIDES = res.overrides;
+      updateRebuildButton();
+      openCardModal(currentModalCid);
+      if (activeTab === "explorer") renderExplorer();
+      showToast(isEx ? `Restored card [${cidS}]` : `Marked card [${cidS}] for exclusion`);
+    });
+
+    document.getElementById("btn-rebuild").addEventListener("click", async () => {
+      const btn = document.getElementById("btn-rebuild");
+      btn.disabled = true;
+      btn.textContent = "Rebuilding cards_v1.json (~35s)…";
+      try {
+        const res = await apiPost("/api/rebuild", {});
+        if (res.ok) {
+          showToast(`Rebuilt v0 catalog: ${res.verify.v0_cards_count} cards, 0 violations!`);
+          await boot();
+        }
+      } catch (e) {
+        showToast("Rebuild failed: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("btn-autofill-clean").addEventListener("click", async () => {
+      const batch = {};
+      for (const item of (CAT.blind_review_30 || [])) {
+        const cidS = String(item.c);
+        if (RATINGS.cards && RATINGS.cards[cidS] && RATINGS.cards[cidS].recognise) continue;
+        const bk = BKEY[cidS] || {};
+        const opusOpt = bk.option_a_source === "opus_llm" ? "A" : "B";
+        batch[cidS] = {
+          recognise: "yes",
+          label_ok: "yes",
+          prefer: item.same_text ? "tie" : opusOpt,
+          sensitive_missed: "no",
+        };
+      }
+      const n = Object.keys(batch).length;
+      if (!n) {
+        showToast("All 30 cards already have ratings!");
+        return;
+      }
+      RATINGS.cards = { ...(RATINGS.cards || {}), ...batch };
+      await apiPost("/api/ratings", { cards: batch });
+      renderSignoffList();
+      showToast(`Approved ${n} unrated cards — override any card anytime!`);
+    });
+
+    // --- Initial Boot ---
+    async function boot() {
+      const [cat, descs, idx, bkey, ratings, overrides] = await Promise.all([
+        fetch("/cards_v1.json").then((r) => r.json()),
+        fetch("/cards_descriptions.json").then((r) => r.json()),
+        fetch("/inspector_index.json").then((r) => r.json()),
+        fetch("/blind_review_key.json").then((r) => r.json()),
+        fetch("/api/ratings").then((r) => r.json()),
+        fetch("/api/overrides").then((r) => r.json()),
+      ]);
+      CAT = cat;
+      DESCS = descs;
+      IDX = idx;
+      BKEY = bkey;
+      RATINGS = ratings || { cards: {}, accounts: {}, comparator: {} };
+      OVERRIDES = overrides || { excluded_dids: {}, excluded_cards: {}, approved_dids: [] };
+
+      ACCTS_EXPANDED = (CAT.accts || []).map((row, aid) => {
+        const flags = row.length > 4 ? Number(row[4]) : 0;
+        return {
+          aid,
+          did: expandDid(row[0]),
+          handle: expandHandle(row[1]),
+          followers: Number(row[2] || 0),
+          name: row[3] || "",
+          isHfr: Boolean(flags & 1),
+          isSup: Boolean(flags & 2),
+          meta: (IDX.acct_meta && IDX.acct_meta[aid]) || {},
+        };
+      });
+
+      // Populate language dropdown
+      const langCounts = new Map();
+      for (const cd of Object.values(CAT.cards)) {
+        const l = cd.lg || "en";
+        langCounts.set(l, (langCounts.get(l) || 0) + 1);
+      }
+      const langSel = document.getElementById("exp-lang");
+      langSel.innerHTML = `<option value="all">All Languages (${CAT.counts.v0_cards})</option>` +
+        [...langCounts.entries()].sort((a, b) => b[1] - a[1])
+          .map(([l, c]) => `<option value="${esc(l)}">${esc(l)} (${c})</option>`).join("");
+
+      document.getElementById("hdr-subtitle").textContent =
+        `${CAT.version} · ${CAT.counts.v0_cards.toLocaleString()} cards across ${CAT.counts.scenes} scenes · ${CAT.counts.unique_candidate_accounts.toLocaleString()} accounts · ${(IDX.hydrated_feeds_count || 0).toLocaleString()} live feeds cached · 0 safety violations`;
+      document.getElementById("cnt-explorer").textContent = CAT.counts.v0_cards.toLocaleString();
+
+      updateRebuildButton();
+      populateRadarKpis();
+      rebuildRadarFilterOptions();
+      renderRadar();
+      renderSignoffKpis();
+    }
+
+    boot().catch((err) => {
+      document.getElementById("hdr-subtitle").textContent = "Failed to load catalog: " + err.message;
+    });
+  })();
+  </script>
 </body>
 </html>

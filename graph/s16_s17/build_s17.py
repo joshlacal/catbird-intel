@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build S17 Harness v1 & v0 Onboarding Catalog (`cards_v1.json <= 2 MB`, 0 safety violations).
+"""Build S17 Harness v2 & v0 Onboarding Catalog (`cards_v1.json <= 2 MB`, 0 safety violations, rev 3).
 
 Reads:
 - Frozen partition `cand5-full-matched` (`communities.parquet`, `known_for.parquet`, `membership.npy`)
@@ -9,17 +9,14 @@ Reads:
 - Clean O7 community-liked feeds (`s10-outputs-20261030/O7/O7.parquet`) + `cand5_card_packs.tsv`
 - Clean S12 medoid post URIs (`s12-closeout-20261030/medoids.parquet`)
 - Claude Opus `cand5` community labels (`claude-labels-cand5-20261028/community_labels.parquet`) + profile labels
+- S17 rev 3 full-data signals (`candidate_signals.parquet`, `card_centroids.npz`, `author_feeds.sqlite`, `manual_overrides.json`):
+  * S12m multimodal post-embedding & S16 Tier-1 social-head interloper + Y3-bleed eviction
+  * S12m 64-bucket per-post template/duplicate slop bot eviction
+  * S5 follow-churn (`followsCount`/`followersCount`) & automated firehose cadence (`>=120 posts/day`) eviction
+  * Live `getAuthorFeed` repost-wall, dormant, live-template-spam, political-drift, and live-label eviction
+  * Bounded coherence quality multiplier inside candidate ranking + `inspector_index.json` sidecar for the v2 UI
 
-Enforces:
-- Y3: excludes all 8 sensitive classes (`news`, `politics`, `religion`, `sexuality_gender`, `health`,
-  `ethnicity_nationality`, `adult`, `likely_minors`) via Opus `sensitivity` unioned with curated-list keyword screen
-  (never inferring `ethnicity_nationality` from non-English language alone).
-- A1: `hideFromAlgorithmicRecommendations` accounts remain eligible as profile/bundle/pack candidates (badged),
-  and are excluded from feed creators, medoids, and preview posts.
-- S14 H-matrix: skips `is_high_top1pct` pairs in KnownFor co-membership neighbor suggestions and bundle fill.
-- S17 30-card blind review: deterministically drawn by `cityHash64(str(community))` across all kept v0 cards,
-  with seeded blind A/B order of Opus label vs top A-half curated-list name (key stored separately in `blind_review_key.json`).
-- JSON budget: `cards_v1.json <= 2,097,152` bytes (2 MiB).
+Reversible via `--strict-registered-only`.
 """
 from __future__ import annotations
 
@@ -29,16 +26,21 @@ import collections
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import pathlib
 import pickle
 import re
+import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -64,7 +66,6 @@ Y3_CLASSES = {
     "adult",
     "likely_minors",
 }
-# Non-ethnicity, non-generic-media Y3 keyword classes run on Opus label + label_native:
 OPUS_LABEL_Y3_CLASSES = {
     "politics",
     "religion",
@@ -75,7 +76,7 @@ OPUS_LABEL_Y3_CLASSES = {
 }
 DROP_PROFILE_CLASSES = {"likely_minors", "adult"}
 
-# Provisional S17 rev-2 safety + organic-human curation rules (reversible via --strict-registered-only):
+# Provisional S17 rev-2/rev-3 safety + organic-human curation rules (reversible via --strict-registered-only):
 EXPLICIT_BLOCK_CIDS = {1707, 409, 1849, 1056, 1856, 2774, 2245, 2826}
 RE_DESC_ADULT_MINORS = re.compile(
     r"(?:(?<!\w)18\+|(?<!\w)21\+|(?<!\w)r-?18\b|\bmdni\b|\bnsfw\b|\bonlyfans\b|\bfansly\b|"
@@ -95,7 +96,6 @@ RE_NON_ORGANIC_CARD = re.compile(
     re.I,
 )
 
-# Clause-level negation stripper so "No NSFW, porn, bots, F4F, or AI" does not false-positive human bios:
 RE_STRIP_NEG = re.compile(
     r"(?:\b(?:no|not|non|anti|never|without|zero|ban|fuck|don'?t|doesn'?t|won'?t)\b|🚫|❌|🚷)[^.\n;|•!]{0,65}",
     re.I,
@@ -156,6 +156,91 @@ def screen_account_organic_and_safe(handle: str, name: str, bio: str, *, allow_f
     if RE_BIO_AI.search(cleaned):
         return "ai_slop_account"
     return None
+
+
+def _finite(v: float | None) -> float | None:
+    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+        return None
+    return float(v)
+
+
+def screen_rev3_data_signals(
+    sig: dict | None,
+    live_row: dict | None,
+    y3_comm_set: set[int],
+) -> str | None:
+    """Return exact rev-3 data/embedding/live-feed exclusion reason, or None if kept."""
+    if live_row is not None:
+        lv = live_row.get("live_verdict") or ""
+        if lv.startswith("drop_"):
+            return f"live_{lv[5:]}"
+
+    if sig is None:
+        return None
+
+    # 1. Automated firehose cadence (>= 120 posts/day over >= 15k posts)
+    ppd = float(sig.get("posts_per_day") or 0.0)
+    pcnt = int(sig.get("posts_count") or 0)
+    if ppd >= 120.0 and pcnt >= 15_000:
+        return "automated_firehose_cadence"
+
+    # 2. Stealth mass-follow churn / follow-farmer
+    fwing = int(sig.get("follows_count") or 0)
+    frat = float(sig.get("follow_ratio") or 0.0)
+    if (fwing >= 5_000 and frat >= 3.0) or (fwing >= 15_000 and frat >= 1.8):
+        return "stealth_follow_churn"
+
+    # 3. Slab per-post near-duplicate template/promo bot (>= 15 embedded posts, >= 1.5 posts/day, >= 85% near-dup)
+    sn = int(sig.get("slab_n_posts") or 0)
+    sdup = float(sig.get("slab_near_dup_frac") or 0.0)
+    snn = float(sig.get("slab_nn_mean_cos") or 0.0)
+    if sn >= 15 and ppd >= 1.5 and sdup >= 0.85 and snn >= 0.93:
+        return "slab_template_dup_bot"
+
+    # 4. S12m + S16 Tier-1 off-scene / Y3-bleed interloper screen
+    if sig.get("has_vec") and int(sig.get("mm_post_count") or 0) >= 5:
+        sp = _finite(sig.get("sem_cos_posts"))
+        t1 = _finite(sig.get("t1_cos"))
+        bo_cid = int(sig.get("best_other_cid") or -1)
+        bo_sem = _finite(sig.get("best_other_sem_cos"))
+        if sp is not None and bo_sem is not None:
+            margin = bo_sem - sp
+            # Y3-sensitive bleed (account's posts strongly match a Y3 adult/politics/news/etc. cluster, not its hobby home)
+            if sp < 0.08 and bo_cid in y3_comm_set and bo_sem >= 0.45 and margin >= 0.40:
+                return "embedding_y3_bleed_interloper"
+            # General graph-bridge wrong-scene interloper
+            if (sp < -0.05 and (t1 is None or t1 < 0.12)) or (
+                sp < 0.05 and (t1 is not None and t1 < 0.05) and margin >= 0.40
+            ):
+                return "embedding_off_scene_interloper"
+
+    return None
+
+
+def effective_candidate_score(base_s13: float, sig: dict | None, live_row: dict | None, strict: bool) -> float:
+    """In rev 3, gently weight S13 score by bounded S12m+Tier-1 scene coherence and penalize borderline warnings."""
+    if strict or sig is None:
+        return float(base_s13)
+    mult = 1.0
+    if sig.get("has_vec") and int(sig.get("mm_post_count") or 0) >= 3:
+        sp = _finite(sig.get("sem_cos_posts"))
+        t1 = _finite(sig.get("t1_cos"))
+        if sp is not None and t1 is not None:
+            mult = max(0.60, min(1.32, 0.78 + 0.32 * sp + 0.22 * t1))
+        elif sp is not None:
+            mult = max(0.65, min(1.25, 0.82 + 0.38 * sp))
+    else:
+        mult *= 0.88  # prefer candidates with slab-verified content over unembedded accounts
+
+    if int(sig.get("slab_n_posts") or 0) >= 10 and float(sig.get("slab_near_dup_frac") or 0.0) >= 0.65:
+        mult *= 0.85
+    if float(sig.get("follow_ratio") or 0.0) >= 2.2 and int(sig.get("follows_count") or 0) >= 3_000:
+        mult *= 0.85
+    if live_row is not None:
+        lv = live_row.get("live_verdict") or ""
+        if lv.startswith("warn_"):
+            mult *= 0.84
+    return float(base_s13) * mult
 
 
 def sha256_file(p: pathlib.Path) -> str:
@@ -225,9 +310,15 @@ def expand_handle(s: str) -> str:
     return s
 
 
-def probe_bsky_onboarding_comparator(live_ok_map: dict[str, dict], safety_excl: set[str]) -> dict:
+def load_comparator_cached(out_dir: pathlib.Path, live_ok_map: dict[str, dict], safety_excl: set[str]) -> dict:
+    comp_path = out_dir / "comparator.json"
+    if comp_path.exists():
+        try:
+            return json.loads(comp_path.read_text())
+        except Exception:
+            pass
     url = "https://public.api.bsky.app/xrpc/app.bsky.unspecced.getSuggestedOnboardingUsers?limit=25"
-    req = urllib.request.Request(url, headers={"User-Agent": "catbird-s17-harness/1.0", "Accept": "application/json"})
+    req = urllib.request.Request(url, headers={"User-Agent": "catbird-s17-harness/2.0", "Accept": "application/json"})
     checked_at = dt.datetime.now(dt.timezone.utc).isoformat()
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -290,31 +381,30 @@ def probe_bsky_onboarding_comparator(live_ok_map: dict[str, dict], safety_excl: 
         }
 
 
-def collect_raw_response_hashes(lake: pathlib.Path, s5_dir: pathlib.Path) -> tuple[list[str], str]:
-    """Collect raw getProfiles batch line hashes from s6-picker-20261028 (Oct 28 sweep) + Oct 30 topup work."""
+def collect_raw_response_hashes(lake: pathlib.Path, s5_dir: pathlib.Path, out_dir: pathlib.Path) -> tuple[list[str], str]:
+    existing = out_dir / "raw_response_hashes.txt"
     hashes: list[str] = []
-    s6_hashes = lake / "s6-picker-20261028/raw_response_hashes.txt"
-    if s6_hashes.exists():
-        with open(s6_hashes) as fh:
-            for ln in fh:
-                s = ln.strip()
-                if s:
-                    hashes.append(s)
-    # Also hash any JSONL lines inside s5_dir/work (top-up batches)
-    work_dir = s5_dir / "work"
-    if work_dir.exists():
-        for dp, _dn, fn in os.walk(work_dir):
-            if "_trash" in dp:
-                continue
-            for n in sorted(fn):
-                if n.endswith(".jsonl"):
-                    p = pathlib.Path(dp) / n
-                    with open(p, "rb") as fh:
-                        for line in fh:
-                            if line.strip():
-                                hashes.append(hashlib.sha256(line.rstrip(b"\n")).hexdigest())
+    if existing.exists():
+        with open(existing) as fh:
+            hashes = [ln.strip() for ln in fh if ln.strip()]
     if not hashes:
-        # Fallback: hash profiles.parquet itself so response provenance is non-empty
+        s6_hashes = lake / "s6-picker-20261028/raw_response_hashes.txt"
+        if s6_hashes.exists():
+            with open(s6_hashes) as fh:
+                hashes = [ln.strip() for ln in fh if ln.strip()]
+        work_dir = s5_dir / "work"
+        if work_dir.exists():
+            for dp, _dn, fn in os.walk(work_dir):
+                if "_trash" in dp:
+                    continue
+                for n in sorted(fn):
+                    if n.endswith(".jsonl"):
+                        p = pathlib.Path(dp) / n
+                        with open(p, "rb") as fh:
+                            for line in fh:
+                                if line.strip():
+                                    hashes.append(hashlib.sha256(line.rstrip(b"\n")).hexdigest())
+    if not hashes:
         hashes.append(sha256_file(s5_dir / "profiles.parquet"))
     agg_sha = hashlib.sha256("\n".join(hashes).encode()).hexdigest()
     return hashes, agg_sha
@@ -328,7 +418,7 @@ def main() -> None:
     ap.add_argument(
         "--strict-registered-only",
         action="store_true",
-        help="Disable provisional S17 rev-2 safety & organic-human curation rules.",
+        help="Disable provisional S17 rev-2/rev-3 safety, embedding, and live-feed curation rules.",
     )
     args = ap.parse_args()
     out_dir = pathlib.Path(args.out).expanduser()
@@ -347,7 +437,7 @@ def main() -> None:
 
     s6_in.set_partition("cand5", str(claude_comm_path))
 
-    # 1. Verify S5 positive controls in s5-sweep-20261030/receipt.json
+    # 1. Verify S5 positive controls
     s5_receipt = json.loads((s5_dir / "receipt.json").read_text())
     ctrl = s5_receipt.get("controls", {})
     controls_map = {
@@ -360,7 +450,19 @@ def main() -> None:
     if not all(controls_map.values()):
         sys.exit(f"ABORT: S5 controls not all True: {controls_map}")
 
-    # 2. Load live profiles.parquet (988,627 checked DIDs) + safety exclusion sets
+    # Load optional manual overrides from Inspector UI
+    overrides_path = out_dir / "manual_overrides.json"
+    manual_excl_dids: dict[str, str] = {}
+    manual_excl_cids: dict[int, str] = {}
+    if not args.strict_registered_only and overrides_path.exists():
+        try:
+            ov = json.loads(overrides_path.read_text())
+            manual_excl_dids = {str(k): str(v or "manual_inspector_exclude") for k, v in (ov.get("excluded_dids") or {}).items()}
+            manual_excl_cids = {int(k): str(v or "manual_inspector_exclude") for k, v in (ov.get("excluded_cards") or {}).items()}
+        except Exception:
+            pass
+
+    # 2. Load live profiles.parquet + safety exclusion sets
     purge_dids = s6_in.did_set(s5_dir / "purge_dids.txt")
     base_excl = s6_in.did_set(s13_dir / "base_safety_exclude_dids.txt")
     rule2_excl = s6_in.did_set(s5_dir / "eligibility_rule2_exclude_dids.txt")
@@ -384,6 +486,7 @@ def main() -> None:
             "handle",
             "postsCount",
             "followersCount",
+            "followsCount",
             "no_unauthenticated",
             "any_mod_label",
             "hard_label",
@@ -416,6 +519,7 @@ def main() -> None:
             "handle": r["handle"],
             "postsCount": int(r["postsCount"] or 0),
             "followersCount": int(r["followersCount"] or 0),
+            "followsCount": int(r["followsCount"] or 0),
         }
     del t_prof
 
@@ -437,22 +541,7 @@ def main() -> None:
         }
     del t_cl_extra
 
-    acct_excl_reason_by_did: dict[str, str] = {}
-    feed_creator_excl_dids: set[str] = set()
-    if not args.strict_registered_only:
-        for d, lp in live_prof_by_did.items():
-            nm, bio = snap.get(d, ("", ""))
-            rsn = screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=False)
-            if rsn:
-                acct_excl_reason_by_did[d] = rsn
-            rsn_fd = screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=True)
-            if rsn_fd:
-                feed_creator_excl_dids.add(d)
-    (out_dir / "non_organic_exclude_dids.txt").write_text(
-        "".join(f"{d}\t{acct_excl_reason_by_did[d]}\n" for d in sorted(acct_excl_reason_by_did))
-    )
-
-    # 3. Load cand5-full-matched partition, locked S13 eligibility & scores, and theta=0.5 flags
+    # 3. Load cand5 partition, locked S13 scores, and S17 rev-3 signals + live feeds
     comm_rows = pq.read_table(cand5_dir / "communities.parquet", columns=["community", "scene_id", "size", "top_dids"]).to_pylist()
     full_dids = [ln.rstrip("\n").split("\t")[1] for ln in open(cand5_dir / "producers.tsv")]
     n_prod = len(full_dids)
@@ -468,7 +557,6 @@ def main() -> None:
     pid_home[pid_kf[mask_r0]] = com_kf[mask_r0]
     home_by_did = {full_dids[p]: int(pid_home[p]) for p in np.flatnonzero(pid_home >= 0).tolist()}
 
-    # Build KnownFor co-membership neighbor counts across communities
     by_pid_comms: dict[int, list[int]] = collections.defaultdict(list)
     for p_i, c_i in zip(pid_kf.tolist(), com_kf.tolist()):
         by_pid_comms[p_i].append(c_i)
@@ -503,7 +591,6 @@ def main() -> None:
     s13_score = t_s13["score"].to_numpy().astype(np.float64)
     _, light_eng = s6_in.load_quality()
 
-    # Load high-H pairs (H_prod_cand5_full.parquet)
     t_h = pq.read_table(s14_dir / "H_prod_cand5_full.parquet", columns=["c_actor", "c_target", "is_high_top1pct"])
     high_h_pairs: set[tuple[int, int]] = set()
     for ca, ct, hi in zip(t_h["c_actor"].to_pylist(), t_h["c_target"].to_pylist(), t_h["is_high_top1pct"].to_pylist()):
@@ -511,11 +598,90 @@ def main() -> None:
             high_h_pairs.add((int(ca), int(ct)))
             high_h_pairs.add((int(ct), int(ca)))
 
-    # 4. Load curated list names, starter packs, O7 feeds, and clean S12 medoids
     _a_owners, a_names = s6_in.a_lists(cache_dir, home_by_did)
     all_names = s6_in.all_list_names()
 
-    # Starter packs for cand5 from s5-sweep-20261030/{cand5_card_packs.tsv, card_packs_filter.tsv} + packs.pkl
+    # Determine Y3-sensitive community set across ALL cand5 communities (used both for card filtering and Y3-bleed interloper check)
+    y3_comm_set: set[int] = set()
+    comm_sens_classes: dict[int, list[str]] = {}
+    for r in comm_rows:
+        c = int(r["community"])
+        cl = claude_c.get(c) or {}
+        cx = claude_comm_extra.get(c) or {}
+        a_top = [n for n, _k in a_names.get(c, [])]
+        opus_label = (cl.get("label") or cx.get("label") or "").strip()
+        label_native = (cx.get("label_native") or "").strip()
+        names_screened = a_top[:6] + all_names.get(c, [])[:6]
+        kw_classes = {k.replace("/", "_").replace("-", "_") for nm in names_screened for k in s6_kw.classes(nm)}
+        opus_classes = {s.replace("/", "_").replace("-", "_") for s in (cl.get("sensitivity") or []) if s and s != "none"}
+        opus_lbl_kw = (
+            {
+                k.replace("/", "_").replace("-", "_")
+                for nm in (opus_label, label_native)
+                if nm
+                for k in s6_kw.classes(nm)
+            }
+            & OPUS_LABEL_Y3_CLASSES
+            if not args.strict_registered_only
+            else set()
+        )
+        su = sorted((kw_classes | opus_classes | opus_lbl_kw) & Y3_CLASSES)
+        comm_sens_classes[c] = su
+        if su:
+            y3_comm_set.add(c)
+
+    # Load S17 rev 3 candidate_signals.parquet + card_centroids.npz + author_feeds.sqlite
+    sig_by_pid: dict[int, dict] = {}
+    sig_pq_path = out_dir / "candidate_signals.parquet"
+    if sig_pq_path.exists():
+        ts = pq.read_table(sig_pq_path)
+        for row_s in ts.to_pylist():
+            sig_by_pid[int(row_s["pid"])] = row_s
+
+    card_coh_map: dict[int, tuple[float, float]] = {}
+    cent_npz_path = out_dir / "card_centroids.npz"
+    if cent_npz_path.exists():
+        c_npz = np.load(cent_npz_path)
+        for ci, cp, ct in zip(c_npz["cids"].tolist(), c_npz["coh_posts"].tolist(), c_npz["coh_t1"].tolist()):
+            card_coh_map[int(ci)] = (round(float(cp), 4), round(float(ct), 4))
+
+    live_feed_by_did: dict[str, dict] = {}
+    af_db_path = out_dir / "author_feeds.sqlite"
+    if af_db_path.exists():
+        conn = sqlite3.connect(str(af_db_path), timeout=15.0)
+        conn.row_factory = sqlite3.Row
+        for r_af in conn.execute(
+            "SELECT did, avatar_url, n_items, n_orig, n_quote, n_reply, n_repost, repost_frac, reply_frac, "
+            "authored_frac, days_since_last_any, days_since_last_authored, top_ext_domain, same_domain_frac, "
+            "live_dup_text_frac, live_pol_frac, median_likes, live_sem_cos, live_verdict FROM author_feeds"
+        ):
+            live_feed_by_did[r_af["did"]] = dict(r_af)
+        conn.close()
+
+    # Screen accounts (rev 2 bio/handle + rev 3 embedding/slab/churn/cadence/live-feed + manual overrides)
+    acct_excl_reason_by_did: dict[str, str] = {}
+    feed_creator_excl_dids: set[str] = set()
+    evicted_examples: list[dict] = []
+
+    if not args.strict_registered_only:
+        for d, lp in live_prof_by_did.items():
+            nm, bio = snap.get(d, ("", ""))
+            rsn = manual_excl_dids.get(d) or screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=False)
+            if not rsn:
+                p_i = did2pid.get(d)
+                sig_r = sig_by_pid.get(p_i) if p_i is not None else None
+                rsn = screen_rev3_data_signals(sig_r, live_feed_by_did.get(d), y3_comm_set)
+            if rsn:
+                acct_excl_reason_by_did[d] = rsn
+            rsn_fd = manual_excl_dids.get(d) or screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=True)
+            if rsn_fd:
+                feed_creator_excl_dids.add(d)
+
+    (out_dir / "non_organic_exclude_dids.txt").write_text(
+        "".join(f"{d}\t{acct_excl_reason_by_did[d]}\n" for d in sorted(acct_excl_reason_by_did))
+    )
+
+    # 4. Load starter packs, O7 feeds, and clean S12 medoids
     pack_keep_uris: set[str] = set()
     with open(s5_dir / "card_packs_filter.tsv") as fh:
         for ln in fh:
@@ -538,7 +704,6 @@ def main() -> None:
                 pack_members_by_uri[uri_s] = sorted(set(mems))
     pnames = s6_in.pack_names(cache_dir)
 
-    # O7 feeds for cand5 + netcup-export feedgens metadata
     fg_meta = {
         f"at://{r['did']}/app.bsky.feed.generator/{r['rkey']}": r
         for r in s6_in.feedgens()
@@ -554,7 +719,6 @@ def main() -> None:
         if p_map == "cand5" and int(n_lk) >= 10:
             o7_by_comm[int(c_i)].append((int(n_lk), f_uri))
 
-    # Clean S12 medoids per producer
     medoid_by_did: dict[str, list[str]] = {}
     t_med = pq.read_table(s12_dir / "medoids.parquet", columns=["did", "uris"])
     for d_s, uris_l in zip(t_med["did"].to_pylist(), t_med["uris"].to_pylist()):
@@ -568,7 +732,7 @@ def main() -> None:
             if clean_u:
                 medoid_by_did[d_s] = clean_u
 
-    # 5. Evaluate every cand5 community under locked S13 + Y3 + S5 live + S17 rev-2 organic rules
+    # 5. Evaluate every cand5 community
     pids_by_comm: dict[int, list[int]] = collections.defaultdict(list)
     for p_i in np.flatnonzero(pid_home >= 0).tolist():
         pids_by_comm[int(pid_home[p_i])].append(p_i)
@@ -579,6 +743,7 @@ def main() -> None:
 
     kept_cards_raw: list[dict] = []
     packs_detail_out: dict[str, dict] = {}
+    evicted_by_reason: dict[str, list[tuple[float, dict]]] = collections.defaultdict(list)
 
     for r in comm_rows:
         c = int(r["community"])
@@ -590,7 +755,6 @@ def main() -> None:
         cx = claude_comm_extra.get(c) or {}
         a_top = [n for n, _k in a_names.get(c, [])]
         opus_label = (cl.get("label") or cx.get("label") or "").strip()
-        label_native = (cx.get("label_native") or "").strip()
         full_desc = cx.get("description") or " ".join((cl.get("description") or "").split())
         comm_type = cx.get("community_type") or ""
         onb_fit = cx.get("onboarding_fit") or ""
@@ -599,26 +763,11 @@ def main() -> None:
             excluded_cards["unlabelled"].append(c)
             continue
 
-        names_screened = a_top[:6] + all_names.get(c, [])[:6]
-        kw_classes = sorted({k.replace("/", "_").replace("-", "_") for nm in names_screened for k in s6_kw.classes(nm)})
-        opus_classes = sorted({s.replace("/", "_").replace("-", "_") for s in (cl.get("sensitivity") or []) if s and s != "none"})
-        opus_lbl_kw = (
-            sorted(
-                {
-                    k.replace("/", "_").replace("-", "_")
-                    for nm in (opus_label, label_native)
-                    if nm
-                    for k in s6_kw.classes(nm)
-                }
-                & OPUS_LABEL_Y3_CLASSES
-            )
-            if not args.strict_registered_only
-            else []
-        )
-        sens_union = sorted((set(kw_classes) | set(opus_classes) | set(opus_lbl_kw)) & Y3_CLASSES)
+        sens_union = comm_sens_classes.get(c, [])
 
-        # Candidate filtering under locked S13 + S5 live check + account-level organic/bio-safety screen
+        # Candidate filtering
         elig_pids: list[int] = []
+        card_would_keep = (not sens_union) and (c not in EXPLICIT_BLOCK_CIDS) and (c not in manual_excl_cids)
         for p_i in pids_by_comm.get(c, []):
             if not s13_elig[p_i]:
                 drop_counts["s13_ineligible"] += 1
@@ -644,6 +793,43 @@ def main() -> None:
             acct_rsn = acct_excl_reason_by_did.get(d)
             if acct_rsn:
                 drop_counts[f"acct_{acct_rsn}"] += 1
+                if card_would_keep and acct_rsn not in ("bio_adult_or_mdni",):
+                    sig_r = sig_by_pid.get(p_i) or {}
+                    nm_e, bio_e = snap.get(d, ("", ""))
+                    bo_cid = int(sig_r.get("best_other_cid") or -1)
+                    bo_lbl = (claude_comm_extra.get(bo_cid) or {}).get("label", "") if bo_cid >= 0 else ""
+                    lf_r = live_feed_by_did.get(d) or {}
+                    evicted_by_reason[acct_rsn].append(
+                        (
+                            -float(s13_score[p_i]),
+                            {
+                                "did": d,
+                                "handle": lp["handle"],
+                                "name": nm_e[:50],
+                                "bio": " ".join(bio_e.split())[:220],
+                                "followers": lp["followersCount"],
+                                "follows": lp["followsCount"],
+                                "posts": lp["postsCount"],
+                                "reason": acct_rsn,
+                                "card_cid": c,
+                                "card_title": opus_label or (" · ".join(a_top[:2])),
+                                "s13_score": round(float(s13_score[p_i]), 3),
+                                "sem_cos_posts": round(float(sig_r["sem_cos_posts"]), 3) if _finite(sig_r.get("sem_cos_posts")) is not None else None,
+                                "t1_cos": round(float(sig_r["t1_cos"]), 3) if _finite(sig_r.get("t1_cos")) is not None else None,
+                                "best_other_cid": bo_cid if bo_cid >= 0 else None,
+                                "best_other_label": bo_lbl,
+                                "best_other_sem_cos": round(float(sig_r["best_other_sem_cos"]), 3) if _finite(sig_r.get("best_other_sem_cos")) is not None else None,
+                                "slab_near_dup_frac": round(float(sig_r.get("slab_near_dup_frac") or 0.0), 3),
+                                "posts_per_day": round(float(sig_r.get("posts_per_day") or 0.0), 1),
+                                "follow_ratio": round(float(sig_r.get("follow_ratio") or 0.0), 2),
+                                "avatar_url": lf_r.get("avatar_url") or "",
+                                "live_verdict": lf_r.get("live_verdict") or "",
+                                "live_sem_cos": lf_r.get("live_sem_cos"),
+                                "repost_frac": lf_r.get("repost_frac"),
+                                "live_pol_frac": lf_r.get("live_pol_frac"),
+                            },
+                        )
+                    )
                 continue
             elig_pids.append(p_i)
 
@@ -659,6 +845,9 @@ def main() -> None:
 
         if not args.strict_registered_only:
             blob_txt = f"{opus_label} :: {full_desc}"
+            if c in manual_excl_cids:
+                excluded_cards["manual_inspector_exclude"].append(c)
+                continue
             if c in EXPLICIT_BLOCK_CIDS:
                 excluded_cards["y3_explicit_review_block"].append(c)
                 continue
@@ -684,16 +873,24 @@ def main() -> None:
                 excluded_cards["organic_bot_promo_or_ai_slop"].append(c)
                 continue
 
-        # Rank eligible candidates by locked S13 winner score (w_lin_plus_curators), tiebreak (-followers, did)
+        # Rank eligible candidates by rev-3 coherence-weighted S13 score (or raw S13 score under --strict-registered-only)
+        eff_score_by_pid = {
+            p_i: effective_candidate_score(
+                float(s13_score[p_i]),
+                sig_by_pid.get(p_i),
+                live_feed_by_did.get(full_dids[p_i]),
+                args.strict_registered_only,
+            )
+            for p_i in elig_pids
+        }
         elig_pids.sort(
             key=lambda p_i: (
-                -float(s13_score[p_i]),
+                -eff_score_by_pid[p_i],
                 -int(live_prof_by_did[full_dids[p_i]]["followersCount"]),
                 full_dids[p_i],
             )
         )
 
-        # Keep up to 27 candidates respecting <=2 >500k and (in rev 2) <=2 supplement in the first 25
         card_cands: list[int] = []
         big = 0
         sup_cnt = 0
@@ -716,7 +913,7 @@ def main() -> None:
             excluded_cards["lt25_after_pop_or_sup_cap"].append(c)
             continue
 
-        # Clean starter packs (0-2 per card, inspect only)
+        # Clean starter packs
         kept_packs: list[dict] = []
         for off_p in sorted(cand5_offers.get(c, []), key=lambda x: (-x["share"], x["uri"])):
             u_pk = off_p["uri"]
@@ -771,7 +968,7 @@ def main() -> None:
             if len(kept_packs) >= PACKS_PER_CARD:
                 break
 
-        # Clean O7 feeds (1-3 per card; creator live ok & NOT hide_from_recs per A1 / Vf29)
+        # Clean O7 feeds
         kept_feeds: list[dict] = []
         for n_lk, f_uri in sorted(o7_by_comm.get(c, []), key=lambda x: (-x[0], x[1])):
             parts_u = f_uri.split("/")
@@ -802,7 +999,6 @@ def main() -> None:
             if len(kept_feeds) >= FEEDS_PER_CARD:
                 break
 
-        # Up to 3 clean medoid post URIs from top non-hfr candidates
         card_medoids: list[str] = []
         for p_i in card_cands:
             d = full_dids[p_i]
@@ -830,8 +1026,9 @@ def main() -> None:
                 "community_type": comm_type,
                 "onboarding_fit": onb_fit,
                 "confidence": conf_lvl,
-                "list_names": a_names.get(c, [])[:4],
+                "list_names": a_names.get(c, [])[:5],
                 "cand_pids": card_cands,
+                "eff_scores": [round(eff_score_by_pid[p_i], 4) for p_i in card_cands],
                 "packs": kept_packs,
                 "feeds": kept_feeds,
                 "medoids": card_medoids,
@@ -841,7 +1038,6 @@ def main() -> None:
     kept_cards_raw.sort(key=lambda cd: (-cd["engagers"], cd["community"]))
     kept_comm_set = {cd["community"] for cd in kept_cards_raw}
 
-    # Add H-compatible KnownFor co-membership top-6 neighbors per kept v0 card
     for cd in kept_cards_raw:
         c = cd["community"]
         nbs = [
@@ -851,9 +1047,8 @@ def main() -> None:
         ][:6]
         cd["h_nbs"] = nbs
 
-    # 6. Deterministic 30-card S17 blind review draw by cityHash64(str(community)) across ALL kept v0 cards
+    # 6. Deterministic 30-card S17 review draw by cityHash64(str(community))
     c_strs = [str(cd["community"]) for cd in kept_cards_raw]
-    import subprocess
     ch_in = "\n".join(c_strs).encode()
     ch_out = subprocess.check_output(
         [
@@ -869,7 +1064,6 @@ def main() -> None:
     ordered_by_hash = [int(ln.split("\t")[0]) for ln in ch_out.splitlines() if ln.strip()]
     s17_review_30 = ordered_by_hash[:30]
 
-    # Build blind A/B title assignment per review card (seeded RNG, key stored ONLY in blind_review_key.json)
     rng_ab = np.random.default_rng(20261030)
     card_by_id = {cd["community"]: cd for cd in kept_cards_raw}
     blind_public: list[dict] = []
@@ -897,8 +1091,8 @@ def main() -> None:
             "curated_list_title": cd["list_title"],
         }
 
-    # 7. Probe Bluesky onboarding comparator once + write sidecar descriptions & starter pack details
-    comparator = probe_bsky_onboarding_comparator(live_prof_by_did, hard_safety_excl | set(acct_excl_reason_by_did))
+    # 7. Write sidecar descriptions, starter packs, blind key, and rich `inspector_index.json`
+    comparator = load_comparator_cached(out_dir, live_prof_by_did, hard_safety_excl | set(acct_excl_reason_by_did))
     (out_dir / "comparator.json").write_text(json.dumps(comparator, indent=2, ensure_ascii=False))
     (out_dir / "packs_members.json").write_text(json.dumps(packs_detail_out, ensure_ascii=False))
     (out_dir / "blind_review_key.json").write_text(json.dumps(blind_secret, indent=2, ensure_ascii=False))
@@ -916,7 +1110,7 @@ def main() -> None:
     descs_bytes = json.dumps(descs_out, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     (out_dir / "cards_descriptions.json").write_bytes(descs_bytes)
 
-    # 8. Assemble compact `cards_v1.json` guaranteed <= 2,097,152 bytes (all kept v0 cards included; full descriptions in cards_descriptions.json)
+    # 8. Assemble compact `cards_v1.json` guaranteed <= 2,097,152 bytes
     def serialize_catalog(cands_per_card: int, desc_limit: int, name_limit: int, name_top_k: int = 10) -> tuple[bytes, dict]:
         top_named_pids: set[int] = set()
         for cd in kept_cards_raw:
@@ -1015,11 +1209,12 @@ def main() -> None:
         )
 
         payload = {
-            "version": "onboarding_v0_20261030_rev2" if not args.strict_registered_only else "onboarding_v0_20261030_strict",
+            "version": "onboarding_v0_20261031_rev3" if not args.strict_registered_only else "onboarding_v0_20261030_strict",
             "partition": "cand5-full-matched",
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "locked_s13": {"k": 3, "m": 3, "theta": 0.5, "ranker": "w_lin_plus_curators"},
             "rev2_organic_safety_curation": not args.strict_registered_only,
+            "rev3_embedding_and_live_feed_curation": not args.strict_registered_only,
             "h_enabled": True,
             "counts": {
                 "v0_cards": len(cards_compact),
@@ -1061,6 +1256,160 @@ def main() -> None:
     cards_sha = hashlib.sha256(chosen_bytes).hexdigest()
     (out_dir / f"onboarding_v0_{cards_sha[:8]}.json").write_bytes(chosen_bytes)
 
+    # 8b. Build rich `inspector_index.json` sidecar for the new S17 v2 Inspector UI
+    accts_tbl = chosen_payload["accts"]
+    inspector_accts: list[dict] = []
+    borderline_suspects: list[tuple[float, dict]] = []
+
+    aid_to_card_slot: dict[int, tuple[int, int]] = {}
+    for c_key, cd_c in chosen_payload["cards"].items():
+        for slot_i, aid in enumerate(cd_c["m"]):
+            if aid not in aid_to_card_slot:
+                aid_to_card_slot[aid] = (int(c_key), slot_i + 1)
+
+    for aid, row in enumerate(accts_tbl):
+        d = expand_did(row[0])
+        p_i = did2pid[d]
+        lp = live_prof_by_did[d]
+        nm_f, bio_f = snap.get(d, ("", ""))
+        sig_r = sig_by_pid.get(p_i) or {}
+        lf_r = live_feed_by_did.get(d)
+        bo_cid = int(sig_r.get("best_other_cid") or -1)
+        bo_lbl = (claude_comm_extra.get(bo_cid) or {}).get("label", "") if bo_cid >= 0 else ""
+
+        sp = _finite(sig_r.get("sem_cos_posts"))
+        t1 = _finite(sig_r.get("t1_cos"))
+        bo_sem = _finite(sig_r.get("best_other_sem_cos"))
+        dup = float(sig_r.get("slab_near_dup_frac") or 0.0)
+        frat = float(sig_r.get("follow_ratio") or 0.0)
+        ppd = float(sig_r.get("posts_per_day") or 0.0)
+        v9g = float(sig_r.get("v9_demotion_gap") or 0.0)
+
+        # Compute residual discrepancy risk score among KEPT candidates so Josh can spot-check edge cases first
+        flags_list: list[str] = []
+        risk = 0.0
+        if not sig_r.get("has_vec") or int(sig_r.get("mm_post_count") or 0) < 3:
+            flags_list.append("few_slab_posts")
+            risk += 1.4
+        if sp is not None and sp < 0.16:
+            flags_list.append(f"low_sem_cos({sp:+.2f})")
+            risk += (0.20 - sp) * 8.0
+        if t1 is not None and t1 < 0.14:
+            flags_list.append(f"low_social_cos({t1:+.2f})")
+            risk += (0.18 - t1) * 6.0
+        if sp is not None and bo_sem is not None and (bo_sem - sp) >= 0.25 and sp < 0.25:
+            flags_list.append(f"closer_to_c{bo_cid}({bo_sem:+.2f})")
+            risk += (bo_sem - sp) * 5.0
+        if int(sig_r.get("slab_n_posts") or 0) >= 8 and dup >= 0.55:
+            flags_list.append(f"repetitive_slab({int(dup*100)}%)")
+            risk += dup * 3.5
+        if frat >= 1.8 and lp["followsCount"] >= 2_500:
+            flags_list.append(f"follow_heavy({frat:.1f}x)")
+            risk += 2.2
+        if ppd >= 70.0:
+            flags_list.append(f"high_cadence({ppd:.0f}/d)")
+            risk += 1.8
+        if v9g >= 0.40:
+            flags_list.append(f"high_block_or_combative({int(v9g*100)}%)")
+            risk += v9g * 2.5
+        if lf_r is not None:
+            lv = lf_r.get("live_verdict") or ""
+            if lv.startswith("warn_"):
+                flags_list.append(lv)
+                risk += 2.6
+
+        meds_acct = [u.rsplit("/", 1)[-1] for u in (medoid_by_did.get(d) or [])[:3]]
+        acct_meta = {
+            "nm": nm_f[:55],
+            "bio": " ".join(bio_f.split())[:260],
+            "pc": lp["postsCount"],
+            "fw": lp["followsCount"],
+            "sp": round(sp, 3) if sp is not None else None,
+            "t1": round(t1, 3) if t1 is not None else None,
+            "boc": bo_cid if (bo_cid >= 0 and bo_sem is not None and sp is not None and bo_sem > sp + 0.12) else None,
+            "bol": bo_lbl[:48] if (bo_cid >= 0 and bo_sem is not None and sp is not None and bo_sem > sp + 0.12) else "",
+            "bos": round(bo_sem, 3) if (bo_cid >= 0 and bo_sem is not None and sp is not None and bo_sem > sp + 0.12) else None,
+            "dup": round(dup, 3),
+            "img": round(float(sig_r.get("slab_img_frac") or 0.0), 2),
+            "ppd": round(ppd, 1),
+            "fr": round(frat, 2),
+            "v9": round(v9g, 2),
+            "s13": round(float(s13_score[p_i]), 2),
+            "md": meds_acct,
+            "fl": flags_list,
+        }
+        if lf_r is not None:
+            acct_meta["lf"] = {
+                "av": lf_r.get("avatar_url") or "",
+                "vd": lf_r.get("live_verdict") or "",
+                "lsc": lf_r.get("live_sem_cos"),
+                "rp": lf_r.get("repost_frac"),
+                "ry": lf_r.get("reply_frac"),
+                "no": lf_r.get("n_orig"),
+                "da": lf_r.get("days_since_last_any"),
+                "dom": lf_r.get("top_ext_domain") or "",
+            }
+        inspector_accts.append(acct_meta)
+
+        if risk >= 2.2 and aid in aid_to_card_slot:
+            cid_slot, rank_pos = aid_to_card_slot[aid]
+            borderline_suspects.append(
+                (
+                    -risk,
+                    {
+                        "aid": aid,
+                        "did": d,
+                        "handle": lp["handle"],
+                        "card_cid": cid_slot,
+                        "rank_pos": rank_pos,
+                        "risk": round(risk, 2),
+                        "flags": flags_list,
+                    },
+                )
+            )
+
+    borderline_suspects.sort(key=lambda x: x[0])
+
+    # Top evicted examples per rev-3 category so Inspector shows concrete before/after proof
+    evicted_showcase: dict[str, list[dict]] = {}
+    for rsn, items in sorted(evicted_by_reason.items()):
+        items.sort(key=lambda x: x[0])
+        evicted_showcase[rsn] = [it[1] for it in items[:15]]
+
+    card_health: dict[str, dict] = {}
+    for cd in kept_cards_raw:
+        cid = cd["community"]
+        c_pids = cd["cand_pids"][:25]
+        sps = [_finite((sig_by_pid.get(p) or {}).get("sem_cos_posts")) for p in c_pids]
+        sps_clean = [x for x in sps if x is not None]
+        t1s = [_finite((sig_by_pid.get(p) or {}).get("t1_cos")) for p in c_pids]
+        t1s_clean = [x for x in t1s if x is not None]
+        cp_cent, ct_cent = card_coh_map.get(cid, (0.0, 0.0))
+        hydrated_n = sum(1 for p in c_pids if full_dids[p] in live_feed_by_did)
+        sup_n = sum(1 for p in c_pids if bool(s13_sup[p]))
+        card_health[str(cid)] = {
+            "coh_posts": round(float(np.mean(sps_clean)), 3) if sps_clean else cp_cent,
+            "min_sem": round(float(np.min(sps_clean)), 3) if sps_clean else None,
+            "coh_t1": round(float(np.mean(t1s_clean)), 3) if t1s_clean else ct_cent,
+            "hydrated_25": hydrated_n,
+            "sup_25": sup_n,
+            "all_lists": cd["list_names"],
+        }
+
+    inspector_payload = {
+        "generated_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "cards_v1_sha256": cards_sha,
+        "hydrated_feeds_count": len(live_feed_by_did),
+        "evicted_counts_in_kept_cards": {k: len(v) for k, v in sorted(evicted_by_reason.items(), key=lambda kv: -len(kv[1]))},
+        "evicted_showcase": evicted_showcase,
+        "borderline_suspects": [x[1] for x in borderline_suspects[:200]],
+        "card_health": card_health,
+        "acct_meta": inspector_accts,
+    }
+    (out_dir / "inspector_index.json").write_bytes(
+        json.dumps(inspector_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
     # 9. Independent verification (`verify_s17`) across EVERY card, candidate, pack member, feed creator, and medoid
     violations: list[str] = []
     if len(chosen_bytes) > MAX_JSON_BYTES:
@@ -1070,7 +1419,6 @@ def main() -> None:
     if set(descs_loaded.keys()) != set(chosen_payload["cards"].keys()):
         violations.append("cards_descriptions.json key mismatch against cards_v1.json")
 
-    accts_tbl = chosen_payload["accts"]
     for c_key, cd in chosen_payload["cards"].items():
         cid = int(c_key)
         if comm_bad_full.get(cid, False):
@@ -1088,8 +1436,8 @@ def main() -> None:
             violations.append(f"card {cid}: <25 candidates ({len(cd['m'])})")
 
         if not args.strict_registered_only:
-            if cid in EXPLICIT_BLOCK_CIDS:
-                violations.append(f"card {cid}: in EXPLICIT_BLOCK_CIDS")
+            if cid in EXPLICIT_BLOCK_CIDS or cid in manual_excl_cids:
+                violations.append(f"card {cid}: in block/manual exclude list")
             opus_lbl = cx.get("label") or ""
             nat_lbl = cx.get("label_native") or ""
             full_d = cx.get("description") or ""
@@ -1132,10 +1480,8 @@ def main() -> None:
             if DROP_PROFILE_CLASSES & claude_p.get(d, set()):
                 violations.append(f"card {cid}: candidate {d} Claude profile minors/adult")
             if not args.strict_registered_only:
-                nm_v, bio_v = snap.get(d, ("", ""))
-                rsn_v = screen_account_organic_and_safe(live_prof_by_did[d]["handle"], nm_v, bio_v, allow_feed_handle=False)
-                if rsn_v:
-                    violations.append(f"card {cid}: candidate {d} failed organic/bio screen ({rsn_v})")
+                if d in acct_excl_reason_by_did:
+                    violations.append(f"card {cid}: candidate {d} failed rev3 organic/embedding/live screen ({acct_excl_reason_by_did[d]})")
         if big_25 > POP_MAX:
             violations.append(f"card {cid}: >2 accounts >500k in top 25 ({big_25})")
         if (not args.strict_registered_only) and sup_25 > SUP_MAX:
@@ -1176,7 +1522,7 @@ def main() -> None:
             if (cid, int(nb)) in high_h_pairs:
                 violations.append(f"card {cid}: high-H neighbor {nb} in suggested neighbors")
 
-    raw_hashes, raw_hashes_sha = collect_raw_response_hashes(lake, s5_dir)
+    raw_hashes, raw_hashes_sha = collect_raw_response_hashes(lake, s5_dir, out_dir)
     (out_dir / "raw_response_hashes.txt").write_text("\n".join(raw_hashes) + "\n")
 
     ver_report = {
@@ -1184,6 +1530,7 @@ def main() -> None:
         "violations_count": len(violations),
         "violations": violations[:100],
         "rev2_organic_safety_curation": not args.strict_registered_only,
+        "rev3_embedding_and_live_feed_curation": not args.strict_registered_only,
         "cards_v1_bytes": len(chosen_bytes),
         "cards_v1_le_2mb": len(chosen_bytes) <= MAX_JSON_BYTES,
         "cards_v1_sha256": cards_sha,
@@ -1192,6 +1539,7 @@ def main() -> None:
         "v0_cards_count": len(chosen_payload["cards"]),
         "unique_candidate_accounts": len(accts_tbl),
         "non_organic_or_bio_unsafe_dids_excluded": len(acct_excl_reason_by_did),
+        "live_hydrated_feeds_used": len(live_feed_by_did),
         "blind_review_cards_count": len(s17_review_30),
         "controls_ok": all(controls_map.values()),
         "raw_response_records_hashed": len(raw_hashes),
@@ -1202,9 +1550,9 @@ def main() -> None:
         sys.exit(f"ABORT: {len(violations)} safety violations detected in S17 verify: {violations[:5]}")
 
     receipt = {
-        "step": "S17 Harness v1 & Onboarding v0 Catalog Build (rev 2 organic+safety hardened, 127.0.0.1 only)",
+        "step": "S17 Harness v2 & Onboarding v0 Catalog Build (rev 3 embedding+spam+live-feed hardened, 127.0.0.1 only)",
         "plan": "docs/execution-plans/2026-10-25-whole-network-signals-plan.md rows S16 & S17, §3.3",
-        "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §9.6, §10, Amendments A1 & A2 + DECISIONS S17 rev 2",
+        "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §9.6, §10, Amendments A1 & A2 + DECISIONS S17 rev 2 & rev 3",
         "written_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "wall_seconds": round(time.time() - t0, 2),
         "strict_registered_only": bool(args.strict_registered_only),
@@ -1220,6 +1568,7 @@ def main() -> None:
             "s12_medoids": sha256_file(s12_dir / "medoids.parquet"),
             "claude_cand5_labels": sha256_file(claude_comm_path),
             "s16_report": sha256_file(s16_dir / "s16_report.json"),
+            "candidate_signals": sha256_file(sig_pq_path) if sig_pq_path.exists() else "",
         },
         "s5_controls": controls_map,
         "raw_appview_responses": {
@@ -1230,6 +1579,7 @@ def main() -> None:
         "counts": chosen_payload["counts"],
         "member_drops": dict(drop_counts),
         "account_organic_safety_exclusions": dict(collections.Counter(acct_excl_reason_by_did.values())),
+        "evicted_in_kept_v0_cards": inspector_payload["evicted_counts_in_kept_cards"],
         "packs_and_feeds": dict(pack_feed_stats),
         "comparator_probe": {k: v for k, v in comparator.items() if k != "actors"},
         "verify": ver_report,
@@ -1237,7 +1587,7 @@ def main() -> None:
     (out_dir / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(
         f"[s17-build] PASS: v0_cards={len(chosen_payload['cards']):,}, bytes={len(chosen_bytes):,}/{MAX_JSON_BYTES:,}, "
-        f"descs_bytes={len(descs_bytes):,}, violations=0, comparator_http={comparator['http_status']} ({time.time()-t0:.1f}s)",
+        f"live_feeds={len(live_feed_by_did):,}, violations=0 ({time.time()-t0:.1f}s)",
         flush=True,
     )
 

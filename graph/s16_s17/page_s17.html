@@ -1018,6 +1018,7 @@
     document.getElementById("dlg-close").addEventListener("click", () => dialogEl.close());
     if (!("closedBy" in HTMLDialogElement.prototype)) {
       dialogEl.addEventListener("click", (event) => {
+        if (event.target !== dialogEl) return;
         const rect = dialogEl.getBoundingClientRect();
         const clickedInside = (
           rect.top <= event.clientY &&

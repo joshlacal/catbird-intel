@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""Build S17 Harness v2 & v0 Onboarding Catalog (`cards_v1.json <= 2 MB`, 0 safety violations, rev 3).
+"""Build S17 Harness v2 & v0 Onboarding Catalog (`cards_v1.json <= 2 MB`, 0 safety violations, rev 4).
 
 Reads:
-- Frozen partition `cand5-full-matched` (`communities.parquet`, `known_for.parquet`, `membership.npy`)
+- Frozen partition `cand5-full-matched` (`communities.parquet`, `known_for.parquet`, `membership.npy`, `audit-quality/{producer_quality.parquet, curatelists.tsv}`)
 - Locked S13 production eligibility & scores (`s13_prod_eligibility_and_scores.parquet`, flags at theta=0.5)
 - Merged Oct 30 S5 live safety & PDS status sweep (`s5-sweep-20261030/{profiles.parquet, status.tsv, purge_dids.txt, card_packs_filter.tsv, receipt.json}`)
 - Validated S14 compatibility matrix `H_prod_cand5_full.parquet` (`is_high_top1pct`)
 - Clean O7 community-liked feeds (`s10-outputs-20261030/O7/O7.parquet`) + `cand5_card_packs.tsv`
 - Clean S12 medoid post URIs (`s12-closeout-20261030/medoids.parquet`)
-- Claude Opus `cand5` community labels (`claude-labels-cand5-20261028/community_labels.parquet`) + profile labels
-- S17 rev 3 full-data signals (`candidate_signals.parquet`, `card_centroids.npz`, `author_feeds.sqlite`, `manual_overrides.json`):
-  * S12m multimodal post-embedding & S16 Tier-1 social-head interloper + Y3-bleed eviction
-  * S12m 64-bucket per-post template/duplicate slop bot eviction
-  * S5 follow-churn (`followsCount`/`followersCount`) & automated firehose cadence (`>=120 posts/day`) eviction
-  * Live `getAuthorFeed` repost-wall, dormant, live-template-spam, political-drift, and live-label eviction
-  * Bounded coherence quality multiplier inside candidate ranking + `inspector_index.json` sidecar for the v2 UI
+- Claude Opus `cand5` community labels (`claude-labels-cand5-20261028/community_labels.parquet`) + profile labels (`claude-labels-20261027/profile_labels.parquet`) + `C5` `account_type_model`
+- S17 rev 4 full-data anti-spam signals (`candidate_signals.parquet`, `card_centroids.npz`, `author_feeds.sqlite`, `manual_overrides.json`):
+  * S12m multimodal post-embedding & S16 Tier-1 social-head interloper + Y3/politics-bleed eviction
+  * S12m 64-bucket per-post template/duplicate slop bot eviction (including slow-cadence template bots)
+  * Follow-churn & mutual follow-train ring eviction (`followsCount`, `follow_ratio`, `mass3k_share`, `mutual_share`)
+  * Community-curated moderation/block-rate & negative curated-list consensus eviction (`modlists`, `blockers`, bot/spam lists)
+  * Claude teacher + distilled `C5` `mmBERT-base` `bot_or_automated` & `adult_creator` eviction
+  * Live `getAuthorFeed` repost-wall, reply-wall, link-farm/shortener, hashtag-spam, dormant, live-template, political-drift, and live-label eviction
+  * Bounded coherence + human-creator quality multiplier inside candidate ranking + `inspector_index.json` sidecar for the v2 UI
 
 Reversible via `--strict-registered-only`.
 """
@@ -76,7 +78,7 @@ OPUS_LABEL_Y3_CLASSES = {
 }
 DROP_PROFILE_CLASSES = {"likely_minors", "adult"}
 
-# Provisional S17 rev-2/rev-3 safety + organic-human curation rules (reversible via --strict-registered-only):
+# Provisional S17 rev-2..rev-4 safety + organic-human curation rules (reversible via --strict-registered-only):
 EXPLICIT_BLOCK_CIDS = {1707, 409, 1849, 1056, 1856, 2774, 2245, 2826}
 RE_DESC_ADULT_MINORS = re.compile(
     r"(?:(?<!\w)18\+|(?<!\w)21\+|(?<!\w)r-?18\b|\bmdni\b|\bnsfw\b|\bonlyfans\b|\bfansly\b|"
@@ -85,14 +87,17 @@ RE_DESC_ADULT_MINORS = re.compile(
 )
 RE_RP_UNSAFE = re.compile(
     r"\b(high[- ]school|school[- ]life|school roleplay|school oc|yokai[- ]school|magic[- ]school|"
-    r"academy|university|hogwarts|idol|k-?pop|celebrity|face[- ]?claim)\b",
+    r"academy|university|hogwarts|idol|k-?pop|celebrity|face[- ]?claim|"
+    r"crack[- ]den|gang[- ]rp|cartel)\b",
     re.I,
 )
 RE_NON_ORGANIC_CARD = re.compile(
-    r"\b(image bots?|paper bots?|horoscope bots?|promo bots?|gimmick (?:bots?|accounts?)|tech bots?|"
+    r"(?:\b(?:image bots?|paper bots?|horoscope bots?|promo bots?|gimmick (?:bots?|accounts?)|tech bots?|"
     r"automated (?:bot|nep|repec|feeds?)|ai[- ]art (?:generators?|creators?)|"
     r"book[- ]deal(?:/promo)?|amazon affiliates?|prints and photography sellers|promoting wall art|"
-    r"arxiv feeds?|news feeds, bots)\b",
+    r"arxiv feeds?|news feeds, bots|classroom wish\s*lists?|hashtag-heavy promotions|"
+    r"indie sff authors self-promoting)\b|#clearthelist\b|^hashtag\s+(?:street|photography)|"
+    r"^[^:]*\bbook promotion\b)",
     re.I,
 )
 
@@ -106,39 +111,52 @@ RE_RAW_ADULT = re.compile(
     re.I,
 )
 RE_CLEAN_ADULT = re.compile(
-    r"(?:\bnsfw\b|\bonlyfans\b|\bfansly\b|\byiff\b|\bporn\b|\bhentai\b|\beroge\b|\badult\s+content\b)",
+    r"(?:\bnsfw\b|\bonlyfans\b|\bfansly\b|\byiff\b|\bporn\b|\bhentai\b|\beroge\b|\badult\s+content\b|"
+    r"\badult\s+artist\b|\bsmut\s+(?:writer|author|artist)\b)",
     re.I,
 )
 RE_HDL_BOT = re.compile(
-    r"(?:\.bot$|\.ap\.brid\.gy$|(?:^|[.-])(?:bot|rss|feed|mirror|alerts?)(?:$|[.-]))",
+    r"(?:\.bot$|\.ap\.brid\.gy$|(?:^|[._-])(?:bot|rss|feed|mirror|alerts?)(?:$|[._-]))",
     re.I,
 )
 RE_NAME_BOT = re.compile(
-    r"(?:\[bot\]|\(bot\)|\b(?:unofficial|automated|mirror|rss|repost)\s+bot\b|(?:^|\s)bot(?:$|\s)|"
-    r"\[twitter/x\s*mirror\]|\(mirror\)|#(?:f4f|bluecrew|ifb|fbr)\b|@f4f\b)",
+    r"(?:\[bot\]|\(bot\)|\b(?:unofficial|automated|mirror|rss|repost|quote|hourly|daily)\s+bot\b|"
+    r"(?:^|\s)bot(?:$|\s)|\[twitter/x\s*mirror\]|\(mirror\)|#(?:f4f|bluecrew|ifb|fbr)\b|@f4f\b)",
     re.I,
 )
 RE_BIO_BOT = re.compile(
-    r"(?:\bautomated\s+(?:account|feed|posts?|bot|updates?|mirror|weather|alerts?)\b|"
-    r"\bunoff?icial\s+(?:bot|mirror|feed)\b|\bmirror\s+(?:of|from|bot|account)\b|"
+    r"(?:\bautomated\s+(?:account|feed|posts?|bot|updates?|mirror|weather|alerts?|archival)\b|"
+    r"\bunoff?icial\s+(?:bot|mirror|feed|archive)\b|\bmirror\s+(?:of|from|bot|account)\b|"
     r"\bbridgy\s+fed\b|\brss\s+(?:feed|bot)\b|"
-    r"\bposts?\s+(?:every|once\s+an?)\s+(?:hour|day|\d+\s*(?:min|hour)))",
+    r"\bposts?\s+(?:every|once\s+an?)\s+(?:hour|day|\d+\s*(?:min|hour))|"
+    r"\bi'?m\s+a\s+bot\b|\bi\s+am\s+a\s+bot\b|\bbot\s+(?:by|created\s+by|run\s+by|maintained\s+by)\s+@|"
+    r"\b(?:hourly|daily|random)\s+(?:image|photo|art|quote|frame|screencap|screenshot|lyric|wiki|poem)s?\s+bot\b|"
+    r"\bphoto\s+sharing\s+bot\b|\bquote\s+bot\b|\bgenerated\s+feed\b|"
+    r"\bblue\s+bots\s+done\s+quick\b|\bcheap\s*bots\s*done\s*quick\b|お知らせするbotです|"
+    r"\ba\s+[a-z-]+\s+bot\s+for\b|"
+    r"\bautomatically\s+(?:posts?|tweets?|shares?|syndicates?)\b)",
     re.I,
 )
 RE_BIO_F4F = re.compile(
-    r"(?:#(?:f4f|ifb|fbr|followback|teamfollowback|bluecrew)\b|\bi\s+follow\s+back\b|"
-    r"\bfollow\s+4\s+follow\b|\bfollow\s+for\s+follow\b)",
+    r"(?:#(?:f4f|ifb|fbr|followback|teamfollowback|bluecrew|fbpe|resister|resist)\b|\bi\s+follow\s+back\b|"
+    r"\bfollow\s+4\s+follow\b|\bfollow\s+for\s+follow\b|\bfollow\s+back\s+all\b)",
     re.I,
 )
 RE_BIO_AI = re.compile(
-    r"(?:\bai\s+artist\b|\bai[- ]generated\s+(?:art|images|music)\b|\bmidjourney\s+(?:artist|creator)\b|"
-    r"\bstable\s+diffusion\s+artist\b|\bprompt\s+artist\b)",
+    r"(?:\bai\s+artist\b|\bai[- ]generated\s+(?:art|images|music|illustrations?)\b|\bmidjourney\s+(?:artist|creator)\b|"
+    r"\bstable\s+diffusion\s+artist\b|\bprompt\s+(?:artist|engineer)\b|\bgenai\s+artist\b)",
+    re.I,
+)
+RE_BIO_SOLICIT = re.compile(
+    r"(?:#clearthelist\b|\bdm\s+for\s+(?:promo|paid\s+promo|collab\s+rates)\b|"
+    r"\bas\s+an\s+amazon\s+associate\b|\blinks?\s+may\s+be\s+affiliate\b|"
+    r"\bcrypto\s+(?:signals?|airdrops?|giveaways?)\b|\bonline\s+casino\b)",
     re.I,
 )
 
 
 def screen_account_organic_and_safe(handle: str, name: str, bio: str, *, allow_feed_handle: bool = False) -> str | None:
-    """Return exclusion reason if account is unlabeled 18+/NSFW/MDNI, bot/mirror, F4F ring, or AI-slop."""
+    """Return exclusion reason if account is unlabeled 18+/NSFW/MDNI, bot/mirror, F4F ring, solicitation, or AI-slop."""
     h = (handle or "").strip().lower()
     nm = (name or "").strip()
     b = (bio or "").strip()
@@ -155,6 +173,8 @@ def screen_account_organic_and_safe(handle: str, name: str, bio: str, *, allow_f
         return "follow_back_ring_marker"
     if RE_BIO_AI.search(cleaned):
         return "ai_slop_account"
+    if RE_BIO_SOLICIT.search(cleaned):
+        return "promo_or_solicitation_bio"
     return None
 
 
@@ -164,12 +184,12 @@ def _finite(v: float | None) -> float | None:
     return float(v)
 
 
-def screen_rev3_data_signals(
+def screen_rev4_data_signals(
     sig: dict | None,
     live_row: dict | None,
     y3_comm_set: set[int],
 ) -> str | None:
-    """Return exact rev-3 data/embedding/live-feed exclusion reason, or None if kept."""
+    """Return exact rev-4 graph/ML/embedding/live-feed exclusion reason, or None if kept."""
     if live_row is not None:
         lv = live_row.get("live_verdict") or ""
         if lv.startswith("drop_"):
@@ -178,39 +198,98 @@ def screen_rev3_data_signals(
     if sig is None:
         return None
 
-    # 1. Automated firehose cadence (>= 120 posts/day over >= 15k posts)
-    ppd = float(sig.get("posts_per_day") or 0.0)
-    pcnt = int(sig.get("posts_count") or 0)
-    if ppd >= 120.0 and pcnt >= 15_000:
-        return "automated_firehose_cadence"
+    # 1. Claude teacher + C5 mmBERT-base account_type_model bot & adult_creator screens
+    cl_type = (sig.get("claude_acct_type") or "").strip()
+    cl_conf = (sig.get("claude_acct_conf") or "").strip()
+    c5_type = (sig.get("c5_pred_type") or "").strip()
+    p_bot = _finite(sig.get("c5_p_bot")) or 0.0
+    p_adult = _finite(sig.get("c5_p_adult")) or 0.0
 
-    # 2. Stealth mass-follow churn / follow-farmer
+    if (cl_type == "adult_creator" and cl_conf in ("high", "medium")) or (
+        c5_type == "adult_creator" and p_adult >= 0.82
+    ):
+        return "ml_adult_creator"
+
+    if (cl_type == "bot_or_automated" and cl_conf in ("high", "medium")) or (
+        c5_type == "bot_or_automated"
+        and p_bot >= 0.72
+        and (not cl_type or cl_type == "bot_or_automated" or p_bot >= 0.96)
+    ):
+        return "ml_bot_or_automated"
+
+    # 2. Independent negative curated-list consensus (bot lists & spam/scam/AI-slop lists)
+    fol = int(sig.get("followers_count") or 0)
+    denom_1k = max(float(fol), 250.0) / 1000.0
+    bot_lo = int(sig.get("bot_list_owners") or 0)
+    spam_lo = int(sig.get("spam_list_owners") or 0)
+    if bot_lo >= 5 or (bot_lo >= 3 and (bot_lo / denom_1k) >= 0.25):
+        return "curatelist_bot_consensus"
+    if spam_lo >= 5 or (spam_lo >= 3 and (spam_lo / denom_1k) >= 0.15):
+        return "curatelist_spam_or_slop_consensus"
+
+    # 3. Community-curated moderation-list & mass-block rate
+    modl = int(sig.get("pq_modlists") or 0)
+    mpk = float(sig.get("pq_modlists_per_1k") or 0.0)
+    blk = int(sig.get("pq_blockers") or 0)
+    bpk = float(sig.get("pq_blockers_per_1k") or 0.0)
+    if (modl >= 15 and mpk >= 8.0) or (modl >= 30 and mpk >= 4.0) or (modl >= 8 and blk >= 300 and bpk >= 450.0):
+        return "high_modlist_or_block_rate"
+
+    # 4. Follow-train / mutual mass-follow rings & outgoing follow-farming churn
     fwing = int(sig.get("follows_count") or 0)
     frat = float(sig.get("follow_ratio") or 0.0)
-    if (fwing >= 5_000 and frat >= 3.0) or (fwing >= 15_000 and frat >= 1.8):
-        return "stealth_follow_churn"
+    m3k = float(sig.get("pq_mass3k_share") or 0.0)
+    mut = float(sig.get("pq_mutual_share") or 0.0)
+    if (
+        (fwing >= 15_000 and frat >= 0.65)
+        or (fwing >= 7_500 and frat >= 0.85)
+        or (fwing >= 3_000 and frat >= 1.15)
+        or (fwing >= 1_200 and frat >= 1.85)
+        or (fwing >= 500 and frat >= 3.20)
+        or m3k >= 0.45
+        or (m3k >= 0.30 and mut >= 0.45)
+        or (m3k >= 0.26 and fwing >= 3_000)
+    ):
+        return "follow_ring_or_mass_follow"
 
-    # 3. Slab per-post near-duplicate template/promo bot (>= 15 embedded posts, >= 1.5 posts/day, >= 85% near-dup)
+    # 5. Automated firehose cadence & dead-air post-cannon screens
+    ppd = float(sig.get("posts_per_day") or 0.0)
+    pcnt = int(sig.get("posts_count") or 0)
+    pqp = int(sig.get("pq_posts") or 0)
+    pql = int(sig.get("pq_light_engagers") or 0)
+    if (
+        (ppd >= 90.0 and pcnt >= 10_000)
+        or (ppd >= 35.0 and pcnt >= 8_000 and fol < 1_000)
+        or (pcnt >= 15_000 and fol < 400)
+        or (pqp >= 250 and pql <= 2 and fol < 500)
+    ):
+        return "automated_firehose_cadence"
+
+    # 6. Slab per-post near-duplicate template/promo bot (catches both slow-cadence and active template bots)
     sn = int(sig.get("slab_n_posts") or 0)
     sdup = float(sig.get("slab_near_dup_frac") or 0.0)
     snn = float(sig.get("slab_nn_mean_cos") or 0.0)
-    if sn >= 15 and ppd >= 1.5 and sdup >= 0.85 and snn >= 0.93:
+    if (sn >= 12 and sdup >= 0.72 and snn >= 0.91) or (sn >= 12 and ppd >= 1.5 and sdup >= 0.58 and snn >= 0.89):
         return "slab_template_dup_bot"
 
-    # 4. S12m + S16 Tier-1 off-scene / Y3-bleed interloper screen
+    # 7. S12m + S16 Tier-1 off-scene / Y3-bleed interloper screen
+    sp = _finite(sig.get("sem_cos_posts"))
+    t1 = _finite(sig.get("t1_cos"))
+    cl_sens = {x for x in (sig.get("claude_sens") or "").split(",") if x}
+    if "politics" in cl_sens and sp is not None and sp < 0.22 and (t1 is None or t1 < 0.22):
+        return "embedding_y3_bleed_interloper"
+
     if sig.get("has_vec") and int(sig.get("mm_post_count") or 0) >= 5:
-        sp = _finite(sig.get("sem_cos_posts"))
-        t1 = _finite(sig.get("t1_cos"))
         bo_cid = int(sig.get("best_other_cid") or -1)
         bo_sem = _finite(sig.get("best_other_sem_cos"))
         if sp is not None and bo_sem is not None:
             margin = bo_sem - sp
-            # Y3-sensitive bleed (account's posts strongly match a Y3 adult/politics/news/etc. cluster, not its hobby home)
-            if sp < 0.08 and bo_cid in y3_comm_set and bo_sem >= 0.45 and margin >= 0.40:
+            if sp < 0.14 and bo_cid in y3_comm_set and bo_sem >= 0.38 and margin >= 0.32:
                 return "embedding_y3_bleed_interloper"
-            # General graph-bridge wrong-scene interloper
-            if (sp < -0.05 and (t1 is None or t1 < 0.12)) or (
-                sp < 0.05 and (t1 is not None and t1 < 0.05) and margin >= 0.40
+            if (
+                (sp < -0.02 and (t1 is None or t1 < 0.16))
+                or (sp < 0.10 and margin >= 0.34 and (t1 is None or t1 < 0.18))
+                or (sp < 0.15 and margin >= 0.45)
             ):
                 return "embedding_off_scene_interloper"
 
@@ -218,7 +297,7 @@ def screen_rev3_data_signals(
 
 
 def effective_candidate_score(base_s13: float, sig: dict | None, live_row: dict | None, strict: bool) -> float:
-    """In rev 3, gently weight S13 score by bounded S12m+Tier-1 scene coherence and penalize borderline warnings."""
+    """In rev 4, weight S13 score by bounded S12m+Tier-1 coherence and demote borderline ring/brand/bot/modlist signals."""
     if strict or sig is None:
         return float(base_s13)
     mult = 1.0
@@ -226,20 +305,28 @@ def effective_candidate_score(base_s13: float, sig: dict | None, live_row: dict 
         sp = _finite(sig.get("sem_cos_posts"))
         t1 = _finite(sig.get("t1_cos"))
         if sp is not None and t1 is not None:
-            mult = max(0.60, min(1.32, 0.78 + 0.32 * sp + 0.22 * t1))
+            mult = max(0.58, min(1.32, 0.78 + 0.32 * sp + 0.22 * t1))
         elif sp is not None:
-            mult = max(0.65, min(1.25, 0.82 + 0.38 * sp))
+            mult = max(0.62, min(1.25, 0.82 + 0.38 * sp))
     else:
-        mult *= 0.88  # prefer candidates with slab-verified content over unembedded accounts
+        mult *= 0.86  # prefer candidates with slab-verified content over unembedded accounts
 
-    if int(sig.get("slab_n_posts") or 0) >= 10 and float(sig.get("slab_near_dup_frac") or 0.0) >= 0.65:
-        mult *= 0.85
-    if float(sig.get("follow_ratio") or 0.0) >= 2.2 and int(sig.get("follows_count") or 0) >= 3_000:
-        mult *= 0.85
+    if int(sig.get("slab_n_posts") or 0) >= 10 and float(sig.get("slab_near_dup_frac") or 0.0) >= 0.48:
+        mult *= 0.84
+    if float(sig.get("pq_mass3k_share") or 0.0) >= 0.22:
+        mult *= 0.86
+    if int(sig.get("pq_modlists") or 0) >= 8:
+        mult *= 0.84
+    p_bot = _finite(sig.get("c5_p_bot")) or 0.0
+    p_brand = _finite(sig.get("c5_p_brand")) or 0.0
+    if p_bot >= 0.35:
+        mult *= 0.82
+    if p_brand >= 0.72:
+        mult *= 0.90
     if live_row is not None:
         lv = live_row.get("live_verdict") or ""
         if lv.startswith("warn_"):
-            mult *= 0.84
+            mult *= 0.82
     return float(base_s13) * mult
 
 
@@ -650,18 +737,23 @@ def main() -> None:
     if af_db_path.exists():
         conn = sqlite3.connect(str(af_db_path), timeout=15.0)
         conn.row_factory = sqlite3.Row
+        existing_af_cols = {r[1] for r in conn.execute("PRAGMA table_info(author_feeds)").fetchall()}
+        extra_af_sel = (
+            ", avg_hashtags, bare_link_frac"
+            if {"avg_hashtags", "bare_link_frac"} <= existing_af_cols
+            else ""
+        )
         for r_af in conn.execute(
             "SELECT did, avatar_url, n_items, n_orig, n_quote, n_reply, n_repost, repost_frac, reply_frac, "
             "authored_frac, days_since_last_any, days_since_last_authored, top_ext_domain, same_domain_frac, "
-            "live_dup_text_frac, live_pol_frac, median_likes, live_sem_cos, live_verdict FROM author_feeds"
+            f"live_dup_text_frac, live_pol_frac, median_likes, live_sem_cos, live_verdict{extra_af_sel} FROM author_feeds"
         ):
             live_feed_by_did[r_af["did"]] = dict(r_af)
         conn.close()
 
-    # Screen accounts (rev 2 bio/handle + rev 3 embedding/slab/churn/cadence/live-feed + manual overrides)
+    # Screen accounts (rev 2 bio/handle + rev 4 graph/ML/embedding/slab/live-feed + manual overrides)
     acct_excl_reason_by_did: dict[str, str] = {}
     feed_creator_excl_dids: set[str] = set()
-    evicted_examples: list[dict] = []
 
     if not args.strict_registered_only:
         for d, lp in live_prof_by_did.items():
@@ -670,7 +762,7 @@ def main() -> None:
             if not rsn:
                 p_i = did2pid.get(d)
                 sig_r = sig_by_pid.get(p_i) if p_i is not None else None
-                rsn = screen_rev3_data_signals(sig_r, live_feed_by_did.get(d), y3_comm_set)
+                rsn = screen_rev4_data_signals(sig_r, live_feed_by_did.get(d), y3_comm_set)
             if rsn:
                 acct_excl_reason_by_did[d] = rsn
             rsn_fd = manual_excl_dids.get(d) or screen_account_organic_and_safe(lp["handle"], nm, bio, allow_feed_handle=True)
@@ -764,10 +856,21 @@ def main() -> None:
             continue
 
         sens_union = comm_sens_classes.get(c, [])
+        blob_txt = f"{opus_label} :: {full_desc}"
+        card_would_keep = (
+            (not sens_union)
+            and (c not in EXPLICIT_BLOCK_CIDS)
+            and (c not in manual_excl_cids)
+            and (not RE_DESC_ADULT_MINORS.search(blob_txt))
+            and (not (comm_type == "roleplay" and RE_RP_UNSAFE.search(blob_txt)))
+            and (comm_type not in ("spam_or_commercial", "follow_train_or_political_amplification", "mixed_or_unclear"))
+            and (onb_fit != "poor")
+            and (conf_lvl != "low")
+            and (not RE_NON_ORGANIC_CARD.search(blob_txt))
+        )
 
         # Candidate filtering
         elig_pids: list[int] = []
-        card_would_keep = (not sens_union) and (c not in EXPLICIT_BLOCK_CIDS) and (c not in manual_excl_cids)
         for p_i in pids_by_comm.get(c, []):
             if not s13_elig[p_i]:
                 drop_counts["s13_ineligible"] += 1
@@ -793,12 +896,13 @@ def main() -> None:
             acct_rsn = acct_excl_reason_by_did.get(d)
             if acct_rsn:
                 drop_counts[f"acct_{acct_rsn}"] += 1
-                if card_would_keep and acct_rsn not in ("bio_adult_or_mdni",):
+                if card_would_keep and acct_rsn not in ("bio_adult_or_mdni", "ml_adult_creator"):
                     sig_r = sig_by_pid.get(p_i) or {}
                     nm_e, bio_e = snap.get(d, ("", ""))
                     bo_cid = int(sig_r.get("best_other_cid") or -1)
                     bo_lbl = (claude_comm_extra.get(bo_cid) or {}).get("label", "") if bo_cid >= 0 else ""
                     lf_r = live_feed_by_did.get(d) or {}
+                    p_bot_e = _finite(sig_r.get("c5_p_bot"))
                     evicted_by_reason[acct_rsn].append(
                         (
                             -float(s13_score[p_i]),
@@ -822,11 +926,18 @@ def main() -> None:
                                 "slab_near_dup_frac": round(float(sig_r.get("slab_near_dup_frac") or 0.0), 3),
                                 "posts_per_day": round(float(sig_r.get("posts_per_day") or 0.0), 1),
                                 "follow_ratio": round(float(sig_r.get("follow_ratio") or 0.0), 2),
+                                "mass3k_share": round(float(sig_r.get("pq_mass3k_share") or 0.0), 3),
+                                "modlists": int(sig_r.get("pq_modlists") or 0),
+                                "bot_list_owners": int(sig_r.get("bot_list_owners") or 0),
+                                "spam_list_owners": int(sig_r.get("spam_list_owners") or 0),
+                                "acct_type": (sig_r.get("claude_acct_type") or sig_r.get("c5_pred_type") or ""),
+                                "c5_p_bot": round(p_bot_e, 2) if p_bot_e is not None else None,
                                 "avatar_url": lf_r.get("avatar_url") or "",
                                 "live_verdict": lf_r.get("live_verdict") or "",
                                 "live_sem_cos": lf_r.get("live_sem_cos"),
                                 "repost_frac": lf_r.get("repost_frac"),
                                 "live_pol_frac": lf_r.get("live_pol_frac"),
+                                "avg_hashtags": lf_r.get("avg_hashtags"),
                             },
                         )
                     )
@@ -844,7 +955,6 @@ def main() -> None:
             continue
 
         if not args.strict_registered_only:
-            blob_txt = f"{opus_label} :: {full_desc}"
             if c in manual_excl_cids:
                 excluded_cards["manual_inspector_exclude"].append(c)
                 continue
@@ -857,7 +967,7 @@ def main() -> None:
             if comm_type == "roleplay" and RE_RP_UNSAFE.search(blob_txt):
                 excluded_cards["y3_roleplay_school_or_idol"].append(c)
                 continue
-            if comm_type == "spam_or_commercial":
+            if comm_type in ("spam_or_commercial", "follow_train_or_political_amplification"):
                 excluded_cards["organic_spam_or_commercial"].append(c)
                 continue
             if onb_fit == "poor":
@@ -1209,12 +1319,13 @@ def main() -> None:
         )
 
         payload = {
-            "version": "onboarding_v0_20261031_rev3" if not args.strict_registered_only else "onboarding_v0_20261030_strict",
+            "version": "onboarding_v0_20261031_rev4" if not args.strict_registered_only else "onboarding_v0_20261030_strict",
             "partition": "cand5-full-matched",
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "locked_s13": {"k": 3, "m": 3, "theta": 0.5, "ranker": "w_lin_plus_curators"},
             "rev2_organic_safety_curation": not args.strict_registered_only,
             "rev3_embedding_and_live_feed_curation": not args.strict_registered_only,
+            "rev4_graph_ml_anti_spam_curation": not args.strict_registered_only,
             "h_enabled": True,
             "counts": {
                 "v0_cards": len(cards_compact),
@@ -1284,6 +1395,13 @@ def main() -> None:
         frat = float(sig_r.get("follow_ratio") or 0.0)
         ppd = float(sig_r.get("posts_per_day") or 0.0)
         v9g = float(sig_r.get("v9_demotion_gap") or 0.0)
+        m3k = float(sig_r.get("pq_mass3k_share") or 0.0)
+        modl = int(sig_r.get("pq_modlists") or 0)
+        cl_type_s = (sig_r.get("claude_acct_type") or "").strip()
+        c5_type_s = (sig_r.get("c5_pred_type") or "").strip()
+        p_bot_s = _finite(sig_r.get("c5_p_bot")) or 0.0
+        bot_lo_s = int(sig_r.get("bot_list_owners") or 0)
+        spam_lo_s = int(sig_r.get("spam_list_owners") or 0)
 
         # Compute residual discrepancy risk score among KEPT candidates so Josh can spot-check edge cases first
         flags_list: list[str] = []
@@ -1300,13 +1418,25 @@ def main() -> None:
         if sp is not None and bo_sem is not None and (bo_sem - sp) >= 0.25 and sp < 0.25:
             flags_list.append(f"closer_to_c{bo_cid}({bo_sem:+.2f})")
             risk += (bo_sem - sp) * 5.0
-        if int(sig_r.get("slab_n_posts") or 0) >= 8 and dup >= 0.55:
+        if int(sig_r.get("slab_n_posts") or 0) >= 8 and dup >= 0.45:
             flags_list.append(f"repetitive_slab({int(dup*100)}%)")
-            risk += dup * 3.5
-        if frat >= 1.8 and lp["followsCount"] >= 2_500:
+            risk += dup * 3.8
+        if m3k >= 0.22:
+            flags_list.append(f"ring_share({int(m3k*100)}%)")
+            risk += m3k * 6.0
+        if modl >= 8:
+            flags_list.append(f"modlists({modl})")
+            risk += min(3.5, modl * 0.16)
+        if p_bot_s >= 0.35:
+            flags_list.append(f"c5_bot_prob({int(p_bot_s*100)}%)")
+            risk += p_bot_s * 4.5
+        if bot_lo_s >= 2 or spam_lo_s >= 2:
+            flags_list.append(f"neg_lists(b={bot_lo_s},s={spam_lo_s})")
+            risk += 2.2
+        if frat >= 1.5 and lp["followsCount"] >= 2_000:
             flags_list.append(f"follow_heavy({frat:.1f}x)")
             risk += 2.2
-        if ppd >= 70.0:
+        if ppd >= 60.0:
             flags_list.append(f"high_cadence({ppd:.0f}/d)")
             risk += 1.8
         if v9g >= 0.40:
@@ -1333,6 +1463,10 @@ def main() -> None:
             "img": round(float(sig_r.get("slab_img_frac") or 0.0), 2),
             "ppd": round(ppd, 1),
             "fr": round(frat, 2),
+            "m3k": round(m3k, 3),
+            "modl": modl,
+            "at": (cl_type_s or c5_type_s)[:28],
+            "pbot": round(p_bot_s, 2) if p_bot_s >= 0.05 else 0,
             "v9": round(v9g, 2),
             "s13": round(float(s13_score[p_i]), 2),
             "md": meds_acct,
@@ -1348,6 +1482,7 @@ def main() -> None:
                 "no": lf_r.get("n_orig"),
                 "da": lf_r.get("days_since_last_any"),
                 "dom": lf_r.get("top_ext_domain") or "",
+                "ht": lf_r.get("avg_hashtags"),
             }
         inspector_accts.append(acct_meta)
 
@@ -1457,7 +1592,7 @@ def main() -> None:
                 violations.append(f"card {cid}: description adult/minors hit")
             if ct_v == "roleplay" and RE_RP_UNSAFE.search(blob_v):
                 violations.append(f"card {cid}: unsafe school/idol roleplay hit")
-            if ct_v in ("spam_or_commercial", "mixed_or_unclear") or fit_v == "poor" or cf_v == "low":
+            if ct_v in ("spam_or_commercial", "follow_train_or_political_amplification", "mixed_or_unclear") or fit_v == "poor" or cf_v == "low":
                 violations.append(f"card {cid}: non-organic/low-fit card ({ct_v}/{fit_v}/{cf_v})")
             if RE_NON_ORGANIC_CARD.search(blob_v):
                 violations.append(f"card {cid}: automated bot/promo/AI-slop card hit")
@@ -1481,7 +1616,7 @@ def main() -> None:
                 violations.append(f"card {cid}: candidate {d} Claude profile minors/adult")
             if not args.strict_registered_only:
                 if d in acct_excl_reason_by_did:
-                    violations.append(f"card {cid}: candidate {d} failed rev3 organic/embedding/live screen ({acct_excl_reason_by_did[d]})")
+                    violations.append(f"card {cid}: candidate {d} failed rev4 organic/graph/ML/live screen ({acct_excl_reason_by_did[d]})")
         if big_25 > POP_MAX:
             violations.append(f"card {cid}: >2 accounts >500k in top 25 ({big_25})")
         if (not args.strict_registered_only) and sup_25 > SUP_MAX:
@@ -1531,6 +1666,7 @@ def main() -> None:
         "violations": violations[:100],
         "rev2_organic_safety_curation": not args.strict_registered_only,
         "rev3_embedding_and_live_feed_curation": not args.strict_registered_only,
+        "rev4_graph_ml_anti_spam_curation": not args.strict_registered_only,
         "cards_v1_bytes": len(chosen_bytes),
         "cards_v1_le_2mb": len(chosen_bytes) <= MAX_JSON_BYTES,
         "cards_v1_sha256": cards_sha,
@@ -1550,9 +1686,9 @@ def main() -> None:
         sys.exit(f"ABORT: {len(violations)} safety violations detected in S17 verify: {violations[:5]}")
 
     receipt = {
-        "step": "S17 Harness v2 & Onboarding v0 Catalog Build (rev 3 embedding+spam+live-feed hardened, 127.0.0.1 only)",
+        "step": "S17 Harness v2 & Onboarding v0 Catalog Build (rev 4 graph+ML+embedding+live-feed anti-spam hardened, 127.0.0.1 only)",
         "plan": "docs/execution-plans/2026-10-25-whole-network-signals-plan.md rows S16 & S17, §3.3",
-        "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §9.6, §10, Amendments A1 & A2 + DECISIONS S17 rev 2 & rev 3",
+        "rules": "docs/execution-plans/2026-10-28-whole-network-preregistration.md §9.6, §10, Amendments A1 & A2 + DECISIONS S17 rev 2, rev 3 & rev 4",
         "written_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "wall_seconds": round(time.time() - t0, 2),
         "strict_registered_only": bool(args.strict_registered_only),

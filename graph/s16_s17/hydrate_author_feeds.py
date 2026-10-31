@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Polite live `app.bsky.feed.getAuthorFeed` hydrator & live spam/coherence scorer (`<= 9 req/s` under D8).
+"""Polite live `app.bsky.feed.getAuthorFeed` hydrator & live spam/coherence scorer (`<= 9 req/s` under D8, rev 4).
 
 Invariants:
 - Strictly `<= 9.0 req/s` global token-bucket against `public.api.bsky.app` with descriptive `User-Agent`
@@ -7,7 +7,7 @@ Invariants:
 - ZERO raw image bytes ever fetched or written to disk: stores compact JSON metadata and CDN URL strings only.
 - Enforces A1 (`hideFromAlgorithmicRecommendations` never stores/renders post content) and D9/S5 label checks
   (any author or post label on adult/graphic/moderation drops media URLs and flags the account if adult/unsafe).
-- Optionally encodes live authored post texts on local Mac MPS with `EmbeddingGemma 2` (`bf16`) to score
+- Encodes live authored post texts on local Mac MPS with `EmbeddingGemma 2` (`bf16`) to score
   `live_sem_cos` against each card's `cent_text_posts` centroid (`card_centroids.npz`).
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ import urllib.request
 import numpy as np
 import pyarrow.parquet as pq
 
-USER_AGENT = "catbird-s17-inspector/2.0 (+https://catbird.blue; local-onboarding-audit)"
+USER_AGENT = "catbird-s17-inspector/2.1 (+https://catbird.blue; local-onboarding-audit)"
 
 POL_RE = re.compile(
     r"\b(trump|biden|kamala|harris|vance|walz|desantis|obama|pelosi|schumer|mcconnell|aoc|"
@@ -62,8 +62,74 @@ ADULT_POST_LABEL_VALS = frozenset(
     }
 )
 
+SYNDICATOR_OR_AFFILIATE_DOMAINS = frozenset(
+    {
+        "dlvr.it",
+        "ift.tt",
+        "amzn.to",
+        "books2read.com",
+        "mybook.to",
+        "geni.us",
+        "shrsl.com",
+        "rstyle.me",
+        "linktr.ee",
+    }
+)
+
+GENERIC_SHORTENER_DOMAINS = frozenset(
+    {
+        "bit.ly",
+        "buff.ly",
+        "ow.ly",
+        "tinyurl.com",
+        "rb.gy",
+        "cutt.ly",
+        "t.co",
+    }
+)
+
+CREATOR_PLATFORM_ALLOWLIST = frozenset(
+    {
+        "",
+        "bsky.app",
+        "youtube.com",
+        "youtu.be",
+        "twitch.tv",
+        "github.com",
+        "gitlab.com",
+        "codeberg.org",
+        "crates.io",
+        "pypi.org",
+        "itch.io",
+        "bandcamp.com",
+        "soundcloud.com",
+        "archiveofourown.org",
+        "wikipedia.org",
+        "arxiv.org",
+        "doi.org",
+        "biorxiv.org",
+        "medrxiv.org",
+        "ko-fi.com",
+        "patreon.com",
+        "substack.com",
+        "letterboxd.com",
+        "flickr.com",
+        "pixiv.net",
+        "artstation.com",
+        "cara.app",
+        "vgen.co",
+    }
+)
+
 URL_RE = re.compile(r"https?://([^/\s?#]+)", re.I)
+URL_STRIP_RE = re.compile(r"https?://\S+", re.I)
+HASHTAG_RE = re.compile(r"(?:^|\s)#[a-z0-9_]{2,}", re.I)
 WS_RE = re.compile(r"\s+")
+
+
+def _is_academic_or_civic_domain(dom: str) -> bool:
+    d = (dom or "").lower()
+    return d.endswith(".edu") or ".ac." in d or d.endswith(".gov") or ".gov." in d
 
 
 class PoliteRateLimiter:
@@ -123,12 +189,19 @@ def init_db(db_path: pathlib.Path) -> sqlite3.Connection:
             live_dup_text_frac REAL NOT NULL DEFAULT 0.0,
             live_pol_frac REAL NOT NULL DEFAULT 0.0,
             median_likes REAL NOT NULL DEFAULT 0.0,
+            avg_hashtags REAL NOT NULL DEFAULT 0.0,
+            bare_link_frac REAL NOT NULL DEFAULT 0.0,
             live_sem_cos REAL,
             live_verdict TEXT NOT NULL DEFAULT '',
             posts_json TEXT NOT NULL DEFAULT '[]'
         );
         """
     )
+    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(author_feeds)").fetchall()}
+    if "avg_hashtags" not in existing_cols:
+        conn.execute("ALTER TABLE author_feeds ADD COLUMN avg_hashtags REAL NOT NULL DEFAULT 0.0;")
+    if "bare_link_frac" not in existing_cols:
+        conn.execute("ALTER TABLE author_feeds ADD COLUMN bare_link_frac REAL NOT NULL DEFAULT 0.0;")
     conn.commit()
     return conn
 
@@ -156,7 +229,6 @@ def _extract_embed_info(embed: dict | None, allow_media_urls: bool) -> tuple[str
     ext_title = ""
     media_type = ""
 
-    # Unwrap recordWithMedia
     inner_media = embed.get("media") if "recordWithMedia" in etype else embed
     if isinstance(inner_media, dict):
         mtype = inner_media.get("$type") or ""
@@ -218,47 +290,146 @@ def _extract_quote_snippet(embed: dict | None) -> dict | None:
 
 
 def classify_live_verdict(row: dict) -> str:
-    """Assign automated live-feed verdict (`clean`, `drop_*`, or `warn_*`)."""
-    if row["live_safety_flag"]:
+    """Assign automated rev-4 live-feed verdict (`clean`, `drop_*`, or `warn_*`)."""
+    if row.get("live_safety_flag"):
         return f"drop_{row['live_safety_flag']}"
-    if row["http_status"] in (400, 404) and row["n_items"] == 0:
+    http_st = int(row.get("http_status") or 0)
+    n_items = int(row.get("n_items") or 0)
+    if http_st in (400, 404) and n_items == 0:
         return "drop_account_gone"
-    if row["n_items"] == 0:
+    if n_items == 0:
         return "drop_empty_feed"
-    if row["days_since_last_any"] > 150.0:
-        return "drop_dormant_150d"
-    if row["n_items"] >= 15 and row["repost_frac"] >= 0.92 and (row["n_orig"] + row["n_quote"]) == 0:
+
+    days_any = float(row.get("days_since_last_any") or 9999.0)
+    if days_any > 120.0:
+        return "drop_dormant_120d"
+
+    n_orig = int(row.get("n_orig") or 0)
+    n_quote = int(row.get("n_quote") or 0)
+    n_reply = int(row.get("n_reply") or 0)
+    n_oq = n_orig + n_quote
+    repost_frac = float(row.get("repost_frac") or 0.0)
+    reply_frac = float(row.get("reply_frac") or 0.0)
+    dup_frac = float(row.get("live_dup_text_frac") or 0.0)
+    pol_frac = float(row.get("live_pol_frac") or 0.0)
+    dom = (row.get("top_ext_domain") or "").lower()
+    sdom = float(row.get("same_domain_frac") or 0.0)
+    ext_frac = float(row.get("ext_link_frac") or 0.0)
+    med_likes = float(row.get("median_likes") or 0.0)
+    avg_tags = float(row.get("avg_hashtags") or 0.0)
+    bare_frac = float(row.get("bare_link_frac") or 0.0)
+
+    # 1. Repost wall & reply-only timeline screens
+    if n_items >= 12 and ((repost_frac >= 0.85 and n_oq <= 1) or repost_frac >= 0.90):
         return "drop_repost_wall"
-    if row["n_items"] >= 12 and row["live_dup_text_frac"] >= 0.70:
+    if n_items >= 15 and reply_frac >= 0.90 and n_oq <= 1:
+        return "drop_reply_wall"
+
+    # 2. Live near-duplicate template spam (spare viral human catchphrases with >=100 median likes unless >=80% dup)
+    if (n_oq + n_reply) >= 6 and (dup_frac >= 0.80 or (dup_frac >= 0.60 and med_likes <= 35.0)):
         return "drop_live_template_spam"
-    if row["n_items"] >= 12 and row["live_pol_frac"] >= 0.70:
-        return "drop_political_drift"
-    if (
-        (row["n_orig"] + row["n_quote"]) >= 6
-        and row["same_domain_frac"] >= 0.85
-        and row["top_ext_domain"]
-        not in (
-            "",
-            "bsky.app",
-            "youtube.com",
-            "youtu.be",
-            "github.com",
-            "itch.io",
-            "bandcamp.com",
-            "soundcloud.com",
-            "archiveofourown.org",
-        )
+
+    # 3. RSS syndicators, affiliate shorteners, bare link dumps, and commercial/scraper link farms
+    if n_oq >= 4 and dom in SYNDICATOR_OR_AFFILIATE_DOMAINS and sdom >= 0.40:
+        return "drop_link_or_promo_spam"
+    if n_oq >= 4 and dom in GENERIC_SHORTENER_DOMAINS and sdom >= 0.50 and (
+        med_likes <= 6.0 or bare_frac >= 0.60 or avg_tags >= 6.0
     ):
+        return "drop_link_or_promo_spam"
+    if (
+        n_oq >= 6
+        and sdom >= 0.80
+        and dom not in CREATOR_PLATFORM_ALLOWLIST
+        and not _is_academic_or_civic_domain(dom)
+        and (med_likes <= 4.0 or bare_frac >= 0.65 or dup_frac >= 0.30)
+    ):
+        return "drop_link_or_promo_spam"
+    if n_oq >= 6 and bare_frac >= 0.80 and med_likes <= 1.5:
+        return "drop_link_or_promo_spam"
+
+    # 4. Hashtag-stuffing spam
+    if n_oq >= 5 and (
+        (avg_tags >= 12.0 and med_likes <= 8.0)
+        or (avg_tags >= 8.0 and (ext_frac >= 0.35 or med_likes <= 3.0))
+    ):
+        return "drop_hashtag_spam"
+
+    # 5. Live partisan political drift
+    if n_items >= 10 and pol_frac >= 0.60:
+        return "drop_political_drift"
+
+    # Soft warnings (penalized in ranking & surfaced in Inspector)
+    if n_oq >= 6 and sdom >= 0.80 and dom not in CREATOR_PLATFORM_ALLOWLIST and not _is_academic_or_civic_domain(dom):
         return "warn_single_domain_promo"
-    if row["n_items"] >= 15 and row["reply_frac"] >= 0.92 and (row["n_orig"] + row["n_quote"]) == 0:
+    if n_oq >= 5 and avg_tags >= 7.5:
+        return "warn_hashtag_heavy"
+    if n_items >= 12 and reply_frac >= 0.82 and n_oq <= 2:
         return "warn_reply_heavy"
-    if row["n_items"] >= 10 and row["repost_frac"] >= 0.78:
+    if n_items >= 10 and repost_frac >= 0.72:
         return "warn_heavy_reposter"
-    if row["days_since_last_authored"] > 90.0:
+    if float(row.get("days_since_last_authored") or 9999.0) > 90.0:
         return "warn_no_recent_originals_90d"
-    if row["n_items"] >= 8 and row["live_pol_frac"] >= 0.45:
+    if n_items >= 8 and pol_frac >= 0.42:
         return "warn_political_drift"
     return "clean"
+
+
+def _compute_hashtag_and_bare_link_stats(posts: list[dict]) -> tuple[float, float]:
+    auth_posts = [p for p in posts if isinstance(p, dict) and p.get("kind") in ("post", "quote")]
+    if not auth_posts:
+        return 0.0, 0.0
+    tag_cnts: list[int] = []
+    bare_cnt = 0
+    for p in auth_posts:
+        txt = p.get("text") or ""
+        tag_cnts.append(len(HASHTAG_RE.findall(txt)))
+        has_link = bool(p.get("ext_uri") or p.get("ext_domain"))
+        stripped = URL_STRIP_RE.sub("", txt).strip()
+        if has_link and len(stripped) < 20:
+            bare_cnt += 1
+    return (
+        round(float(sum(tag_cnts)) / len(auth_posts), 3),
+        round(float(bare_cnt) / len(auth_posts), 4),
+    )
+
+
+def rescore_cached_verdicts(conn: sqlite3.Connection) -> int:
+    """Upgrade all existing SQLite rows with `avg_hashtags`, `bare_link_frac`, and rev-4 `live_verdict`."""
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM author_feeds").fetchall()
+    updates: list[tuple[float, float, str, str]] = []
+    for r in rows:
+        d = dict(r)
+        try:
+            posts = json.loads(d.get("posts_json") or "[]")
+        except Exception:
+            posts = []
+        avg_tags, bare_frac = _compute_hashtag_and_bare_link_stats(posts)
+        # Preserve higher precision if already computed on full feed during fetch
+        if float(d.get("avg_hashtags") or 0.0) > avg_tags:
+            avg_tags = float(d["avg_hashtags"])
+        if float(d.get("bare_link_frac") or 0.0) > bare_frac:
+            bare_frac = float(d["bare_link_frac"])
+        d["avg_hashtags"] = avg_tags
+        d["bare_link_frac"] = bare_frac
+        vd = classify_live_verdict(d)
+        lsc = d.get("live_sem_cos")
+        auth_n = sum(1 for p in posts if isinstance(p, dict) and p.get("kind") in ("post", "quote", "reply"))
+        if vd == "clean" and lsc is not None and auth_n >= 3 and float(lsc) < 0.04:
+            vd = "warn_low_live_coherence"
+        if (
+            abs(float(r["avg_hashtags"] or 0.0) - avg_tags) > 1e-4
+            or abs(float(r["bare_link_frac"] or 0.0) - bare_frac) > 1e-4
+            or r["live_verdict"] != vd
+        ):
+            updates.append((avg_tags, bare_frac, vd, d["did"]))
+    if updates:
+        conn.executemany(
+            "UPDATE author_feeds SET avg_hashtags = ?, bare_link_frac = ?, live_verdict = ? WHERE did = ?",
+            updates,
+        )
+        conn.commit()
+    return len(updates)
 
 
 def fetch_and_parse_one(
@@ -299,6 +470,8 @@ def fetch_and_parse_one(
             "live_dup_text_frac": 0.0,
             "live_pol_frac": 0.0,
             "median_likes": 0.0,
+            "avg_hashtags": 0.0,
+            "bare_link_frac": 0.0,
             "live_sem_cos": None,
             "live_verdict": "drop_hard_excluded",
             "posts_json": "[]",
@@ -364,6 +537,8 @@ def fetch_and_parse_one(
             "live_dup_text_frac": 0.0,
             "live_pol_frac": 0.0,
             "median_likes": 0.0,
+            "avg_hashtags": 0.0,
+            "bare_link_frac": 0.0,
             "live_sem_cos": None,
             "live_verdict": "",
             "posts_json": "[]",
@@ -390,8 +565,11 @@ def fetch_and_parse_one(
     days_any: list[float] = []
     days_auth: list[float] = []
     domains: list[str] = []
-    authored_With_ext = 0
+    authored_with_ext = 0
     authored_total = 0
+    authored_oq_total = 0
+    oq_tag_counts: list[int] = []
+    oq_bare_links = 0
     authored_texts_norm: list[str] = []
     pol_hits = 0
     orig_likes: list[int] = []
@@ -426,7 +604,6 @@ def fetch_and_parse_one(
         if not isinstance(rec, dict):
             continue
 
-        # Check post labels on the target author's own posts
         plbls = [l.get("val", "").lower() for l in (pv.get("labels") or []) if isinstance(l, dict) and not l.get("neg")]
         slbls = []
         if isinstance(rec.get("labels"), dict):
@@ -448,7 +625,9 @@ def fetch_and_parse_one(
         txt = (rec.get("text") or "").strip()
         embed = pv.get("embed")
         is_reply = bool(rec.get("reply")) and not is_repost
-        has_quote = isinstance(embed, dict) and ("embed.record" in (embed.get("$type") or "") or "recordWithMedia" in (embed.get("$type") or ""))
+        has_quote = isinstance(embed, dict) and (
+            "embed.record" in (embed.get("$type") or "") or "recordWithMedia" in (embed.get("$type") or "")
+        )
 
         if is_repost:
             n_repost += 1
@@ -487,13 +666,18 @@ def fetch_and_parse_one(
             if d_age is not None:
                 days_auth.append(d_age)
             if ext_dom:
-                authored_With_ext += 1
+                authored_with_ext += 1
                 domains.append(ext_dom)
-            norm_t = WS_RE.sub(" ", re.sub(r"https?://\S+", "", txt).lower()).strip()
+            stripped_no_url = URL_STRIP_RE.sub("", txt)
+            norm_t = WS_RE.sub(" ", stripped_no_url.lower()).strip()
             if len(norm_t) >= 18:
                 authored_texts_norm.append(norm_t)
             if kind in ("post", "quote"):
+                authored_oq_total += 1
                 orig_likes.append(int(pv.get("likeCount") or 0))
+                oq_tag_counts.append(len(HASHTAG_RE.findall(txt)))
+                if (ext_uri or ext_dom) and len(stripped_no_url.strip()) < 20:
+                    oq_bare_links += 1
 
         # Never store post text/media for hide_from_recs accounts (Amendment A1) or labelled posts
         if is_hfr or all_post_lbls or (adid in hard_excl) or (adid in hfr_dids):
@@ -526,7 +710,6 @@ def fetch_and_parse_one(
         else:
             kept_others.append(entry)
 
-    # Duplicate-text check across authored posts
     dup_hits = 0
     if len(authored_texts_norm) >= 4:
         for i, ti in enumerate(authored_texts_norm):
@@ -556,7 +739,9 @@ def fetch_and_parse_one(
         top_dom, top_c = dom_cnt.most_common(1)[0]
         same_dom_frac = float(top_c) / max(authored_total, 1)
 
-    # Keep up to 10 showcase items: up to 8 original/quote posts + up to 4 recent replies/reposts if needed
+    avg_tags = round(float(sum(oq_tag_counts)) / max(len(oq_tag_counts), 1), 3) if oq_tag_counts else 0.0
+    bare_frac = round(float(oq_bare_links) / max(authored_oq_total, 1), 4) if authored_oq_total else 0.0
+
     showcase = (kept_originals[:8] + kept_others[:4])[:10]
 
     row = {
@@ -579,12 +764,14 @@ def fetch_and_parse_one(
         "authored_frac": round(float(n_orig + n_quote) / max(n_items, 1), 4),
         "days_since_last_any": round(min(days_any) if days_any else 9999.0, 2),
         "days_since_last_authored": round(min(days_auth) if days_auth else 9999.0, 2),
-        "ext_link_frac": round(float(authored_With_ext) / max(authored_total, 1), 4),
+        "ext_link_frac": round(float(authored_with_ext) / max(authored_total, 1), 4),
         "top_ext_domain": top_dom,
         "same_domain_frac": round(same_dom_frac, 4),
         "live_dup_text_frac": round(dup_frac, 4),
         "live_pol_frac": round(float(pol_hits) / max(n_items, 1), 4),
         "median_likes": float(np.median(orig_likes)) if orig_likes else 0.0,
+        "avg_hashtags": avg_tags,
+        "bare_link_frac": bare_frac,
         "live_sem_cos": None,
         "live_verdict": "",
         "posts_json": json.dumps(showcase, ensure_ascii=False, separators=(",", ":")) if not safety_flag else "[]",
@@ -598,12 +785,14 @@ INSERT INTO author_feeds (
     did, fetched_utc, http_status, raw_sha256, is_hfr, avatar_url, live_handle, live_name,
     live_safety_flag, n_items, n_orig, n_quote, n_reply, n_repost, repost_frac, reply_frac,
     authored_frac, days_since_last_any, days_since_last_authored, ext_link_frac, top_ext_domain,
-    same_domain_frac, live_dup_text_frac, live_pol_frac, median_likes, live_sem_cos, live_verdict, posts_json
+    same_domain_frac, live_dup_text_frac, live_pol_frac, median_likes, avg_hashtags, bare_link_frac,
+    live_sem_cos, live_verdict, posts_json
 ) VALUES (
     :did, :fetched_utc, :http_status, :raw_sha256, :is_hfr, :avatar_url, :live_handle, :live_name,
     :live_safety_flag, :n_items, :n_orig, :n_quote, :n_reply, :n_repost, :repost_frac, :reply_frac,
     :authored_frac, :days_since_last_any, :days_since_last_authored, :ext_link_frac, :top_ext_domain,
-    :same_domain_frac, :live_dup_text_frac, :live_pol_frac, :median_likes, :live_sem_cos, :live_verdict, :posts_json
+    :same_domain_frac, :live_dup_text_frac, :live_pol_frac, :median_likes, :avg_hashtags, :bare_link_frac,
+    :live_sem_cos, :live_verdict, :posts_json
 )
 ON CONFLICT(did) DO UPDATE SET
     fetched_utc=excluded.fetched_utc,
@@ -630,6 +819,8 @@ ON CONFLICT(did) DO UPDATE SET
     live_dup_text_frac=excluded.live_dup_text_frac,
     live_pol_frac=excluded.live_pol_frac,
     median_likes=excluded.median_likes,
+    avg_hashtags=excluded.avg_hashtags,
+    bare_link_frac=excluded.bare_link_frac,
     live_sem_cos=COALESCE(excluded.live_sem_cos, author_feeds.live_sem_cos),
     live_verdict=excluded.live_verdict,
     posts_json=excluded.posts_json;
@@ -651,12 +842,10 @@ def score_live_posts_eg2(
     mu_tx = c_npz["mu_text_posts"].astype(np.float32)
     cent_tx = c_npz["cent_text_posts"].astype(np.float32)
 
-    cur = conn.execute(
-        "SELECT did, posts_json, live_verdict, live_safety_flag, n_items, repost_frac, reply_frac, n_orig, n_quote, "
-        "days_since_last_any, days_since_last_authored, same_domain_frac, top_ext_domain, live_dup_text_frac, live_pol_frac, http_status "
-        "FROM author_feeds WHERE live_sem_cos IS NULL AND posts_json != '[]'"
-    )
-    rows = cur.fetchall()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM author_feeds WHERE live_sem_cos IS NULL AND posts_json != '[]'"
+    ).fetchall()
     if not rows:
         return 0
 
@@ -669,12 +858,13 @@ def score_live_posts_eg2(
     all_texts: list[str] = []
     spans: list[tuple[str, int, int, int, dict]] = []
     for r in rows:
-        did = r[0]
+        rd = dict(r)
+        did = rd["did"]
         hc = did_to_home_cid.get(did)
         if hc is None or hc not in cid_to_idx:
             continue
         try:
-            posts = json.loads(r[1])
+            posts = json.loads(rd["posts_json"])
         except Exception:
             continue
         txs = []
@@ -692,22 +882,7 @@ def score_live_posts_eg2(
             continue
         s0 = len(all_texts)
         all_texts.extend(txs[:8])
-        meta_r = {
-            "live_safety_flag": r[3],
-            "n_items": r[4],
-            "repost_frac": r[5],
-            "reply_frac": r[6],
-            "n_orig": r[7],
-            "n_quote": r[8],
-            "days_since_last_any": r[9],
-            "days_since_last_authored": r[10],
-            "same_domain_frac": r[11],
-            "top_ext_domain": r[12],
-            "live_dup_text_frac": r[13],
-            "live_pol_frac": r[14],
-            "http_status": r[15],
-        }
-        spans.append((did, cid_to_idx[hc], s0, len(all_texts), meta_r))
+        spans.append((did, cid_to_idx[hc], s0, len(all_texts), rd))
 
     if not all_texts:
         return 0
@@ -741,10 +916,9 @@ def score_live_posts_eg2(
 
 def build_priority_queue(lake: pathlib.Path, out_dir: pathlib.Path, max_dids: int) -> tuple[list[str], dict[str, int]]:
     """Prioritize:
-    1. All candidates in the 30 rule-drawn S17 review cards,
-    2. All borderline/suspect candidates in top-30 of any card (low sem_cos_posts, low t1_cos, high slab_near_dup_frac,
-       high follow_ratio, high posts_per_day, or high v9_demotion_gap),
-    3. Top-4 showcase accounts of the top 200 most-engaged cards.
+    1. All 25 candidates in each of the 30 rule-drawn S17 review cards,
+    2. All borderline/suspect candidates in top-25 of any card (embedding margin, slab dup, mass3k ring, modlists, C5 bot/brand),
+    3. Top-4 showcase accounts of major scenes and top-2 of every card.
     """
     import pyarrow as pa
     import pyarrow.compute as pc
@@ -760,6 +934,12 @@ def build_priority_queue(lake: pathlib.Path, out_dir: pathlib.Path, max_dids: in
         if d and d not in seen and len(ordered) < max_dids:
             seen.add(d)
             ordered.append(d)
+
+    if sig_path.exists():
+        ts_home = pq.read_table(sig_path, columns=["did", "community"])
+        for d_s, c_i in zip(ts_home["did"].to_pylist(), ts_home["community"].to_pylist()):
+            did_to_home[d_s] = int(c_i)
+        del ts_home
 
     if cards_path.exists():
         import base64
@@ -781,14 +961,11 @@ def build_priority_queue(lake: pathlib.Path, out_dir: pathlib.Path, max_dids: in
             for aid in cd.get("m") or []:
                 push(acct_dids[aid])
 
-        # 2. All borderline / suspect candidates across all 1,113 cards
+        # 2. All borderline / suspect candidates across all v0 cards
         if sig_path.exists():
             ts = pq.read_table(sig_path)
             ts = ts.filter(pc.is_in(ts["did"], value_set=pa.array(acct_dids, type=pa.string())))
-            sig_by_did: dict[str, dict] = {}
-            for r in ts.to_pylist():
-                sig_by_did[r["did"]] = r
-                did_to_home[r["did"]] = int(r["community"])
+            sig_by_did: dict[str, dict] = {r["did"]: r for r in ts.to_pylist()}
             suspects: list[tuple[float, str]] = []
             for d in acct_dids:
                 sr = sig_by_did.get(d)
@@ -801,6 +978,10 @@ def build_priority_queue(lake: pathlib.Path, out_dir: pathlib.Path, max_dids: in
                 fr = sr["follow_ratio"]
                 ppd = sr["posts_per_day"]
                 v9 = sr["v9_demotion_gap"]
+                m3k = float(sr.get("pq_mass3k_share") or 0.0)
+                modl = int(sr.get("pq_modlists") or 0)
+                c5_bot = sr.get("c5_p_bot")
+                c5_brand = sr.get("c5_p_brand")
                 margin = (
                     (sr["best_other_sem_cos"] - sp)
                     if (
@@ -813,18 +994,26 @@ def build_priority_queue(lake: pathlib.Path, out_dir: pathlib.Path, max_dids: in
                 )
                 risk = 0.0
                 if not sr["has_vec"] or sr["mm_post_count"] < 3:
-                    risk += 2.5
+                    risk += 2.4
                 if sp is not None and not np.isnan(sp) and sp < 0.18:
                     risk += (0.25 - sp) * 10.0
                 if t1 is not None and not np.isnan(t1) and t1 < 0.18:
                     risk += (0.25 - t1) * 8.0
                 if margin > 0.15:
                     risk += margin * 6.0
-                if dup >= 0.45 and sr["slab_n_posts"] >= 6:
+                if dup >= 0.42 and sr["slab_n_posts"] >= 6:
                     risk += dup * 5.0
-                if fr >= 1.6 and sr["follows_count"] >= 2500:
+                if fr >= 1.4 and sr["follows_count"] >= 1800:
                     risk += 3.0
-                if ppd >= 90.0:
+                if m3k >= 0.24:
+                    risk += (m3k - 0.18) * 10.0
+                if modl >= 8:
+                    risk += min(4.0, modl * 0.2)
+                if c5_bot is not None and not np.isnan(c5_bot) and c5_bot >= 0.25:
+                    risk += float(c5_bot) * 6.0
+                if c5_brand is not None and not np.isnan(c5_brand) and c5_brand >= 0.65:
+                    risk += 2.2
+                if ppd >= 30.0:
                     risk += 2.5
                 if v9 >= 0.35:
                     risk += v9 * 3.0
@@ -852,15 +1041,25 @@ def main() -> None:
     lake = pathlib.Path.home() / "catbird-lake-local"
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(lake / "s17-picker-v1-20261030"))
-    ap.add_argument("--max-dids", type=int, default=1800)
+    ap.add_argument("--max-dids", type=int, default=4600)
     ap.add_argument("--rps", type=float, default=8.5)
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--skip-eg2", action="store_true")
+    ap.add_argument("--rescore-only", action="store_true")
     args = ap.parse_args()
 
     out_dir = pathlib.Path(args.out).expanduser()
     db_path = out_dir / "author_feeds.sqlite"
     conn = init_db(db_path)
+
+    n_rescored = rescore_cached_verdicts(conn)
+    print(f"[hydrate-feeds] Rescored {n_rescored:,} existing cached feeds under rev-4 live spam rules.", flush=True)
+    if args.rescore_only:
+        verdicts = dict(
+            conn.execute("SELECT live_verdict, COUNT(*) FROM author_feeds GROUP BY live_verdict ORDER BY COUNT(*) DESC").fetchall()
+        )
+        print(f"[hydrate-feeds] Rescore-only complete. Verdict summary: {json.dumps(verdicts)}", flush=True)
+        return
 
     s5_dir = lake / "s5-sweep-20261030"
     s13_dir = lake / "s13-elig-20261030"
@@ -876,7 +1075,12 @@ def main() -> None:
     )
 
     queue_dids, did_to_home = build_priority_queue(lake, out_dir, args.max_dids)
-    already = {r[0] for r in conn.execute("SELECT did FROM author_feeds WHERE http_status = 200 OR http_status IN (400, 404, 451)").fetchall()}
+    already = {
+        r[0]
+        for r in conn.execute(
+            "SELECT did FROM author_feeds WHERE http_status = 200 OR http_status IN (400, 404, 451)"
+        ).fetchall()
+    }
     todo = [d for d in queue_dids if d not in already]
     print(
         f"[hydrate-feeds] Priority queue={len(queue_dids):,}, already cached={len(queue_dids) - len(todo):,}, fetching live={len(todo):,} at <={args.rps} req/s...",
@@ -909,7 +1113,9 @@ def main() -> None:
         n_scored = score_live_posts_eg2(conn, did_to_home, out_dir / "card_centroids.npz", model_dir)
         print(f"[hydrate-feeds] Scored {n_scored:,} hydrated feeds with EG2 live-post cosine.", flush=True)
 
-    verdicts = dict(conn.execute("SELECT live_verdict, COUNT(*) FROM author_feeds GROUP BY live_verdict ORDER BY COUNT(*) DESC").fetchall())
+    verdicts = dict(
+        conn.execute("SELECT live_verdict, COUNT(*) FROM author_feeds GROUP BY live_verdict ORDER BY COUNT(*) DESC").fetchall()
+    )
     print(f"[hydrate-feeds] Complete in {time.time() - t0:.1f}s. Verdict summary: {json.dumps(verdicts)}", flush=True)
 
 

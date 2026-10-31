@@ -157,6 +157,8 @@ def format_feed_row(row_dict: dict) -> dict:
         "live_dup_text_frac": round(float(row_dict.get("live_dup_text_frac") or 0.0), 3),
         "live_pol_frac": round(float(row_dict.get("live_pol_frac") or 0.0), 3),
         "median_likes": round(float(row_dict.get("median_likes") or 0.0), 1),
+        "avg_hashtags": round(float(row_dict.get("avg_hashtags") or 0.0), 1),
+        "bare_link_frac": round(float(row_dict.get("bare_link_frac") or 0.0), 3),
         "live_sem_cos": row_dict.get("live_sem_cos"),
         "live_verdict": row_dict.get("live_verdict") or "",
         "posts": posts,

@@ -1174,11 +1174,17 @@ export function createApiHandler(options: {
       }
 
       if (path === "/xrpc/blue.catbird.intel.getCommunity" || path.startsWith("/community/")) {
-        if (engine && path === "/xrpc/blue.catbird.intel.getCommunity" && url.searchParams.has("communityId")) {
+        if (engine && path === "/xrpc/blue.catbird.intel.getCommunity" && !url.searchParams.has("community")) {
+          if (!url.searchParams.has("communityId")) {
+            throw new InvalidRequest("Missing required parameter: communityId");
+          }
           const cid = integer(url.searchParams.get("communityId"), 0, 0, 0xffffffff);
           const detail = engine.getCommunity(cid, unauthenticated);
           if (!detail) return json({ error: "CommunityNotFound" }, 404);
           return json(detail);
+        }
+        if (!engine && communitiesById.size === 0 && path === "/xrpc/blue.catbird.intel.getCommunity") {
+          return json({ error: "UpstreamUnavailable", message: "Community intelligence catalog not loaded" }, 503);
         }
         const cid = integer(url.searchParams.get("community") ?? path.split("/").pop(), 0, 0, 0xffffffff);
         const community = communitiesById.get(cid);
@@ -1206,6 +1212,9 @@ export function createApiHandler(options: {
           const cursor = url.searchParams.get("cursor");
           return json(engine.listCommunities({ q, macroCategory, sceneSlug, limit, cursor, unauthenticated }));
         }
+        if (!engine && communitiesById.size === 0) {
+          return json({ error: "UpstreamUnavailable", message: "Community intelligence catalog not loaded" }, 503);
+        }
         let communities = [...communitiesById.values()];
         for (const key of ["scene_id", "domain_id"] as const) {
           if (url.searchParams.has(key)) {
@@ -1226,7 +1235,7 @@ export function createApiHandler(options: {
       }
       if (postRoute) {
         const body = await bodyInput(request);
-        if (engine && Array.isArray(body.selections)) {
+        if (engine && (body.selections !== undefined || body.allocation === undefined)) {
           const selections = parseSelectionsInput(body.selections);
           const seedFollowDids = parseDidArray(body.seedFollowDids, "seedFollowDids", 100);
           if (path.endsWith(".getCalibrationSwipes")) {
@@ -1254,6 +1263,9 @@ export function createApiHandler(options: {
               unauthenticated,
             }),
           );
+        }
+        if (!engine && communitiesById.size === 0) {
+          return json({ error: "UpstreamUnavailable", message: "Community intelligence catalog not loaded" }, 503);
         }
         const allocation = allocationInput(body.allocation);
         const controls = parseControls(body.controls);

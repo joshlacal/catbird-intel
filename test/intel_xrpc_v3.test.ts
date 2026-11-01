@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { P256Keypair, formatMultikey } from "@atproto/crypto";
-import { createApiHandler } from "../src/api.ts";
-import { createDidKeyResolver } from "../src/did_resolver.ts";
+import { createApiHandler, installServingSnapshot } from "../src/api.ts";
+import { createDidKeyResolver, isPublicIpAddress } from "../src/did_resolver.ts";
 import { S17CatalogEngine, type IntelServingBundleV2 } from "../src/intel_catalog.ts";
 import { createServiceAuthenticator } from "../src/service_auth.ts";
 
@@ -495,5 +495,138 @@ describe("Catbird Intel v3 Canonical XRPC & DID Key Resolution", () => {
     expect(solveBody.feeds.map((f: any) => f.uri)).toContain(
       "at://did:plc:swftfeed000000000001/app.bsky.feed.generator/iosdev",
     );
+  });
+
+  test("DidKeyResolver blocks SSRF, percent-encoding, non-public DNS, redirects, oversized docs, and spoofed subjects", async () => {
+    expect(isPublicIpAddress("93.184.216.34")).toBe(true);
+    expect(isPublicIpAddress("2606:2800:220:1:248:1893:25c8:1946")).toBe(true);
+    for (const badIp of [
+      "127.0.0.1",
+      "10.0.0.1",
+      "100.64.0.1",
+      "169.254.169.254",
+      "172.16.0.1",
+      "192.168.1.1",
+      "0.0.0.0",
+      "::1",
+      "::",
+      "::ffff:127.0.0.1",
+      "::ffff:169.254.169.254",
+      "fc00::1",
+      "fe80::1",
+    ]) {
+      expect(isPublicIpAddress(badIp)).toBe(false);
+    }
+
+    const webKey = await P256Keypair.create();
+    const multikey = formatMultikey("ES256", webKey.publicKeyBytes());
+
+    let sawRedirectError = false;
+    const resolve = createDidKeyResolver({
+      maxResponseBytes: 1024,
+      dnsLookupImpl: async (hostname) => {
+        if (hostname === "rebind.example") {
+          return [{ address: "127.0.0.1", family: 4 }];
+        }
+        return [{ address: "93.184.216.34", family: 4 }];
+      },
+      fetchImpl: async (input, init) => {
+        sawRedirectError = init?.redirect === "error";
+        const url = String(input);
+        if (url === "https://oversized.example/.well-known/did.json") {
+          return new Response("x".repeat(4096), { headers: { "content-type": "application/json" } });
+        }
+        if (url === "https://spoof-subject.example/.well-known/did.json") {
+          return Response.json({
+            id: "did:plc:victim000000000000000000",
+            verificationMethod: [
+              {
+                id: "#atproto",
+                type: "Multikey",
+                controller: "did:web:spoof-subject.example",
+                publicKeyMultibase: multikey,
+              },
+            ],
+          });
+        }
+        if (url === "https://spoof-vm.example/.well-known/did.json") {
+          return Response.json({
+            id: "did:web:spoof-vm.example",
+            verificationMethod: [
+              {
+                id: "did:plc:other#atproto",
+                type: "Multikey",
+                controller: "did:plc:other",
+                publicKeyMultibase: multikey,
+              },
+            ],
+          });
+        }
+        return Response.json({
+          id: "did:web:valid.example",
+          verificationMethod: [
+            {
+              id: "#atproto",
+              type: "Multikey",
+              controller: "did:web:valid.example",
+              publicKeyMultibase: multikey,
+            },
+          ],
+        });
+      },
+    });
+
+    for (const badDid of [
+      "did:web:127.0.0.1",
+      "did:web:127.0.0.1%3A8123",
+      "did:web:localhost",
+      "did:web:clickhouse.internal",
+      "did:web:alice.example:subpath",
+      "did:web:alice.example%2F..%2Fadmin",
+      "did:web:rebind.example",
+      "did:web:oversized.example",
+      "did:web:spoof-subject.example",
+      "did:web:spoof-vm.example",
+      "did:plc:../admin",
+    ]) {
+      await expect(resolve(badDid)).rejects.toThrow();
+    }
+
+    const okKey = await resolve("did:web:valid.example");
+    expect(okKey).toBe(webKey.did());
+    expect(sawRedirectError).toBe(true);
+  });
+
+  test("canonical v3 routes enforce required parameters and return 503 when catalog is unloaded", async () => {
+    const jwtDetail = await signJwt("blue.catbird.intel.getCommunity");
+    const missingIdRes = await fetch(new URL("/xrpc/blue.catbird.intel.getCommunity", server.url), {
+      headers: { authorization: `Bearer ${jwtDetail}` },
+    });
+    expect(missingIdRes.status).toBe(400);
+
+    const jwtSolve = await signJwt("blue.catbird.onboarding.solveBundle");
+    const missingSelRes = await fetch(new URL("/xrpc/blue.catbird.onboarding.solveBundle", server.url), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${jwtSolve}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ controls: { pace: "calm", originalsOnlyForHeavyReposters: true } }),
+    });
+    expect(missingSelRes.status).toBe(400);
+
+    // Clear in-memory legacy snapshot and verify unloaded handler returns 503 UpstreamUnavailable
+    installServingSnapshot({ communities: [], items: [], directory: [], version: "empty" });
+    const unloadedHandler = createApiHandler({ catalogEngine: null, requireServiceAuth: false });
+    const listRes = await unloadedHandler(new Request("http://127.0.0.1/xrpc/blue.catbird.intel.listCommunities"));
+    expect(listRes.status).toBe(503);
+    const solve503 = await unloadedHandler(
+      new Request("http://127.0.0.1/xrpc/blue.catbird.onboarding.solveBundle", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ selections: [{ communityId: 101, weight: 1 }] }),
+      }),
+    );
+    expect(solve503.status).toBe(503);
   });
 });

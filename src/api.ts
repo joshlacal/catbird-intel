@@ -3,7 +3,15 @@
  * Public post responses contain identifiers for viewer-aware AppView hydration.
  * No invented observations, unverified authentication, or exposure-budget claims.
  */
+import { existsSync } from "node:fs";
 import { ClickHouseWriter } from "./clickhouse.ts";
+import { createDidKeyResolver } from "./did_resolver.ts";
+import {
+  S17CatalogEngine,
+  type BundleControlsInput,
+  type CalibrationSwipeAnswerInput,
+  type CommunitySelectionInput,
+} from "./intel_catalog.ts";
 import { AuthenticationError, createServiceAuthenticator, type ServiceAuthenticator } from "./service_auth.ts";
 import { SERVING_CONTRACT_VERSION, InvalidRequest, parseControls, passesControls, controlReport,
   recommendationAction, type ServingControls } from "./serving_contract.ts";
@@ -105,12 +113,18 @@ const userAffinityCache = new Map<string, { ts: number; affinities: Affinity[] }
 let defaultCommunities: number[] = [];
 let sourceCommunityVersion: string | null = null;
 let cacheRefreshedAt: string | null = null;
+let activeCatalogEngine: S17CatalogEngine | null = null;
+
+export function installCatalogEngine(engine: S17CatalogEngine | null) {
+  activeCatalogEngine = engine;
+}
 
 /** Explicit dependency seam for local fixture-backed HTTP tests and future atomic publication. */
 export function installServingSnapshot(snapshot: {
   communities: CommunityMeta[]; items: PostCandidate[]; directory: DirectoryEntry[];
   modes?: AuthorModeMix[]; hiddenDids?: string[]; noUnauthDids?: string[]; version: string;
 }) {
+  activeCatalogEngine = null;
   communitiesById = new Map(snapshot.communities.map((row) => [row.community, row]));
   itemsByCommunity = new Map();
   directoryByCommunity = new Map();
@@ -1022,8 +1036,79 @@ function deliveryInput(body: Record<string, unknown>) {
   return { hideReposts: preferences.hideReposts === true, modes: modes as Record<string, "follow" | "hide_reposts" | "topic_feed"> };
 }
 
-export function createApiHandler(options: { authenticate?: ServiceAuthenticator } = {}) {
+function parseDidArray(value: unknown, fieldName: string, maxLen = 100): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > maxLen) {
+    throw new InvalidRequest(`${fieldName} must be an array of at most ${maxLen} DIDs`);
+  }
+  return value.map((item) => {
+    if (typeof item !== "string" || !/^did:(plc|web):[^#\s]+$/.test(item)) {
+      throw new InvalidRequest(`Invalid DID in ${fieldName}`);
+    }
+    return item;
+  });
+}
+
+function parseSelectionsInput(value: unknown): CommunitySelectionInput[] {
+  if (!Array.isArray(value) || value.length > 24) {
+    throw new InvalidRequest("selections must be an array of at most 24 items");
+  }
+  return value.map((raw) => {
+    const obj = record(raw, "selection");
+    const communityId = integer(obj.communityId, -1, 0, 0xffffffff);
+    const weight = integer(obj.weight, 1, 1, 2);
+    return { communityId, weight };
+  });
+}
+
+function parseCanonicalSwipesInput(value: unknown): CalibrationSwipeAnswerInput[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 16) {
+    throw new InvalidRequest("swipes must be an array of at most 16 items");
+  }
+  return value.map((raw) => {
+    const obj = record(raw, "swipe");
+    if (typeof obj.swipeId !== "string" || obj.swipeId.length === 0 || obj.swipeId.length > 80) {
+      throw new InvalidRequest("Invalid swipeId");
+    }
+    const communityA = integer(obj.communityA, -1, 0, 0xffffffff);
+    const communityB = integer(obj.communityB, -1, 0, 0xffffffff);
+    const choice = String(obj.choice);
+    if (!["a", "b", "both", "neither"].includes(choice)) {
+      throw new InvalidRequest("Invalid choice");
+    }
+    return {
+      swipeId: obj.swipeId,
+      communityA,
+      communityB,
+      choice: choice as "a" | "b" | "both" | "neither",
+    };
+  });
+}
+
+function parseCanonicalControlsInput(value: unknown): BundleControlsInput | undefined {
+  if (value === undefined || value === null) return undefined;
+  const obj = record(value, "controls");
+  const pace = String(obj.pace ?? "balanced");
+  if (!["calm", "balanced", "lively"].includes(pace)) {
+    throw new InvalidRequest("Invalid controls.pace");
+  }
+  if (typeof obj.originalsOnlyForHeavyReposters !== "boolean") {
+    throw new InvalidRequest("controls.originalsOnlyForHeavyReposters must be boolean");
+  }
+  return {
+    pace: pace as "calm" | "balanced" | "lively",
+    originalsOnlyForHeavyReposters: obj.originalsOnlyForHeavyReposters,
+  };
+}
+
+export function createApiHandler(options: {
+  authenticate?: ServiceAuthenticator;
+  catalogEngine?: S17CatalogEngine | null;
+  requireServiceAuth?: boolean;
+} = {}) {
   const authenticate = options.authenticate ?? createServiceAuthenticator();
+  const getEngine = () => options.catalogEngine ?? activeCatalogEngine;
   const json = (body: Record<string, unknown>, status = 200) =>
     Response.json({ ...body, ...contractMetadata() }, { status, headers: { "cache-control": "no-store" } });
 
@@ -1031,6 +1116,7 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
     try {
       const url = new URL(request.url);
       const path = url.pathname;
+      const engine = getEngine();
       if (path === "/health") return json({
         ok: true,
         ready_for_public_promotion: false,
@@ -1039,14 +1125,31 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
         communities: communitiesById.size,
         communities_with_posts: itemsByCommunity.size,
         author_modes_cached: authorModeByDid.size,
+        ...(engine ? {
+          s17_catalog_version: engine.bundle.catalogVersion,
+          s17_communities: engine.bundle.communities.length,
+          s17_scenes: engine.bundle.scenes.length,
+        } : {}),
       });
       const method = path.startsWith("/xrpc/") ? path.slice(6) : "blue.catbird.intel.getCommunity";
       const viewer = await authenticate(request, method);
       const unauthenticated = viewer === null; // Never infer authentication from request fields.
+      if (options.requireServiceAuth && path.startsWith("/xrpc/blue.catbird.") && unauthenticated) {
+        return json({ error: "AuthRequired", message: "Service authentication required" }, 401);
+      }
       const postRoute = path === "/xrpc/blue.catbird.onboarding.previewTimeline" ||
         path === "/xrpc/blue.catbird.onboarding.solveBundle" ||
         path === "/xrpc/blue.catbird.onboarding.getCalibrationSwipes";
       if (request.method !== (postRoute ? "POST" : "GET")) return json({ error: "MethodNotAllowed" }, 405);
+
+      if (path === "/xrpc/blue.catbird.onboarding.getCatalog") {
+        if (!engine) return json({ error: "UpstreamUnavailable", message: "S17 catalog bundle not loaded" }, 503);
+        const seedFollowDids = parseDidArray(url.searchParams.getAll("seedFollowDids"), "seedFollowDids", 100);
+        const q = url.searchParams.get("q");
+        const macroCategory = url.searchParams.get("macroCategory");
+        const limit = integer(url.searchParams.get("limit"), 80, 1, 200);
+        return json(engine.getCatalog({ seedFollowDids, q, macroCategory, limit, unauthenticated }));
+      }
 
       if (path === "/xrpc/app.bsky.feed.getFeedSkeleton") {
         for (const obsolete of ["max_politicalness", "max_heat", "live_event_volume"]) {
@@ -1071,6 +1174,12 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
       }
 
       if (path === "/xrpc/blue.catbird.intel.getCommunity" || path.startsWith("/community/")) {
+        if (engine && path === "/xrpc/blue.catbird.intel.getCommunity" && url.searchParams.has("communityId")) {
+          const cid = integer(url.searchParams.get("communityId"), 0, 0, 0xffffffff);
+          const detail = engine.getCommunity(cid, unauthenticated);
+          if (!detail) return json({ error: "CommunityNotFound" }, 404);
+          return json(detail);
+        }
         const cid = integer(url.searchParams.get("community") ?? path.split("/").pop(), 0, 0, 0xffffffff);
         const community = communitiesById.get(cid);
         if (!community) return json({ error: "CommunityNotFound" }, 404);
@@ -1089,6 +1198,14 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
         });
       }
       if (path === "/xrpc/blue.catbird.intel.listCommunities") {
+        if (engine && !url.searchParams.has("scene_id") && !url.searchParams.has("domain_id")) {
+          const q = url.searchParams.get("q");
+          const macroCategory = url.searchParams.get("macroCategory");
+          const sceneSlug = url.searchParams.get("sceneSlug");
+          const limit = integer(url.searchParams.get("limit"), 60, 1, 200);
+          const cursor = url.searchParams.get("cursor");
+          return json(engine.listCommunities({ q, macroCategory, sceneSlug, limit, cursor, unauthenticated }));
+        }
         let communities = [...communitiesById.values()];
         for (const key of ["scene_id", "domain_id"] as const) {
           if (url.searchParams.has(key)) {
@@ -1109,6 +1226,35 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
       }
       if (postRoute) {
         const body = await bodyInput(request);
+        if (engine && Array.isArray(body.selections)) {
+          const selections = parseSelectionsInput(body.selections);
+          const seedFollowDids = parseDidArray(body.seedFollowDids, "seedFollowDids", 100);
+          if (path.endsWith(".getCalibrationSwipes")) {
+            const maxSwipes = integer(body.maxSwipes, 5, 1, 12);
+            return json(engine.getCalibrationSwipes({ selections, seedFollowDids, maxSwipes, unauthenticated }));
+          }
+          const swipes = parseCanonicalSwipesInput(body.swipes);
+          const controls = parseCanonicalControlsInput(body.controls);
+          if (path.endsWith(".previewTimeline")) {
+            const limit = integer(body.limit, 20, 1, 40);
+            return json(engine.previewTimeline({ selections, swipes, controls, limit, unauthenticated }));
+          }
+          const targetSize = integer(body.targetSize, 24, 8, 50);
+          const pinnedDids = parseDidArray(body.pinnedDids, "pinnedDids", 30);
+          const excludedDids = parseDidArray(body.excludedDids, "excludedDids", 100);
+          return json(
+            engine.solveBundle({
+              selections,
+              swipes,
+              controls,
+              targetSize,
+              pinnedDids,
+              excludedDids,
+              seedFollowDids,
+              unauthenticated,
+            }),
+          );
+        }
         const allocation = allocationInput(body.allocation);
         const controls = parseControls(body.controls);
         if (body.live_event_volume !== undefined) throw new InvalidRequest("Event-volume control is unavailable");
@@ -1138,7 +1284,7 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
       if (path === "/xrpc/blue.catbird.intel.refreshCache") return json({ error: "InternalOperationOnly" }, 403);
       return json({ error: "NotFound" }, 404);
     } catch (error) {
-      if (error instanceof AuthenticationError) return json({ error: "AuthenticationRequired", message: error.message }, 401);
+      if (error instanceof AuthenticationError) return json({ error: "AuthRequired", message: error.message }, 401);
       if (error instanceof InvalidRequest) return json({ error: "InvalidRequest", message: error.message }, 400);
       console.error("serving request failed", error instanceof Error ? error.name : "UnknownError");
       return json({ error: "InternalServerError" }, 500);
@@ -1147,9 +1293,36 @@ export function createApiHandler(options: { authenticate?: ServiceAuthenticator 
 }
 
 if (import.meta.main) {
-  await refreshServingCache();
-  setInterval(() => { void refreshServingCache().catch((error) => console.error("cache refresh failed", String(error))); }, 120000);
-  const server = Bun.serve({ hostname: process.env.HOST ?? "127.0.0.1", port: Number(process.env.PORT ?? 3210),
-    maxRequestBodySize: 65536, fetch: createApiHandler() });
-  console.log(`catbird-intel-api local candidate listening on ${server.url}; authenticated serving is unconfigured`);
+  const defaultBundlePath = "/Users/joshlacalamito/catbird-lake-local/s17-picker-v1-20261030/intel_serving_v2.json";
+  const bundlePath = process.env.INTEL_SERVING_BUNDLE_PATH ?? (existsSync(defaultBundlePath) ? defaultBundlePath : null);
+  if (bundlePath && existsSync(bundlePath)) {
+    activeCatalogEngine = S17CatalogEngine.fromFile(bundlePath);
+    console.log(
+      `Loaded S17 catalog bundle ${activeCatalogEngine.bundle.catalogVersion}: ${activeCatalogEngine.bundle.communities.length} communities across ${activeCatalogEngine.bundle.scenes.length} scenes`,
+    );
+  }
+  if (process.env.INTEL_SKIP_CLICKHOUSE !== "1") {
+    try {
+      await refreshServingCache();
+      setInterval(() => {
+        void refreshServingCache().catch((error) => console.error("cache refresh failed", String(error)));
+      }, 120000);
+    } catch (error) {
+      if (!activeCatalogEngine) throw error;
+      console.warn("ClickHouse cache unavailable; serving from S17 catalog bundle:", String(error));
+    }
+  }
+  const serviceAudience = process.env.INTEL_SERVICE_DID ?? "did:web:intel.catbird.blue#catbird_intel";
+  const requireServiceAuth = process.env.INTEL_REQUIRE_AUTH !== "0";
+  const authenticate = createServiceAuthenticator({
+    audience: serviceAudience,
+    resolveAtprotoKey: createDidKeyResolver(),
+  });
+  const server = Bun.serve({
+    hostname: process.env.HOST ?? "127.0.0.1",
+    port: Number(process.env.PORT ?? 3210),
+    maxRequestBodySize: 65536,
+    fetch: createApiHandler({ authenticate, requireServiceAuth }),
+  });
+  console.log(`catbird-intel-api listening on ${server.url} (aud=${serviceAudience}, requireAuth=${requireServiceAuth})`);
 }

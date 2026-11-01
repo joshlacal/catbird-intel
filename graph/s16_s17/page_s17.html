@@ -184,9 +184,10 @@
       color: #fff;
       font-weight: 700;
       font-size: 12px;
-      padding: 4px 8px;
+      padding: 6px 8px;
       border-radius: 6px;
       letter-spacing: 0.03em;
+      text-box: trim-both cap alphabetic;
     }
     .brand-title {
       font-weight: 700;
@@ -222,9 +223,10 @@
     }
     .tab-count {
       font-size: 11px;
-      padding: 1px 6px;
+      padding: 3px 6px;
       border-radius: 999px;
       background: rgba(127, 127, 127, 0.2);
+      text-box: trim-both cap alphabetic;
     }
     .tab-btn[aria-selected="true"] .tab-count {
       background: rgba(255, 255, 255, 0.25);
@@ -275,18 +277,20 @@
       color: var(--warn);
     }
 
+    /* Compact UI badge leading trim (`precise-text-alignment` modern-web-guidance) */
     .pill {
       display: inline-flex;
       align-items: center;
       gap: 4px;
       font-size: 11.5px;
       font-weight: 600;
-      padding: 2px 8px;
+      padding: 4px 8px;
       border-radius: 999px;
       background: var(--surface-2);
       color: var(--muted);
       border: 1px solid var(--border);
       white-space: nowrap;
+      text-box: trim-both cap alphabetic;
     }
     .pill-good { background: var(--good-bg); color: var(--good); border-color: transparent; }
     .pill-warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
@@ -739,7 +743,7 @@
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
-        <span class="brand-badge">S17 REV 4</span>
+        <span class="brand-badge">S17 REV 5</span>
         <div>
           <div class="brand-title">Catbird Scene &amp; Author-Feed Inspector</div>
           <div class="brand-sub" id="hdr-subtitle">Loading verified onboarding catalog &amp; live feed cache…</div>
@@ -777,13 +781,13 @@
       <div class="hero-box">
         <div class="hero-head">
           <div>
-            <h2 class="hero-title">Full-Stack Graph + ML + Multimodal Embedding + Live <code>getAuthorFeed</code> Anti-Spam Audit</h2>
+            <h2 class="hero-title">Full-Stack Anti-Spam Audit + Multi-Signal Re-Homing, Twin Consolidation &amp; Metadata Hygiene</h2>
             <p class="hero-desc">
               Every candidate across the <code>v0</code> catalog was screened against follow-ring &amp; curator moderation-list graph signals (<code>mass3k_share</code>,
               <code>mutual_share</code>, <code>modlists</code>), independent bot/spam curated-list consensus, Claude + distilled <code>C5</code> <code>mmBERT-base</code>
               account-type classification, centered <code>S12m</code> multimodal post embeddings (<code>36.3M</code> posts) + <code>S16</code> Tier-1 social projections,
-              64-bucket duplicate-template scans, and live <code>app.bsky.feed.getAuthorFeed</code> timelines (catching hidden post-level NSFW labels, repost/reply walls,
-              link-shortener/affiliate farms, and hashtag-stuffing bots). Spot-check remaining edge cases below or inspect what <code>rev 4</code> automatically evicted.
+              64-bucket duplicate-template scans, and live <code>app.bsky.feed.getAuthorFeed</code> timelines. <code>Rev 5</code> also consolidates Leiden over-split twin cards,
+              drops chimera cards, re-homes misplaced organic accounts across all 6 signals, and recomputes clean <code>k &ge; 2</code> curated lists.
             </p>
           </div>
         </div>
@@ -792,7 +796,7 @@
 
       <div class="toolbar">
         <button type="button" class="btn btn-primary" id="mode-borderline">Remaining Borderline Queue (Kept Accounts)</button>
-        <button type="button" class="btn" id="mode-evicted">Automated Eviction Receipts (Dropped by Rev 4)</button>
+        <button type="button" class="btn" id="mode-evicted">Automated Eviction Receipts (Dropped by Rev 5)</button>
         <select id="radar-filter" class="select" aria-label="Discrepancy category filter">
           <option value="all">All Categories</option>
         </select>
@@ -1257,13 +1261,18 @@
       }
 
       const reasonBanner = item.evicted_reason
-        ? `<span class="pill pill-bad">Evicted by Rev 4: ${esc(item.evicted_reason)}</span>`
+        ? `<span class="pill pill-bad">Evicted by Rev 5: ${esc(item.evicted_reason)}</span>`
         : (item.flags && item.flags.length
             ? item.flags.map((fl) => `<span class="pill pill-warn">${esc(fl)}</span>`).join(" ")
             : `<span class="pill pill-good">Clean signals</span>`);
 
+      const rehomeBadge = item.rh
+        ? `<span class="pill pill-good" title="Multi-signal re-homed from Leiden community [${item.rh.fc}] ${esc(item.rh.fl || "")}">↪ Re-homed from [${item.rh.fc}]${item.rh.fl ? " " + esc(item.rh.fl) : ""}</span>`
+        : "";
+
       const actionBtns = item.evicted_reason
-        ? `<a class="btn" href="${esc(bskyProfileUrl(handle || did))}" target="_blank" rel="noopener noreferrer">Open @${esc(handle)} on Bluesky ↗</a>`
+        ? `<button type="button" class="btn btn-good" data-act="approve-did" data-did="${esc(did)}">${isApproved ? "✓ Queued for Re-Home" : "✓ Rescue & Re-Home"}</button>
+           <a class="btn" href="${esc(bskyProfileUrl(handle || did))}" target="_blank" rel="noopener noreferrer">Open @${esc(handle)} on Bluesky ↗</a>`
         : `<button type="button" class="btn btn-good" data-act="approve-did" data-did="${esc(did)}">${isApproved ? "✓ Marked OK" : "✓ Looks Good"}</button>
            <button type="button" class="btn ${isExcluded ? "" : "btn-bad"}" data-act="${isExcluded ? "restore-did" : "exclude-did"}" data-did="${esc(did)}">
              ${isExcluded ? "↩ Restore Account" : "✕ Exclude Account"}
@@ -1278,6 +1287,7 @@
                 <span class="acct-disp">${esc(dispName)}</span>
                 <a class="acct-handle" href="${esc(bskyProfileUrl(handle || did))}" target="_blank" rel="noopener noreferrer">@${esc(handle)} ↗</a>
                 ${item.rank_pos ? `<span class="pill">Rank #${item.rank_pos}/25</span>` : ""}
+                ${rehomeBadge}
                 ${item.is_sup ? `<span class="pill pill-accent" title="Late-fetched D17 supplement account (capped at <=2/card)">D17 Supplement</span>` : ""}
                 ${isExcluded ? `<span class="pill pill-bad">Manually Excluded</span>` : ""}
               </div>
@@ -1336,14 +1346,19 @@
         (ev.automated_bot_or_mirror || 0) + (ev.bot_or_mirror_handle || 0) +
         (ev.follow_back_ring_marker || 0) + (ev.promo_or_solicitation_bio || 0) + (ev.ai_slop_account || 0);
 
+      const rhs = IDX.rehome_summary || {};
       document.getElementById("radar-kpis").innerHTML = `
         <div class="kpi-card">
           <div class="kpi-val">${CAT.counts.v0_cards.toLocaleString()}</div>
-          <div class="kpi-lbl">Clean <code>v0</code> Cards (${CAT.counts.scenes} scenes)</div>
+          <div class="kpi-lbl">Clean <code>v0</code> Cards (${CAT.counts.scenes} scenes · ${rhs.merged_twin_cards || 0} twins merged)</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-val">${CAT.counts.unique_candidate_accounts.toLocaleString()}</div>
           <div class="kpi-lbl">Live-Verified Candidate Accounts</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-val" style="color:var(--good);">${(rhs.rehomed_eligible_total || 0).toLocaleString()}</div>
+          <div class="kpi-lbl">Organic Accounts Re-Homed (${rhs.rehomed_in_top25 || 0} in top-25)</div>
         </div>
         <div class="kpi-card">
           <div class="kpi-val" style="color:var(--accent);">${(IDX.hydrated_feeds_count || 0).toLocaleString()}</div>
@@ -1354,12 +1369,8 @@
           <div class="kpi-lbl">Off-Scene / Y3-Bleed Interlopers Evicted</div>
         </div>
         <div class="kpi-card">
-          <div class="kpi-val" style="color:var(--good);">${botsEv.toLocaleString()}</div>
-          <div class="kpi-lbl">Rings, Modlisted, Bots &amp; Link/Tag Spam Evicted</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-val" style="color:var(--good);">${nsfwLive.toLocaleString()}</div>
-          <div class="kpi-lbl">Hidden Post-Level NSFW Caught Live</div>
+          <div class="kpi-val" style="color:var(--good);">${(botsEv + nsfwLive).toLocaleString()}</div>
+          <div class="kpi-lbl">Rings, Modlisted, Bots, Spam &amp; Live NSFW Evicted</div>
         </div>
       `;
     }
@@ -1427,6 +1438,7 @@
             at: m.at,
             pbot: m.pbot,
             s13: m.s13,
+            rh: m.rh || null,
             is_sup: acc.isSup,
             avatar_url: (m.lf && m.lf.av) || "",
             card_cid: b.card_cid,
@@ -1563,6 +1575,8 @@
           <span class="pill ${cohCls}" title="Mean 90d post embedding coherence of top-25 candidates">Post Coh: ${fmtCos(ch.coh_posts)}</span>
           <span class="pill" title="Mean Tier-1 social projection coherence">Social Coh: ${fmtCos(ch.coh_t1)}</span>
           <span class="pill">${cd.el} eligible / ${fmtNum(cd.sz)} total</span>
+          ${(ch.merged_twins && ch.merged_twins.length) ? `<span class="pill pill-accent" title="Consolidated Leiden over-split twin cards: [${ch.merged_twins.join(", ")}]">+${ch.merged_twins.length} twin${ch.merged_twins.length > 1 ? "s" : ""} merged</span>` : ""}
+          ${ch.rehomed_count ? `<span class="pill pill-good" title="Clean accounts re-homed into this card (+${ch.rehomed_25 || 0} in top 25)">+${ch.rehomed_count} re-homed</span>` : ""}
           ${ch.sup_25 ? `<span class="pill pill-accent">D17 Sup: ${ch.sup_25}/2</span>` : ""}
           ${ds.fit ? `<span class="pill">Fit: ${esc(ds.fit)}</span>` : ""}
         </div>
@@ -1731,11 +1745,17 @@
         <span class="pill pill-good">Post Coh ${fmtCos(ch.coh_posts)}</span>
         <span class="pill">Social Coh ${fmtCos(ch.coh_t1)}</span>
         <span class="pill">${cd.el} eligible</span>
+        ${(ch.merged_twins && ch.merged_twins.length) ? `<span class="pill pill-accent">Merged twins: [${ch.merged_twins.join(", ")}]</span>` : ""}
+        ${ch.rehomed_count ? `<span class="pill pill-good">+${ch.rehomed_count} re-homed (${ch.rehomed_25 || 0} in top 25)</span>` : ""}
       `;
       const listsLine = ((ch.all_lists && ch.all_lists.length) ? ch.all_lists : (cd.ln || []))
         .map(([n, k]) => `${esc(n)} (${k})`).join(" · ");
+      const rehomeSampleLine = (ch.rehomed_handles_sample && ch.rehomed_handles_sample.length)
+        ? `<div style="margin-top:4px;font-size:12px;"><strong>Re-homed into [${cid}] pool:</strong> ${ch.rehomed_handles_sample.slice(0, 12).map((h) => `<a href="${esc(bskyProfileUrl(h))}" target="_blank" rel="noopener noreferrer">@${esc(h)}</a>`).join(" · ")}${ch.rehomed_handles_sample.length > 12 ? ` (+${ch.rehomed_handles_sample.length - 12} more)` : ""}</div>`
+        : "";
       document.getElementById("dlg-sub").innerHTML =
-        `<div><strong>Curated Lists:</strong> ${listsLine || "—"}</div>` +
+        `<div><strong>Curated Lists (k &ge; 2):</strong> ${listsLine || "—"}</div>` +
+        rehomeSampleLine +
         `<div style="margin-top:4px;">${esc(ds.d || cd.d || "")}</div>`;
 
       const isCardExcl = Boolean(OVERRIDES.excluded_cards[String(cid)]);
@@ -1794,6 +1814,7 @@
           at: m.at,
           pbot: m.pbot,
           s13: m.s13,
+          rh: m.rh || null,
           is_sup: a.isSup,
           avatar_url: (m.lf && m.lf.av) || "",
           card_cid: cid,

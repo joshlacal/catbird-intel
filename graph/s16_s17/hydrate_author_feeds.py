@@ -954,6 +954,9 @@ def build_priority_queue(lake: pathlib.Path, out_dir: pathlib.Path, max_dids: in
             return "did:plc:" + base64.b32encode(base64.urlsafe_b64decode(s + pad)).decode("ascii").lower()
 
         acct_dids = [exp_did(r[0]) for r in accts]
+        for cid_s, cd_m in (c_obj.get("cards") or {}).items():
+            for aid_m in cd_m.get("m") or []:
+                did_to_home[acct_dids[aid_m]] = int(cid_s)
 
         # 1. All 30 S17 review cards (every candidate!)
         for item in c_obj.get("blind_review_30") or []:

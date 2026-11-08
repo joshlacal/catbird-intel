@@ -68,7 +68,12 @@ rm -rf "$OUT"
 mv "$OUT.partial" "$OUT"
 echo "sealed $OUT ($(du -sh "$OUT" | cut -f1))"
 
-if [ -n "$RCLONE_REMOTE" ]; then
+DRIVE_OAUTH_PATH="${DRIVE_OAUTH_PATH:-/home/josh/.config/catbird-intel/drive-oauth.json}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -f "$DRIVE_OAUTH_PATH" ] && [ -f "$SCRIPT_DIR/upload_export_to_drive.py" ]; then
+  python3 "$SCRIPT_DIR/upload_export_to_drive.py" "$OUT" --day "$DAY" --oauth "$DRIVE_OAUTH_PATH"
+elif [ -n "$RCLONE_REMOTE" ]; then
   rclone copy "$OUT" "$RCLONE_REMOTE/day=$DAY" \
     --drive-chunk-size 256M --transfers 2 --checkers 2 --tpslimit 2 --drive-stop-on-upload-limit
   rclone check "$OUT" "$RCLONE_REMOTE/day=$DAY" --one-way --size-only
@@ -76,10 +81,8 @@ if [ -n "$RCLONE_REMOTE" ]; then
   echo "uploaded to $RCLONE_REMOTE/day=$DAY"
 fi
 
-# Retain local staging: uploaded days for KEEP_DAYS; without a remote, keep
-# 30 days (about 60 GB) so nothing is lost before Drive upload is configured.
+# Retain local staging: uploaded days for KEEP_DAYS; never delete a day unless .uploaded exists.
 RETAIN="$KEEP_DAYS"
-[ -n "$RCLONE_REMOTE" ] || RETAIN="${KEEP_DAYS_NO_REMOTE:-30}"
 find "$ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' -mtime +"$RETAIN" | while read -r d; do
-  if [ -z "$RCLONE_REMOTE" ] || [ -e "$d/.uploaded" ]; then rm -rf -- "$d"; fi
+  if [ -e "$d/.uploaded" ]; then rm -rf -- "$d"; fi
 done

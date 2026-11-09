@@ -15,6 +15,17 @@ import {
 import { AuthenticationError, createServiceAuthenticator, type ServiceAuthenticator } from "./service_auth.ts";
 import { SERVING_CONTRACT_VERSION, InvalidRequest, parseControls, passesControls, controlReport,
   recommendationAction, type ServingControls } from "./serving_contract.ts";
+import { tidToBigInt } from "./tid.ts";
+import {
+  DEFAULT_INTEL_VECTOR_STORE_DIR,
+  IntelVectorStore,
+  cosineI8,
+  quantizedBytes,
+  type ActorIntelNode,
+  type IntelCommunity,
+  type QuantizedVector256,
+  type WindowedCentroid,
+} from "./vector_store.ts";
 
 export interface PostCandidate {
   community: number;
@@ -114,6 +125,13 @@ let defaultCommunities: number[] = [];
 let sourceCommunityVersion: string | null = null;
 let cacheRefreshedAt: string | null = null;
 let activeCatalogEngine: S17CatalogEngine | null = null;
+let activeVectorStore: IntelVectorStore | null = null;
+const publicFollowsCache = new Map<string, { expiresAt: number; dids: string[] }>();
+
+export function installVectorStore(store: IntelVectorStore | null) {
+  activeVectorStore = store;
+  publicFollowsCache.clear();
+}
 
 export function installCatalogEngine(engine: S17CatalogEngine | null) {
   activeCatalogEngine = engine;
@@ -159,7 +177,7 @@ function publicCommunity(row: CommunityMeta) {
 function postSkeleton(post: PostCandidate) { return { post: post.item_uri }; }
 function contractMetadata() {
   return { contract_version: SERVING_CONTRACT_VERSION, source_community_version: sourceCommunityVersion,
-    derived_generation: null, cache_refreshed_at: cacheRefreshedAt,
+    derived_generation: activeVectorStore?.manifest.generation ?? null, cache_refreshed_at: cacheRefreshedAt,
     qualification: "local_candidate_unqualified", hydration: "viewer_aware_appview_required" };
 }
 
@@ -1102,13 +1120,937 @@ function parseCanonicalControlsInput(value: unknown): BundleControlsInput | unde
   };
 }
 
+type JsonRow = Record<string, unknown>;
+type ClickHouseQuery = (sql: string) => Promise<JsonRow[] | null>;
+type AppViewFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+const V4_METHODS: Record<string, true> = {
+  "blue.catbird.intel.getGraphNeighborhoodBundle": true,
+  "blue.catbird.intel.getActorVectors": true,
+  "blue.catbird.intel.getPostVectors": true,
+  "blue.catbird.intel.searchGraphPosts": true,
+  "blue.catbird.intel.expandGraphNeighborhood": true,
+  "blue.catbird.intel.getQuoteChain": true,
+  "blue.catbird.intel.getTopicClusters": true,
+};
+
+interface V4Dependencies {
+  store: IntelVectorStore;
+  viewer: string;
+  query: ClickHouseQuery;
+  appViewFetch: AppViewFetch;
+  now: () => number;
+}
+
+interface Neighborhood {
+  actors: Map<string, { hopDistance: number; mutualFollowCount: number; mutualEngagerCount: number }>;
+  firstHop: string[];
+  engagementWeights: Map<string, number>;
+  clickHouseAvailable: boolean;
+}
+
+interface RawPost {
+  uri: string;
+  authorDid: string;
+  indexedAt: string;
+  text?: string;
+  quoteUri?: string;
+  replyRootUri?: string;
+  hasImages?: boolean;
+  replyCount?: number;
+  quoteCount?: number;
+  likeRepostCount?: number;
+  socialEndorserCount?: number;
+  rageBaitPermille?: number;
+  controversyPermille?: number;
+  communityId?: number;
+}
+
+interface PostIntelSkeleton {
+  uri: string;
+  authorDid: string;
+  indexedAt: string;
+  hopDistance?: number;
+  socialEndorserCount?: number;
+  similarityPermille?: number;
+  rageBaitPermille?: number;
+  controversyPermille?: number;
+  replyCount?: number;
+  quoteCount?: number;
+  likeRepostCount?: number;
+  quoteUri?: string;
+  replyRootUri?: string;
+  hasImages?: boolean;
+  communityId?: number;
+  vector?: QuantizedVector256;
+}
+
+const PUBLIC_APPVIEW = "https://public.api.bsky.app";
+let clickHouseUnavailableUntil = 0;
+
+async function optionalClickHouseQuery(sql: string): Promise<JsonRow[] | null> {
+  if (process.env.INTEL_SKIP_CLICKHOUSE === "1" || Date.now() < clickHouseUnavailableUntil) return null;
+  try {
+    return await queryJsonEachRow<JsonRow>(sql);
+  } catch {
+    clickHouseUnavailableUntil = Date.now() + 30_000;
+    return null;
+  }
+}
+
+function sqlString(value: string): string {
+  return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+}
+
+function plainObject(value: unknown): JsonRow {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRow : {};
+}
+
+function stringValue(row: JsonRow, ...keys: string[]): string | undefined {
+  for (const key of keys) if (typeof row[key] === "string") return row[key] as string;
+  return undefined;
+}
+
+function numberValue(row: JsonRow, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = Number(row[key]);
+    if (row[key] !== undefined && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function parsePostUri(uri: string): { did: string; rkey: string } | null {
+  const match = /^at:\/\/(did:[a-z0-9]+:[^/\s]+)\/app\.bsky\.feed\.post\/([^/?#\s]+)$/i.exec(uri);
+  return match ? { did: match[1]!, rkey: match[2]! } : null;
+}
+
+function indexedAtFromPostUri(uri: string): string {
+  const rkey = parsePostUri(uri)?.rkey;
+  const tid = rkey ? tidToBigInt(rkey) : null;
+  if (tid !== null) {
+    const milliseconds = Number(tid >> 10n) / 1000;
+    if (Number.isFinite(milliseconds) && milliseconds >= Date.UTC(2023, 0, 1)) return new Date(milliseconds).toISOString();
+  }
+  return new Date(0).toISOString();
+}
+
+function quantizedVectorInput(value: unknown): QuantizedVector256 {
+  const input = record(value, "queryVector");
+  if (typeof input.modelId !== "string" || input.modelId.length < 1 || input.modelId.length > 64) {
+    throw new InvalidRequest("queryVector.modelId must contain 1..64 characters");
+  }
+  const q8Bytes = record(input.q8Bytes, "queryVector.q8Bytes");
+  const vector: QuantizedVector256 = {
+    modelId: input.modelId,
+    dims: integer(input.dims, 256, 256, 256) as 256,
+    scaleFp16: integer(input.scaleFp16, 0, 0, 0xffff),
+    q8Bytes: { $bytes: typeof q8Bytes.$bytes === "string" ? q8Bytes.$bytes : "" },
+  };
+  try { quantizedBytes(vector); }
+  catch { throw new InvalidRequest("queryVector must contain exactly 256 signed int8 bytes"); }
+  return vector;
+}
+
+async function appViewJson(
+  fetcher: AppViewFetch,
+  method: string,
+  params: Record<string, string | number | string[] | undefined>,
+): Promise<JsonRow | null> {
+  const url = new URL(`/xrpc/${method}`, PUBLIC_APPVIEW);
+  for (const [name, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) for (const item of value) url.searchParams.append(name, item);
+    else url.searchParams.set(name, String(value));
+  }
+  try {
+    const response = await fetcher(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(3_000) });
+    if (!response.ok) return null;
+    return plainObject(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+async function publicFollows(viewer: string, fetcher: AppViewFetch): Promise<string[]> {
+  const cached = publicFollowsCache.get(viewer);
+  if (cached && cached.expiresAt > Date.now()) return cached.dids;
+  const dids: string[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const response = await appViewJson(fetcher, "app.bsky.graph.getFollows", { actor: viewer, limit: 100, cursor });
+    if (!response) break;
+    for (const raw of Array.isArray(response.follows) ? response.follows : []) {
+      const did = stringValue(plainObject(raw), "did");
+      if (did?.startsWith("did:")) dids.push(did);
+    }
+    cursor = typeof response.cursor === "string" ? response.cursor : undefined;
+    if (!cursor) break;
+  }
+  const unique = [...new Set(dids)];
+  publicFollowsCache.set(viewer, { expiresAt: Date.now() + 600_000, dids: unique });
+  return unique;
+}
+
+const neighborhoodCache = new Map<string, { expiresAt: number; value: Neighborhood }>();
+
+async function resolveNeighborhood(
+  deps: V4Dependencies,
+  seedDid: string,
+  maxTwoHop: number,
+  engagementWindowHours = 336,
+): Promise<Neighborhood> {
+  const cacheKey = `${seedDid}:${maxTwoHop}:${engagementWindowHours}`;
+  const cached = neighborhoodCache.get(cacheKey);
+  if (cached && cached.expiresAt > deps.now()) return cached.value;
+
+  const actors = new Map<string, { hopDistance: number; mutualFollowCount: number; mutualEngagerCount: number }>();
+  const engagementWeights = new Map<string, number>();
+  const firstRows = await deps.query(
+    `SELECT any(subject) AS did FROM catbird.follows ` +
+    `WHERE did = ${sqlString(seedDid)} GROUP BY did, rkey HAVING max(is_deleted) = 0 LIMIT 3000`,
+  );
+  if (firstRows !== null) {
+    const firstHop = [...new Set(firstRows.map((row) => stringValue(row, "did", "subject")).filter((did): did is string => !!did))];
+    for (const did of firstHop) actors.set(did, { hopDistance: 1, mutualFollowCount: 1, mutualEngagerCount: 0 });
+    const cappedWindow = Math.min(engagementWindowHours, 336);
+    const engagedRows = await deps.query(
+      `SELECT subject_did AS did, count() AS weight FROM (` +
+      `SELECT any(subject_did) AS subject_did FROM catbird.engagements ` +
+      `WHERE did = ${sqlString(seedDid)} AND rkey_date >= toDate(now() - INTERVAL ${cappedWindow} HOUR) ` +
+      `GROUP BY did, kind, rkey HAVING max(is_deleted) = 0) GROUP BY subject_did LIMIT 3000`,
+    );
+    for (const row of engagedRows ?? []) {
+      const did = stringValue(row, "did", "subject_did");
+      if (!did) continue;
+      const weight = Math.max(1, Math.trunc(numberValue(row, "weight", "count") ?? 1));
+      engagementWeights.set(did, weight);
+      const current = actors.get(did);
+      if (current) current.mutualEngagerCount += weight;
+      else actors.set(did, { hopDistance: 1, mutualFollowCount: 0, mutualEngagerCount: weight });
+    }
+    if (firstHop.length && maxTwoHop > 0) {
+      const seedHop = firstHop.slice(0, 400);
+      const inList = seedHop.map(sqlString).join(",");
+      const [secondRows, engagerRows] = await Promise.all([
+        deps.query(
+          `SELECT subject AS did, uniqExact(follower) AS mutualFollowCount FROM (` +
+          `SELECT did AS follower, any(subject) AS subject FROM catbird.follows ` +
+          `WHERE did IN (${inList}) GROUP BY did, rkey HAVING max(is_deleted) = 0` +
+          `) WHERE subject != ${sqlString(seedDid)} GROUP BY subject ORDER BY mutualFollowCount DESC LIMIT ${maxTwoHop}`,
+        ),
+        deps.query(
+          `SELECT subject_did AS did, uniqExact(engager) AS mutualEngagerCount FROM (` +
+          `SELECT did AS engager, any(subject_did) AS subject_did FROM catbird.engagements ` +
+          `WHERE did IN (${inList}) AND rkey_date >= toDate(now() - INTERVAL 168 HOUR) ` +
+          `GROUP BY did, kind, rkey HAVING max(is_deleted) = 0` +
+          `) GROUP BY subject_did ORDER BY mutualEngagerCount DESC LIMIT ${Math.max(maxTwoHop, 600)}`,
+        ),
+      ]);
+      for (const row of secondRows ?? []) {
+        const did = stringValue(row, "did", "subject");
+        if (!did || actors.has(did)) continue;
+        actors.set(did, {
+          hopDistance: 2,
+          mutualFollowCount: Math.max(0, Math.trunc(numberValue(row, "mutualFollowCount", "mutual_follow_count") ?? 0)),
+          mutualEngagerCount: 0,
+        });
+      }
+      for (const row of engagerRows ?? []) {
+        const did = stringValue(row, "did", "subject_did");
+        if (!did) continue;
+        const count = Math.max(0, Math.trunc(numberValue(row, "mutualEngagerCount", "mutual_engager_count") ?? 0));
+        const current = actors.get(did);
+        if (current) current.mutualEngagerCount = count;
+        else if (actors.size < firstHop.length + maxTwoHop) {
+          actors.set(did, { hopDistance: 2, mutualFollowCount: 0, mutualEngagerCount: count });
+        }
+      }
+    }
+    actors.delete(seedDid);
+    const resolved = { actors, firstHop, engagementWeights, clickHouseAvailable: true };
+    neighborhoodCache.set(cacheKey, { expiresAt: deps.now() + 120_000, value: resolved });
+    return resolved;
+  }
+  const firstHop = await publicFollows(seedDid, deps.appViewFetch);
+  for (const did of firstHop) actors.set(did, { hopDistance: 1, mutualFollowCount: 1, mutualEngagerCount: 0 });
+  const communityCounts = new Map<number, number>();
+  for (const did of firstHop) {
+    for (const communityId of deps.store.signalForDid(did)?.topCommunityIds ?? []) {
+      communityCounts.set(communityId, (communityCounts.get(communityId) ?? 0) + 1);
+    }
+  }
+  for (const [communityId] of [...communityCounts].sort((a, b) => b[1] - a[1])) {
+    for (const did of deps.store.communityMembers(communityId, maxTwoHop)) {
+      if (did === seedDid || actors.has(did)) continue;
+      actors.set(did, {
+        hopDistance: 2,
+        mutualFollowCount: communityCounts.get(communityId) ?? 0,
+        mutualEngagerCount: 0,
+      });
+      if (actors.size >= firstHop.length + maxTwoHop) break;
+    }
+    if (actors.size >= firstHop.length + maxTwoHop) break;
+  }
+  return { actors, firstHop, engagementWeights, clickHouseAvailable: false };
+}
+
+function viewerTopCommunities(store: IntelVectorStore, dids: Iterable<string>) {
+  const scores = new Map<number, { score: number; socialProof: number }>();
+  for (const did of dids) {
+    const signal = store.signalForDid(did);
+    if (!signal || signal.hiddenFromRecommendations) continue;
+    for (const communityId of signal.topCommunityIds) {
+      const current = scores.get(communityId) ?? { score: 0, socialProof: 0 };
+      current.score += Math.max(1, signal.qualityScoreBps);
+      current.socialProof++;
+      scores.set(communityId, current);
+    }
+  }
+  const total = [...scores.values()].reduce((sum, value) => sum + value.score, 0);
+  return [...scores]
+    .sort((a, b) => b[1].score - a[1].score || a[0] - b[0])
+    .slice(0, 12)
+    .map(([communityId, value]) => {
+      const community = store.community(communityId);
+      return {
+        communityId,
+        ...(community?.label ? { title: community.label } : {}),
+        scoreBps: total ? Math.min(10000, Math.round(value.score / total * 10000)) : 0,
+        socialProof: value.socialProof,
+      };
+    });
+}
+
+function viewerCentroids(store: IntelVectorStore, neighborhood: Neighborhood): WindowedCentroid[] {
+  const allDids = new Set([...neighborhood.firstHop, ...neighborhood.engagementWeights.keys()]);
+  const recentDids = neighborhood.engagementWeights.size ? neighborhood.engagementWeights.keys() : neighborhood.firstHop;
+  const sevenDay = store.centroidForDids(recentDids, "all", neighborhood.engagementWeights);
+  const thirtyDay = store.centroidForDids(allDids, "all");
+  const ninetyDay = store.centroidForDids(allDids, "preT");
+  if (sevenDay) sevenDay.window = "7d";
+  if (thirtyDay) thirtyDay.window = "30d";
+  if (ninetyDay) ninetyDay.window = "90d";
+  return [sevenDay, thirtyDay, ninetyDay].filter((centroid): centroid is WindowedCentroid => centroid !== null);
+}
+
+async function actorNodesForDids(
+  deps: V4Dependencies,
+  dids: string[],
+  windows: string[],
+  includeMutualStats: boolean,
+  neighborhoodStats?: ReadonlyMap<string, { hopDistance: number; mutualFollowCount: number; mutualEngagerCount: number }>,
+): Promise<ActorIntelNode[]> {
+  if (dids.length === 0) return [];
+  const didList = dids.map(sqlString).join(",");
+  const uncachedDids = dids.filter((did) => !authorModeByDid.has(did));
+  const [modeRows, statusRows] = await Promise.all([
+    uncachedDids.length > 0 && authorModeByDid.size === 0
+      ? deps.query(
+          `SELECT did, argMax(total_events_14d, updated_at) AS total_events_14d, ` +
+          `argMax(orig_posts, updated_at) AS orig_posts, argMax(reply_posts, updated_at) AS reply_posts, ` +
+          `argMax(quote_posts, updated_at) AS quote_posts, argMax(reposts, updated_at) AS reposts ` +
+          `FROM catbird.author_mode_mix WHERE did IN (${didList}) GROUP BY did`,
+        )
+      : Promise.resolve(null),
+    deps.query(
+      `SELECT did, argMax(active, seq) AS active, argMax(status, seq) AS status ` +
+      `FROM catbird.account_status WHERE did IN (${didList}) GROUP BY did`,
+    ),
+  ]);
+  const modes = new Map<string, JsonRow>();
+  for (const did of dids) {
+    const cachedMode = authorModeByDid.get(did);
+    if (cachedMode) modes.set(did, cachedMode as unknown as JsonRow);
+  }
+  for (const row of modeRows ?? []) {
+    const did = stringValue(row, "did");
+    if (did) modes.set(did, row);
+  }
+  const inactiveDids = new Set((statusRows ?? []).filter((row) => {
+    const status = stringValue(row, "status")?.toLowerCase() ?? "";
+    return numberValue(row, "active") === 0 || /deleted|deactivated|suspended|takendown/.test(status);
+  }).map((row) => stringValue(row, "did")).filter((did): did is string => !!did));
+  const mutualFollows = new Map<string, number>();
+  const mutualEngagers = new Map<string, number>();
+  if (includeMutualStats && !neighborhoodStats) {
+    const neighborhood = await resolveNeighborhood(deps, deps.viewer, 1500, 336);
+    for (const did of dids) {
+      const stats = neighborhood.actors.get(did);
+      if (stats) {
+        mutualFollows.set(did, stats.mutualFollowCount);
+        mutualEngagers.set(did, stats.mutualEngagerCount);
+      }
+    }
+  }
+  const nodes: ActorIntelNode[] = [];
+  for (const did of dids) {
+    if (inactiveDids.has(did)) continue;
+    const stats = neighborhoodStats?.get(did);
+    const mutualFollowCount = stats?.mutualFollowCount ?? mutualFollows.get(did) ?? 0;
+    const mutualEngagerCount = stats?.mutualEngagerCount ?? mutualEngagers.get(did) ?? 0;
+    const node = deps.store.actorNode(did, {
+      hopDistance: stats?.hopDistance ?? 0,
+      mutualFollowCount,
+      mutualEngagerCount,
+      socialAffinityPermille: Math.min(1000, stats ? 350 + mutualFollowCount * 100 + mutualEngagerCount * 40 : mutualFollowCount * 300 + mutualEngagerCount * 80),
+      windows,
+    });
+    if (!node) continue;
+    const mode = modes.get(did);
+    if (mode && node.health) {
+      const originals = Math.max(0, numberValue(mode, "orig_posts") ?? 0);
+      const replies = Math.max(0, numberValue(mode, "reply_posts") ?? 0);
+      const quotes = Math.max(0, numberValue(mode, "quote_posts") ?? 0);
+      const reposts = Math.max(0, numberValue(mode, "reposts") ?? 0);
+      const total = originals + replies + quotes + reposts;
+      node.health.posts14d = Math.trunc(numberValue(mode, "total_events_14d") ?? total);
+      if (total > 0) {
+        node.health.originalSharePermille = Math.round(originals / total * 1000);
+        node.health.replySharePermille = Math.round(replies / total * 1000);
+        node.health.quoteSharePermille = Math.round(quotes / total * 1000);
+        node.health.repostSharePermille = Math.max(0, 1000 - node.health.originalSharePermille -
+          node.health.replySharePermille - node.health.quoteSharePermille);
+      }
+    }
+    nodes.push(node);
+  }
+  return nodes;
+}
+function isoDateTime(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  const parsed = Date.parse(value.endsWith("Z") ? value : `${value.replace(" ", "T")}Z`);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : fallback;
+}
+
+function permille(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  return Math.max(0, Math.min(1000, Math.round(value <= 1 ? value * 1000 : value)));
+}
+
+function rawPostFromAppView(value: unknown): RawPost | null {
+  const post = plainObject(value);
+  const uri = stringValue(post, "uri");
+  const authorDid = stringValue(plainObject(post.author), "did") ?? (uri ? parsePostUri(uri)?.did : undefined);
+  if (!uri || !authorDid || !parsePostUri(uri)) return null;
+  const recordValue = plainObject(post.record);
+  const recordEmbed = plainObject(recordValue.embed);
+  const viewEmbed = plainObject(post.embed);
+  const recordRef = plainObject(recordEmbed.record);
+  const viewRecord = plainObject(viewEmbed.record);
+  const nestedViewRecord = plainObject(viewRecord.record);
+  const quoteUri = stringValue(recordRef, "uri") ?? stringValue(viewRecord, "uri") ?? stringValue(nestedViewRecord, "uri");
+  const reply = plainObject(recordValue.reply);
+  const replyRootUri = stringValue(plainObject(reply.root), "uri");
+  const images = Array.isArray(viewEmbed.images) ? viewEmbed.images : Array.isArray(recordEmbed.images) ? recordEmbed.images : [];
+  return {
+    uri,
+    authorDid,
+    indexedAt: isoDateTime(stringValue(post, "indexedAt") ?? stringValue(recordValue, "createdAt"), indexedAtFromPostUri(uri)),
+    text: stringValue(recordValue, "text"),
+    ...(quoteUri ? { quoteUri } : {}),
+    ...(replyRootUri ? { replyRootUri } : {}),
+    hasImages: images.length > 0,
+    replyCount: Math.max(0, Math.trunc(numberValue(post, "replyCount") ?? 0)),
+    quoteCount: Math.max(0, Math.trunc(numberValue(post, "quoteCount") ?? 0)),
+    likeRepostCount: Math.max(0, Math.trunc((numberValue(post, "likeCount") ?? 0) + (numberValue(post, "repostCount") ?? 0))),
+  };
+}
+
+function rawPostFromClickHouse(row: JsonRow): RawPost | null {
+  const did = stringValue(row, "authorDid", "author_did", "did");
+  const rkey = stringValue(row, "rkey");
+  const uri = stringValue(row, "uri") ?? (did && rkey ? `at://${did}/app.bsky.feed.post/${rkey}` : undefined);
+  const authorDid = did ?? (uri ? parsePostUri(uri)?.did : undefined);
+  if (!uri || !authorDid || !parsePostUri(uri)) return null;
+  return {
+    uri,
+    authorDid,
+    indexedAt: isoDateTime(stringValue(row, "indexedAt", "indexed_at", "created_at"), indexedAtFromPostUri(uri)),
+    text: stringValue(row, "text"),
+    quoteUri: stringValue(row, "quoteUri", "quote_uri") || undefined,
+    replyRootUri: stringValue(row, "replyRootUri", "reply_root") || undefined,
+    hasImages: (numberValue(row, "imageCount", "image_count") ?? 0) > 0,
+    replyCount: Math.max(0, Math.trunc(numberValue(row, "replyCount", "reply_count", "replies") ?? 0)),
+    quoteCount: Math.max(0, Math.trunc(numberValue(row, "quoteCount", "quote_count", "quotes") ?? 0)),
+    likeRepostCount: Math.max(0, Math.trunc(numberValue(row, "likeRepostCount", "like_repost_count") ?? 0)),
+    socialEndorserCount: Math.max(0, Math.trunc(numberValue(row, "socialEndorserCount", "social_endorser_count") ?? 0)),
+    rageBaitPermille: permille(numberValue(row, "rageBaitPermille", "rage_bait_permille", "engagement_bait")),
+    controversyPermille: permille(numberValue(row, "controversyPermille", "controversy_permille", "heat")),
+    communityId: numberValue(row, "communityId", "community_id", "community"),
+  };
+}
+
+async function appViewPosts(fetcher: AppViewFetch, uris: string[]): Promise<RawPost[]> {
+  const posts: RawPost[] = [];
+  for (let offset = 0; offset < uris.length; offset += 25) {
+    const response = await appViewJson(fetcher, "app.bsky.feed.getPosts", { uris: uris.slice(offset, offset + 25) });
+    for (const value of Array.isArray(response?.posts) ? response.posts : []) {
+      const post = rawPostFromAppView(value);
+      if (post) posts.push(post);
+    }
+  }
+  return posts;
+}
+
+function communityForPost(store: IntelVectorStore, post: RawPost): IntelCommunity | null {
+  const explicit = post.communityId === undefined ? null : store.community(post.communityId);
+  if (explicit) return explicit;
+  const actorCommunity = store.signalForDid(post.authorDid)?.topCommunityIds[0];
+  if (actorCommunity !== undefined) return store.community(actorCommunity);
+  return store.communities.find((community) => community.samplePostUris.includes(post.uri)) ?? null;
+}
+
+async function loadRawPosts(deps: V4Dependencies, uris: string[], seedRows: JsonRow[] = []): Promise<Map<string, RawPost>> {
+  const posts = new Map<string, RawPost>();
+  for (const row of seedRows) {
+    const post = rawPostFromClickHouse(row);
+    if (post) posts.set(post.uri, post);
+  }
+  const missingForClickHouse = uris.filter((uri) => !posts.has(uri));
+  if (missingForClickHouse.length) {
+    const tuples = missingForClickHouse
+      .map((uri) => parsePostUri(uri))
+      .filter((parsed): parsed is { did: string; rkey: string } => parsed !== null)
+      .map((parsed) => `(${sqlString(parsed.did)},${sqlString(parsed.rkey)})`);
+    if (tuples.length) {
+      const rows = await deps.query(
+        `SELECT concat('at://', did, '/app.bsky.feed.post/', rkey) AS uri, did AS authorDid, rkey, ` +
+        `toString(any(indexed_at)) AS indexedAt, any(text) AS text, any(quote_uri) AS quoteUri, any(reply_root) AS replyRootUri, ` +
+        `any(image_count) AS imageCount, any(engagement_bait) AS engagement_bait, any(heat) AS heat ` +
+        `FROM catbird.posts WHERE (did, rkey) IN (${tuples.join(",")}) GROUP BY did, rkey HAVING max(is_deleted) = 0`,
+      );
+      for (const row of rows ?? []) {
+        const post = rawPostFromClickHouse(row);
+        if (post) posts.set(post.uri, post);
+      }
+    }
+  }
+  if (uris.length) {
+    const uriList = uris.map(sqlString).join(",");
+    const [countRows, popRows] = await Promise.all([
+      deps.query(
+        `SELECT uri, sum(replies) AS replyCount, sum(quotes) AS quoteCount FROM catbird.post_counts ` +
+        `WHERE uri IN (${uriList}) GROUP BY uri`,
+      ),
+      deps.query(
+        `SELECT item AS uri, sum(pop) AS likeRepostCount FROM feed.item_pop ` +
+        `WHERE item IN (${uriList}) GROUP BY item`,
+      ),
+    ]);
+    for (const row of countRows ?? []) {
+      const uri = stringValue(row, "uri");
+      const post = uri ? posts.get(uri) : undefined;
+      if (!post) continue;
+      post.replyCount = Math.max(0, Math.trunc(numberValue(row, "replyCount", "replies") ?? 0));
+      post.quoteCount = Math.max(0, Math.trunc(numberValue(row, "quoteCount", "quotes") ?? 0));
+    }
+    for (const row of popRows ?? []) {
+      const uri = stringValue(row, "uri");
+      const post = uri ? posts.get(uri) : undefined;
+      if (!post) continue;
+      post.likeRepostCount = Math.max(post.likeRepostCount ?? 0, Math.trunc(numberValue(row, "likeRepostCount") ?? 0));
+    }
+  }
+  const appViewMissing = uris.filter((uri) => !posts.has(uri));
+  for (const post of await appViewPosts(deps.appViewFetch, appViewMissing)) posts.set(post.uri, post);
+  for (const uri of uris) {
+    if (posts.has(uri)) continue;
+    const parsed = parsePostUri(uri);
+    if (parsed) posts.set(uri, { uri, authorDid: parsed.did, indexedAt: indexedAtFromPostUri(uri) });
+  }
+  return posts;
+}
+
+async function postSkeletons(
+  deps: V4Dependencies,
+  uris: string[],
+  includeVectors: boolean,
+  seedRows: JsonRow[] = [],
+  hopByDid?: ReadonlyMap<string, { hopDistance: number }>,
+): Promise<PostIntelSkeleton[]> {
+  const rawPosts = await loadRawPosts(deps, uris, seedRows);
+  const output: PostIntelSkeleton[] = [];
+  for (const uri of uris) {
+    const post = rawPosts.get(uri);
+    if (!post) continue;
+    const signal = deps.store.signalForDid(post.authorDid);
+    const community = communityForPost(deps.store, post);
+    let vector = deps.store.vectorForDid(post.authorDid, "all") ?? (community ? deps.store.communityVector(community) : null);
+    if (includeVectors && !vector) vector = await deps.store.encodeQueryText(post.text ?? post.uri);
+    const rage = post.rageBaitPermille ?? signal?.rageBaitPermille ?? 0;
+    const controversy = post.controversyPermille ?? signal?.rageBaitPermille ?? 0;
+    const hopDistance = hopByDid?.get(post.authorDid)?.hopDistance;
+    output.push({
+      uri: post.uri,
+      authorDid: post.authorDid,
+      indexedAt: post.indexedAt,
+      ...(hopDistance === undefined ? {} : { hopDistance }),
+      socialEndorserCount: post.socialEndorserCount ?? 0,
+      rageBaitPermille: rage,
+      controversyPermille: controversy,
+      replyCount: post.replyCount ?? 0,
+      quoteCount: post.quoteCount ?? 0,
+      likeRepostCount: post.likeRepostCount ?? 0,
+      ...(post.quoteUri ? { quoteUri: post.quoteUri } : {}),
+      ...(post.replyRootUri ? { replyRootUri: post.replyRootUri } : {}),
+      hasImages: post.hasImages ?? false,
+      ...(community ? { communityId: community.communityId } : {}),
+      ...(includeVectors && vector ? { vector } : {}),
+    });
+  }
+  return output;
+}
+async function searchGraphPosts(
+  deps: V4Dependencies,
+  input: JsonRow,
+): Promise<{ generation: string; cursor?: string; queryVectorUsed: QuantizedVector256; posts: PostIntelSkeleton[] }> {
+  const queryText = typeof input.query === "string" ? input.query.trim() : "";
+  if (!queryText || queryText.length > 300) throw new InvalidRequest("query must contain 1..300 characters");
+  const maxHops = integer(input.maxHops, 2, 1, 2);
+  const windowHours = integer(input.windowHours, 168, 1, 336);
+  const maxRage = integer(input.maxRageBaitPermille, 1000, 0, 1000);
+  const minEndorsers = integer(input.minSocialEndorsers, 0, 0, 100);
+  const includeVectors = input.includeVectors === true;
+  const limit = integer(input.limit, 30, 1, 100);
+  const cursor = integer(input.cursor, 0, 0, 100000);
+  const queryVector = input.queryVector === undefined ? await deps.store.encodeQueryText(queryText) : quantizedVectorInput(input.queryVector);
+  const neighborhood = await resolveNeighborhood(deps, deps.viewer, 3000, windowHours);
+  const candidateDids = [...neighborhood.actors]
+    .filter(([, stats]) => stats.hopDistance <= maxHops)
+    .map(([did]) => did)
+    .slice(0, 4000);
+  const seedRows: JsonRow[] = [];
+  const candidateUris: string[] = [];
+  if (neighborhood.clickHouseAvailable && candidateDids.length) {
+    const queryDids = candidateDids.slice(0, 600);
+    const rows = await deps.query(
+      `SELECT concat('at://', did, '/app.bsky.feed.post/', rkey) AS uri, did AS authorDid, rkey, ` +
+      `toString(any(indexed_at)) AS indexedAt, any(text) AS text, any(quote_uri) AS quoteUri, any(reply_root) AS replyRootUri, ` +
+      `any(image_count) AS imageCount, any(engagement_bait) AS engagement_bait, any(heat) AS heat ` +
+      `FROM catbird.posts WHERE did IN (${queryDids.map(sqlString).join(",")}) ` +
+      `AND rkey_date >= toDate(now() - INTERVAL ${windowHours} HOUR) ` +
+      `AND indexed_at >= now() - INTERVAL ${windowHours} HOUR ` +
+      `GROUP BY did, rkey HAVING max(is_deleted) = 0 ORDER BY indexedAt DESC LIMIT 1200`,
+    );
+    for (const row of rows ?? []) {
+      const post = rawPostFromClickHouse(row);
+      if (!post) continue;
+      seedRows.push(row);
+      candidateUris.push(post.uri);
+    }
+  }
+  if (candidateUris.length === 0) {
+    const communityIds = new Set<number>();
+    for (const did of candidateDids) {
+      for (const communityId of deps.store.signalForDid(did)?.topCommunityIds ?? []) communityIds.add(communityId);
+    }
+    for (const community of deps.store.matchingCommunities(queryText, 8)) communityIds.add(community.communityId);
+    for (const communityId of communityIds) {
+      const community = deps.store.community(communityId);
+      if (community) candidateUris.push(...community.samplePostUris);
+    }
+    const searched = await appViewJson(deps.appViewFetch, "app.bsky.feed.searchPosts", { q: queryText, limit: 100, sort: "latest" });
+    for (const value of Array.isArray(searched?.posts) ? searched.posts : []) {
+      const post = rawPostFromAppView(value);
+      if (!post) continue;
+      const inNeighborhood = neighborhood.actors.has(post.authorDid);
+      const actorCommunities = deps.store.signalForDid(post.authorDid)?.topCommunityIds ?? [];
+      if (inNeighborhood || actorCommunities.some((id) => communityIds.has(id))) candidateUris.push(post.uri);
+    }
+  }
+  const uniqueUris = [...new Set(candidateUris)].filter((uri) => {
+    const did = parsePostUri(uri)?.did;
+    const stats = did ? neighborhood.actors.get(did) : undefined;
+    return did !== undefined && stats !== undefined && stats.hopDistance <= maxHops &&
+      !deps.store.isHiddenFromRecommendations(did);
+  });
+  const candidates = await postSkeletons(deps, uniqueUris, true, seedRows, neighborhood.actors);
+  const queryBytes = quantizedBytes(queryVector);
+  const ranked = candidates
+    .filter((post) => (post.hopDistance ?? maxHops) <= maxHops &&
+      (post.rageBaitPermille ?? 0) <= maxRage &&
+      (post.socialEndorserCount ?? 0) >= minEndorsers)
+    .map((post) => ({
+      ...post,
+      similarityPermille: post.vector ? Math.max(-1000, Math.min(1000,
+        Math.round(cosineI8(queryBytes, quantizedBytes(post.vector)) * 1000))) : 0,
+    }))
+    .sort((a, b) => b.similarityPermille - a.similarityPermille ||
+      (b.socialEndorserCount ?? 0) - (a.socialEndorserCount ?? 0) ||
+      b.indexedAt.localeCompare(a.indexedAt));
+  const page = ranked.slice(cursor, cursor + limit).map((post) => {
+    if (includeVectors) return post;
+    const { vector: _vector, ...withoutVector } = post;
+    return withoutVector;
+  });
+  return {
+    generation: deps.store.manifest.generation,
+    ...(cursor + limit < ranked.length ? { cursor: String(cursor + limit) } : {}),
+    queryVectorUsed: queryVector,
+    posts: page,
+  };
+}
+
+async function expandedActors(
+  deps: V4Dependencies,
+  seedDid: string,
+  communityId: number | null,
+  queryText: string | null,
+  windowHours: number,
+  maxRageBaitPermille: number,
+  limit: number,
+): Promise<ActorIntelNode[]> {
+  const neighborhood = await resolveNeighborhood(deps, seedDid, Math.max(limit * 5, 300), windowHours);
+  const candidates = new Map(neighborhood.actors);
+  const selectedCommunities = new Set<number>();
+  if (communityId !== null) selectedCommunities.add(communityId);
+  if (queryText) for (const community of deps.store.matchingCommunities(queryText, 8)) selectedCommunities.add(community.communityId);
+  for (const id of selectedCommunities) {
+    for (const did of deps.store.communityMembers(id, Math.max(limit * 5, 300))) {
+      if (did === seedDid || candidates.has(did)) continue;
+      candidates.set(did, { hopDistance: 2, mutualFollowCount: 0, mutualEngagerCount: 0 });
+    }
+  }
+  const queryVector = queryText ? await deps.store.encodeQueryText(queryText) : null;
+  const queryBytes = queryVector ? quantizedBytes(queryVector) : null;
+  const nodes = await actorNodesForDids(deps, [...candidates.keys()], ["30d", "90d"], true, candidates);
+  for (const node of nodes) {
+    if (!queryBytes) continue;
+    const vector = deps.store.vectorForDid(node.did, "all");
+    if (vector) node.socialAffinityPermille = Math.max(0, Math.min(1000,
+      Math.round((cosineI8(queryBytes, quantizedBytes(vector)) + 1) * 500)));
+  }
+  return nodes
+    .filter((node) => {
+      const signal = deps.store.signalForDid(node.did);
+      if (!signal || !signal.eligible || signal.hiddenFromRecommendations ||
+          signal.rageBaitPermille > maxRageBaitPermille) return false;
+      return selectedCommunities.size === 0 || signal.topCommunityIds.some((id) => selectedCommunities.has(id));
+    })
+    .sort((a, b) => (b.socialAffinityPermille ?? 0) - (a.socialAffinityPermille ?? 0) ||
+      (b.health?.qualityScoreBps ?? 0) - (a.health?.qualityScoreBps ?? 0) ||
+      a.did.localeCompare(b.did))
+    .slice(0, limit);
+}
+async function quoteChain(
+  deps: V4Dependencies,
+  anchorUri: string | null,
+  topicQuery: string | null,
+  windowHours: number,
+  limit: number,
+) {
+  const seedRows: JsonRow[] = [];
+  const candidateUris: string[] = [];
+  if (anchorUri) {
+    const parsedAnchor = parsePostUri(anchorUri);
+    if (parsedAnchor) {
+      const anchorRows = await deps.query(
+        `SELECT concat('at://', did, '/app.bsky.feed.post/', rkey) AS uri, did AS authorDid, rkey, ` +
+        `toString(any(indexed_at)) AS indexedAt, any(text) AS text, any(quote_uri) AS quoteUri, any(reply_root) AS replyRootUri, any(image_count) AS imageCount ` +
+        `FROM catbird.posts WHERE (did, rkey) = (${sqlString(parsedAnchor.did)}, ${sqlString(parsedAnchor.rkey)}) ` +
+        `GROUP BY did, rkey HAVING max(is_deleted) = 0`,
+      );
+      for (const row of anchorRows ?? []) {
+        const post = rawPostFromClickHouse(row);
+        if (post) {
+          seedRows.push(row);
+          candidateUris.push(post.uri);
+        }
+      }
+    }
+  }
+  if (anchorUri) {
+    candidateUris.push(anchorUri);
+    const quoted = await appViewJson(deps.appViewFetch, "app.bsky.feed.getQuotes", { uri: anchorUri, limit: Math.min(100, limit * 2) });
+    for (const value of Array.isArray(quoted?.posts) ? quoted.posts : []) {
+      const post = rawPostFromAppView(value);
+      if (post) candidateUris.push(post.uri);
+    }
+  }
+  if (topicQuery) {
+    const hood = await resolveNeighborhood(deps, deps.viewer, 300, windowHours);
+    const topicDids = new Set<string>(hood.actors.keys());
+    for (const comm of deps.store.matchingCommunities(topicQuery, 6)) {
+      for (const did of deps.store.communityMembers(comm.communityId, 120)) topicDids.add(did);
+    }
+    const scopedDids = [...topicDids].slice(0, 600);
+    if (scopedDids.length) {
+      const topicRows = await deps.query(
+        `SELECT concat('at://', did, '/app.bsky.feed.post/', rkey) AS uri, did AS authorDid, rkey, ` +
+        `toString(any(indexed_at)) AS indexedAt, any(text) AS text, any(quote_uri) AS quoteUri, any(reply_root) AS replyRootUri, any(image_count) AS imageCount ` +
+        `FROM catbird.posts WHERE did IN (${scopedDids.map(sqlString).join(",")}) ` +
+        `AND rkey_date >= toDate(now() - INTERVAL ${windowHours} HOUR) ` +
+        `AND indexed_at >= now() - INTERVAL ${windowHours} HOUR ` +
+        `AND positionCaseInsensitiveUTF8(text, ${sqlString(topicQuery)}) > 0 ` +
+        `GROUP BY did, rkey HAVING max(is_deleted) = 0 ORDER BY indexedAt DESC LIMIT ${Math.max(limit * 3, 60)}`,
+      );
+      for (const row of topicRows ?? []) {
+        const post = rawPostFromClickHouse(row);
+        if (post) {
+          seedRows.push(row);
+          candidateUris.push(post.uri);
+          if (post.quoteUri) candidateUris.push(post.quoteUri);
+        }
+      }
+    }
+    if (candidateUris.length === 0) {
+      const searched = await appViewJson(deps.appViewFetch, "app.bsky.feed.searchPosts", {
+        q: topicQuery,
+        limit: Math.min(100, limit * 2),
+        sort: "latest",
+      });
+      for (const value of Array.isArray(searched?.posts) ? searched.posts : []) {
+        const post = rawPostFromAppView(value);
+        if (post) candidateUris.push(post.uri);
+      }
+    }
+  }
+  const raw = await loadRawPosts(deps, [...new Set(candidateUris)], seedRows);
+  const seedQuoteUri = [...raw.values()].find((post) => !!post.quoteUri)?.uri ?? null;
+  let upstream = anchorUri ?? seedQuoteUri;
+  let originUri = anchorUri ?? (seedQuoteUri ? raw.get(seedQuoteUri)?.quoteUri ?? seedQuoteUri : null);
+  for (let depth = 0; upstream && depth < 12; depth++) {
+    const post = raw.get(upstream) ?? (await loadRawPosts(deps, [upstream])).get(upstream);
+    if (!post?.quoteUri || post.quoteUri === upstream) break;
+    originUri = post.quoteUri;
+    upstream = post.quoteUri;
+    if (!raw.has(upstream)) {
+      const loaded = await loadRawPosts(deps, [upstream]);
+      const ancestor = loaded.get(upstream);
+      if (ancestor) raw.set(upstream, ancestor);
+    }
+  }
+  const allUris = [...new Set([...candidateUris, ...raw.keys()])];
+  const chain = (await postSkeletons(deps, allUris, false, seedRows))
+    .sort((a, b) => a.indexedAt.localeCompare(b.indexedAt))
+    .slice(0, limit);
+  if (!originUri && chain.length) originUri = chain[0]!.uri;
+  const catalyst = [...chain].sort((a, b) => {
+    const aHours = Math.max(1, (deps.now() - Date.parse(a.indexedAt)) / 3_600_000);
+    const bHours = Math.max(1, (deps.now() - Date.parse(b.indexedAt)) / 3_600_000);
+    return (b.quoteCount ?? 0) / bHours - (a.quoteCount ?? 0) / aHours ||
+      (b.likeRepostCount ?? 0) - (a.likeRepostCount ?? 0);
+  })[0];
+  const buckets = new Map<string, { hourStart: string; postCount: number; quoteCount: number; replyCount: number }>();
+  for (const post of chain) {
+    const date = new Date(post.indexedAt);
+    if (!Number.isFinite(date.valueOf())) continue;
+    date.setUTCMinutes(0, 0, 0);
+    const hourStart = date.toISOString();
+    const bucket = buckets.get(hourStart) ?? { hourStart, postCount: 0, quoteCount: 0, replyCount: 0 };
+    bucket.postCount++;
+    if (post.quoteUri) bucket.quoteCount++;
+    if (post.replyRootUri) bucket.replyCount++;
+    buckets.set(hourStart, bucket);
+  }
+  return {
+    generation: deps.store.manifest.generation,
+    ...(originUri ? { originUri } : {}),
+    ...(catalyst ? { catalystUri: catalyst.uri } : {}),
+    chain,
+    hourlyBuckets: [...buckets.values()].sort((a, b) => a.hourStart.localeCompare(b.hourStart)),
+  };
+}
+
+async function topicClusters(
+  deps: V4Dependencies,
+  windowHours: number,
+  queryText: string | null,
+  onlySpiking: boolean,
+  limit: number,
+) {
+  const cappedHours = Math.min(windowHours, 48);
+  const volumeRows = await deps.query(
+    `SELECT m.community AS communityId, ` +
+    `countIf(p.indexed_at >= now() - INTERVAL ${cappedHours} HOUR) AS currentCount, ` +
+    `countIf(p.indexed_at < now() - INTERVAL ${cappedHours} HOUR AND ` +
+    `p.indexed_at >= now() - INTERVAL ${cappedHours * 2} HOUR) AS previousCount, ` +
+    `uniqExactIf(p.did, p.indexed_at >= now() - INTERVAL ${cappedHours} HOUR) AS authorCount ` +
+    `FROM (SELECT did, any(indexed_at) AS indexed_at FROM catbird.posts ` +
+    `WHERE rkey_date >= toDate(now() - INTERVAL ${cappedHours * 2} HOUR) ` +
+    `AND indexed_at >= now() - INTERVAL ${cappedHours * 2} HOUR ` +
+    `GROUP BY did, rkey HAVING max(is_deleted) = 0 LIMIT 250000) AS p ` +
+    `INNER JOIN (SELECT did, argMax(community, updated_at) AS community FROM catbird.author_mode_mix GROUP BY did) AS m ON p.did = m.did ` +
+    `GROUP BY m.community`,
+  );
+  const volumes = new Map<number, JsonRow>();
+  for (const row of volumeRows ?? []) {
+    const communityId = numberValue(row, "communityId", "community_id", "community");
+    if (communityId !== undefined) volumes.set(Math.trunc(communityId), row);
+  }
+  const matchingIds = queryText ? new Set(deps.store.matchingCommunities(queryText, deps.store.communities.length)
+    .map((community) => community.communityId)) : null;
+  const clusters = deps.store.communities.flatMap((community) => {
+    if (matchingIds && !matchingIds.has(community.communityId)) return [];
+    const visibleUris = community.samplePostUris.filter((uri) => {
+      const did = parsePostUri(uri)?.did;
+      return did !== undefined && !deps.store.isHiddenFromRecommendations(did);
+    });
+    const visibleAuthors = new Set([
+      ...community.sampleAccountDids.filter((did) => !deps.store.isHiddenFromRecommendations(did)),
+      ...visibleUris.map((uri) => parsePostUri(uri)!.did),
+    ]);
+    const volume = volumes.get(community.communityId);
+    const currentCount = Math.max(0, Math.trunc(numberValue(volume ?? {}, "currentCount", "current_count", "postCount") ?? visibleUris.length));
+    const previousCount = Math.max(0, Math.trunc(numberValue(volume ?? {}, "previousCount", "previous_count") ?? currentCount));
+    const authorCount = Math.max(0, Math.trunc(numberValue(volume ?? {}, "authorCount", "author_count") ?? visibleAuthors.size));
+    if (currentCount === 0 || (visibleUris.length === 0 && authorCount === 0)) return [];
+    const spikeZScoreBps = Math.max(-10000, Math.min(100000,
+      Math.round((currentCount - previousCount) / Math.sqrt(Math.max(1, previousCount)) * 10000)));
+    if (onlySpiking && spikeZScoreBps < 20000) return [];
+    const rageValues = [...visibleAuthors].map((did) => deps.store.signalForDid(did)?.rageBaitPermille)
+      .filter((value): value is number => value !== undefined);
+    const controversyPermille = rageValues.length ?
+      Math.round(rageValues.reduce((sum, value) => sum + value, 0) / rageValues.length) : 0;
+    const samplePosts: PostIntelSkeleton[] = visibleUris.slice(0, 20).map((uri) => {
+      const parsed = parsePostUri(uri)!;
+      const signal = deps.store.signalForDid(parsed.did);
+      return {
+        uri,
+        authorDid: parsed.did,
+        indexedAt: indexedAtFromPostUri(uri),
+        rageBaitPermille: signal?.rageBaitPermille ?? 0,
+        controversyPermille: signal?.rageBaitPermille ?? 0,
+        communityId: community.communityId,
+      };
+    });
+    return [{
+      clusterId: community.communityId,
+      label: community.label,
+      ...(community.description ? { description: community.description } : {}),
+      ...(community.macroCategory ? { macroCategory: community.macroCategory } : {}),
+      ...(community.sceneSlug ? { sceneSlug: community.sceneSlug } : {}),
+      postCount: currentCount,
+      authorCount,
+      spikeZScoreBps,
+      controversyPermille,
+      centroid: deps.store.communityVector(community),
+      samplePosts,
+    }];
+  });
+  return {
+    generation: deps.store.manifest.generation,
+    clusters: clusters.sort((a, b) => b.spikeZScoreBps - a.spikeZScoreBps ||
+      b.postCount - a.postCount || a.clusterId - b.clusterId).slice(0, limit),
+  };
+}
 export function createApiHandler(options: {
   authenticate?: ServiceAuthenticator;
   catalogEngine?: S17CatalogEngine | null;
+  vectorStore?: IntelVectorStore | null;
+  queryClickHouse?: (sql: string) => Promise<JsonRow[]>;
+  appViewFetch?: AppViewFetch;
+  now?: () => number;
   requireServiceAuth?: boolean;
 } = {}) {
   const authenticate = options.authenticate ?? createServiceAuthenticator();
   const getEngine = () => options.catalogEngine ?? activeCatalogEngine;
+  const getVectorStore = () => Object.prototype.hasOwnProperty.call(options, "vectorStore") ?
+    options.vectorStore ?? null : activeVectorStore;
+  const query: ClickHouseQuery = options.queryClickHouse ? async (sql) => {
+    try { return await options.queryClickHouse!(sql); } catch { return null; }
+  } : optionalClickHouseQuery;
+  const appViewFetch = options.appViewFetch ?? fetch;
+  const now = options.now ?? Date.now;
   const json = (body: Record<string, unknown>, status = 200) =>
     Response.json({ ...body, ...contractMetadata() }, { status, headers: { "cache-control": "no-store" } });
 
@@ -1117,14 +2059,21 @@ export function createApiHandler(options: {
       const url = new URL(request.url);
       const path = url.pathname;
       const engine = getEngine();
+      const vectorStore = getVectorStore();
       if (path === "/health") return json({
         ok: true,
         ready_for_public_promotion: false,
-        blockers: ["derived_generation_unversioned", "live_deletion_overlay_unqualified", "viewer_moderation_requires_hydration"],
+        blockers: ["live_deletion_overlay_unqualified", "viewer_moderation_requires_hydration"],
         telemetry_persistence: "disabled_pending_versioned_schema",
         communities: communitiesById.size,
         communities_with_posts: itemsByCommunity.size,
         author_modes_cached: authorModeByDid.size,
+        ...(vectorStore ? {
+          vector_store_generation: vectorStore.manifest.generation,
+          vector_store_producers: vectorStore.manifest.producerCount,
+          vector_store_vectorized_producers: vectorStore.manifest.vectorizedProducerCount,
+          vector_store_communities: vectorStore.manifest.communityCentroidCount,
+        } : {}),
         ...(engine ? {
           s17_catalog_version: engine.bundle.catalogVersion,
           s17_communities: engine.bundle.communities.length,
@@ -1134,13 +2083,150 @@ export function createApiHandler(options: {
       const method = path.startsWith("/xrpc/") ? path.slice(6) : "blue.catbird.intel.getCommunity";
       const viewer = await authenticate(request, method);
       const unauthenticated = viewer === null; // Never infer authentication from request fields.
-      if (options.requireServiceAuth && path.startsWith("/xrpc/blue.catbird.") && unauthenticated) {
+      const v4Method = V4_METHODS[method] === true;
+      if ((v4Method || (options.requireServiceAuth && path.startsWith("/xrpc/blue.catbird."))) && unauthenticated) {
         return json({ error: "AuthRequired", message: "Service authentication required" }, 401);
       }
       const postRoute = path === "/xrpc/blue.catbird.onboarding.previewTimeline" ||
         path === "/xrpc/blue.catbird.onboarding.solveBundle" ||
-        path === "/xrpc/blue.catbird.onboarding.getCalibrationSwipes";
+        path === "/xrpc/blue.catbird.onboarding.getCalibrationSwipes" ||
+        path === "/xrpc/blue.catbird.intel.getActorVectors" ||
+        path === "/xrpc/blue.catbird.intel.getPostVectors" ||
+        path === "/xrpc/blue.catbird.intel.searchGraphPosts";
       if (request.method !== (postRoute ? "POST" : "GET")) return json({ error: "MethodNotAllowed" }, 405);
+      if (v4Method && !vectorStore) {
+        return json({ error: "UpstreamUnavailable", message: "Intel vector store not loaded" }, 503);
+      }
+      const v4 = v4Method ? {
+        store: vectorStore!,
+        viewer: viewer!,
+        query,
+        appViewFetch,
+        now,
+      } satisfies V4Dependencies : null;
+
+      if (path === "/xrpc/blue.catbird.intel.getGraphNeighborhoodBundle") {
+        const maxTwoHop = integer(url.searchParams.get("maxTwoHopActors"), 1000, 0, 3000);
+        const generation = v4!.store.manifest.generation;
+        const ifNoneMatchGeneration = url.searchParams.get("ifNoneMatchGeneration");
+        if (ifNoneMatchGeneration && ifNoneMatchGeneration.length > 128) {
+          throw new InvalidRequest("ifNoneMatchGeneration exceeds 128 characters");
+        }
+        if (ifNoneMatchGeneration === generation) {
+          return json({ generation, notModified: true, viewerCentroids: [], viewerTopCommunities: [], actors: [] });
+        }
+        const neighborhood = await resolveNeighborhood(v4!, v4!.viewer, maxTwoHop, 168);
+        const recommendableDids = [...neighborhood.actors]
+          .filter(([did]) => {
+            const signal = v4!.store.signalForDid(did);
+            return signal?.eligible === true && !signal.hiddenFromRecommendations && signal.vecRow >= 0;
+          })
+          .sort((a, b) => a[1].hopDistance - b[1].hopDistance ||
+            b[1].mutualEngagerCount - a[1].mutualEngagerCount ||
+            b[1].mutualFollowCount - a[1].mutualFollowCount)
+          .map(([did]) => did);
+        const actors = await actorNodesForDids(
+          v4!,
+          recommendableDids,
+          ["7d", "30d", "90d", "pre_t"],
+          true,
+          neighborhood.actors,
+        );
+        const affinityDids = new Set([...neighborhood.firstHop, ...neighborhood.engagementWeights.keys()]);
+        return json({
+          generation,
+          notModified: false,
+          viewerCentroids: viewerCentroids(v4!.store, neighborhood),
+          viewerTopCommunities: viewerTopCommunities(v4!.store, affinityDids),
+          actors,
+        });
+      }
+
+      if (path === "/xrpc/blue.catbird.intel.getActorVectors") {
+        const body = await bodyInput(request);
+        const dids = parseDidArray(body.dids, "dids", 512);
+        if (dids.length === 0) throw new InvalidRequest("dids must contain 1..512 DIDs");
+        let windows = ["30d", "90d"];
+        if (body.windows !== undefined) {
+          if (!Array.isArray(body.windows) || body.windows.length > 5 ||
+              body.windows.some((window) => typeof window !== "string" ||
+                !["7d", "30d", "90d", "pre_t", "all"].includes(window))) {
+            throw new InvalidRequest("windows contains an unsupported vector window");
+          }
+          windows = body.windows as string[];
+        }
+        if (body.includeMutualStatsForViewer !== undefined && typeof body.includeMutualStatsForViewer !== "boolean") {
+          throw new InvalidRequest("includeMutualStatsForViewer must be boolean");
+        }
+        const actors = await actorNodesForDids(v4!, dids, windows, body.includeMutualStatsForViewer !== false);
+        return json({ generation: v4!.store.manifest.generation, actors });
+      }
+
+      if (path === "/xrpc/blue.catbird.intel.getPostVectors") {
+        const body = await bodyInput(request);
+        if (!Array.isArray(body.uris) || body.uris.length < 1 || body.uris.length > 200 ||
+            body.uris.some((uri) => typeof uri !== "string" || !parsePostUri(uri))) {
+          throw new InvalidRequest("uris must contain 1..200 post AT-URIs");
+        }
+        if (body.includeVectors !== undefined && typeof body.includeVectors !== "boolean") {
+          throw new InvalidRequest("includeVectors must be boolean");
+        }
+        const posts = await postSkeletons(v4!, body.uris as string[], body.includeVectors !== false);
+        return json({ generation: v4!.store.manifest.generation, posts });
+      }
+
+      if (path === "/xrpc/blue.catbird.intel.searchGraphPosts") {
+        const result = await searchGraphPosts(v4!, await bodyInput(request));
+        return json({ ...result });
+      }
+
+      if (path === "/xrpc/blue.catbird.intel.expandGraphNeighborhood") {
+        const seedDid = url.searchParams.get("seedDid") ?? v4!.viewer;
+        if (!/^did:[a-z0-9]+:[^#\s]+$/i.test(seedDid)) throw new InvalidRequest("Invalid seedDid");
+        const communityId = url.searchParams.has("communityId") ?
+          integer(url.searchParams.get("communityId"), 0, 0, 0xffff_ffff) : null;
+        if (communityId !== null && !v4!.store.community(communityId)) throw new InvalidRequest("Unknown communityId");
+        const queryText = url.searchParams.get("q")?.trim() || null;
+        if (queryText && queryText.length > 160) throw new InvalidRequest("q exceeds 160 characters");
+        const windowHours = integer(url.searchParams.get("windowHours"), 168, 1, 720);
+        const maxRage = integer(url.searchParams.get("maxRageBaitPermille"), 1000, 0, 1000);
+        const limit = integer(url.searchParams.get("limit"), 100, 1, 300);
+        const actors = await expandedActors(v4!, seedDid, communityId, queryText, windowHours, maxRage, limit);
+        return json({ generation: v4!.store.manifest.generation, actors });
+      }
+
+      if (path === "/xrpc/blue.catbird.intel.getQuoteChain") {
+        const anchorUri = url.searchParams.get("anchorUri");
+        const topicQuery = url.searchParams.get("topicQuery")?.trim() || null;
+        if (anchorUri && !parsePostUri(anchorUri)) throw new InvalidRequest("Invalid anchorUri");
+        if (topicQuery && topicQuery.length > 200) throw new InvalidRequest("topicQuery exceeds 200 characters");
+        if (!anchorUri && !topicQuery) throw new InvalidRequest("anchorUri or topicQuery is required");
+        const result = await quoteChain(
+          v4!,
+          anchorUri,
+          topicQuery,
+          integer(url.searchParams.get("windowHours"), 72, 1, 336),
+          integer(url.searchParams.get("limit"), 25, 1, 60),
+        );
+        return json({ ...result });
+      }
+
+      if (path === "/xrpc/blue.catbird.intel.getTopicClusters") {
+        const onlySpikingValue = url.searchParams.get("onlySpiking");
+        if (onlySpikingValue !== null && onlySpikingValue !== "true" && onlySpikingValue !== "false") {
+          throw new InvalidRequest("onlySpiking must be boolean");
+        }
+        const queryText = url.searchParams.get("q")?.trim() || null;
+        if (queryText && queryText.length > 160) throw new InvalidRequest("q exceeds 160 characters");
+        const result = await topicClusters(
+          v4!,
+          integer(url.searchParams.get("windowHours"), 24, 1, 720),
+          queryText,
+          onlySpikingValue === "true",
+          integer(url.searchParams.get("limit"), 25, 1, 100),
+        );
+        return json({ ...result });
+      }
 
       if (path === "/xrpc/blue.catbird.onboarding.getCatalog") {
         if (!engine) return json({ error: "UpstreamUnavailable", message: "S17 catalog bundle not loaded" }, 503);
@@ -1313,6 +2399,16 @@ if (import.meta.main) {
       `Loaded S17 catalog bundle ${activeCatalogEngine.bundle.catalogVersion}: ${activeCatalogEngine.bundle.communities.length} communities across ${activeCatalogEngine.bundle.scenes.length} scenes`,
     );
   }
+  const vectorStoreDirectory = process.env.INTEL_VECTOR_STORE_DIR ??
+    (existsSync(`${DEFAULT_INTEL_VECTOR_STORE_DIR}/manifest.json`) ? DEFAULT_INTEL_VECTOR_STORE_DIR : null);
+  if (vectorStoreDirectory) {
+    activeVectorStore = IntelVectorStore.fromDirectory(vectorStoreDirectory);
+    console.log(
+      `Loaded Intel vectors ${activeVectorStore.manifest.generation}: ` +
+      `${activeVectorStore.manifest.vectorizedProducerCount}/${activeVectorStore.manifest.producerCount} producers, ` +
+      `${activeVectorStore.manifest.communityCentroidCount} communities`,
+    );
+  }
   if (process.env.INTEL_SKIP_CLICKHOUSE !== "1") {
     try {
       await refreshServingCache();
@@ -1320,8 +2416,8 @@ if (import.meta.main) {
         void refreshServingCache().catch((error) => console.error("cache refresh failed", String(error)));
       }, 120000);
     } catch (error) {
-      if (!activeCatalogEngine) throw error;
-      console.warn("ClickHouse cache unavailable; serving from S17 catalog bundle:", String(error));
+      if (!activeCatalogEngine && !activeVectorStore) throw error;
+      console.warn("ClickHouse cache unavailable; serving from local intelligence files:", String(error));
     }
   }
   const serviceAudience = process.env.INTEL_SERVICE_DID ?? "did:web:intel.catbird.blue#catbird_intel";
@@ -1329,10 +2425,12 @@ if (import.meta.main) {
   const authenticate = createServiceAuthenticator({
     audience: serviceAudience,
     resolveAtprotoKey: createDidKeyResolver(),
+    internalBffSecret: process.env.INTEL_INTERNAL_BFF_SECRET,
   });
   const server = Bun.serve({
     hostname: process.env.HOST ?? "127.0.0.1",
     port: Number(process.env.PORT ?? 3210),
+    idleTimeout: 60,
     maxRequestBodySize: 65536,
     fetch: createApiHandler({ authenticate, requireServiceAuth }),
   });

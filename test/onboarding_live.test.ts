@@ -131,7 +131,9 @@ function engineWith(options: {
   return new LiveOnboardingEngine({
     catalog: new S17CatalogEngine(bundle),
     pool: options.pool === false ? null : buildPool(bundle),
-    followsFetcher: options.fetcher ?? (async (_did, onPage) => onPage(follows)),
+    followsFetcher: options.fetcher ?? (async (_did, onPage) => {
+      onPage(follows);
+    }),
     // A signed-out viewer's order is the first draw; later draws only label session ids.
     random: () => (draws++ === 0 ? (options.seed ?? 0.123456) : 0.5),
     // A signed-in viewer's order comes from their DID, the time and this salt.
@@ -244,21 +246,17 @@ describe("live onboarding: sizing", () => {
     expect(solved.summary.coveredCommunities).toBe(3);
   });
 
-  test("an account in two picked scenes is followed once and the second scene still fills its share", async () => {
-    // A seed that puts the shared account in the first six of both scenes.
-    for (let seed = 0.01; seed < 1; seed += 0.01) {
-      const engine = engineWith({ seed });
-      const a = (await engine.getCommunity(101, VIEWER))!.members.slice(0, 6).map((m) => m.did);
-      const b = (await engine.getCommunity(102, VIEWER))!.members.slice(0, 6).map((m) => m.did);
-      if (!a.includes(SHARED) || !b.includes(SHARED)) continue;
-      const solved = await engine.solveBundle({ selections: [pick(101), pick(102)] }, VIEWER);
-      const dids = solved.follows.map((f) => f.did);
-      expect(dids.filter((did) => did === SHARED)).toHaveLength(1);
-      expect(solved.follows.filter((f) => f.communityId === 102)).toHaveLength(6);
-      for (const did of [...a, ...b]) expect(dids).toContain(did); // everyone shown is followed
-      return;
-    }
-    throw new Error("no seed placed the shared account in both prefixes");
+  test("an account listed under two scenes belongs to one of them, and both scenes fill their share", async () => {
+    const engine = engineWith({ config: { sheetDepth: 200 } });
+    const a = (await engine.getCommunity(101, VIEWER))!.members.map((m) => m.did);
+    const b = (await engine.getCommunity(102, VIEWER))!.members.map((m) => m.did);
+    expect([a.includes(SHARED), b.includes(SHARED)]).toEqual([true, false]); // the catalog's first scene keeps it
+    const solved = await engine.solveBundle({ selections: [pick(102), pick(101)] }, VIEWER);
+    const dids = solved.follows.map((f) => f.did);
+    expect(new Set(dids).size).toBe(dids.length);
+    expect(solved.follows.filter((f) => f.communityId === 101)).toHaveLength(6);
+    expect(solved.follows.filter((f) => f.communityId === 102)).toHaveLength(6);
+    for (const did of [...a.slice(0, 6), ...b.slice(0, 6)]) expect(dids).toContain(did); // everyone shown is followed
   });
 
   test("an older client's targetSize is one total, split by weight, still a prefix of each list", async () => {
@@ -364,8 +362,14 @@ describe("live onboarding: rotation and variety", () => {
     expect(await order(make(0.11), VIEWER)).toEqual(await order(make(0.93), VIEWER));
     const someoneElse = { did: "did:plc:viewer00000000000000002", unauthenticated: false };
     expect(await order(make(0.11), someoneElse)).not.toEqual(await order(make(0.11), VIEWER));
-    // A signed-out viewer has no identity to derive an order from, so theirs is drawn.
-    expect(await order(make(0.11), ANON)).not.toEqual(await order(make(0.93), ANON));
+    // Signed-out viewers share one order a day, also the same on every instance.
+    expect(await order(make(0.11), ANON)).toEqual(await order(make(0.93), ANON));
+    const tomorrow = new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: buildPool(bundle),
+      now: () => FIXED_NOW + 86_400_000,
+    });
+    expect(await order(tomorrow, ANON)).not.toEqual(await order(make(0.11), ANON));
   });
 
   test("a session expires and the next one reshuffles", async () => {
@@ -443,7 +447,9 @@ describe("live onboarding: rotation and variety", () => {
           catalog: new S17CatalogEngine(bundle),
           pool: buildPool(bundle),
           vectors: personalised ? { rawVectorForDid: (did) => vector(did) } : null,
-          followsFetcher: async (_did, onPage) => onPage(follows),
+          followsFetcher: async (_did, onPage) => {
+            onPage(follows);
+          },
           now: () => FIXED_NOW,
           orderSalt: i + 1, // sixty different orders for the same viewer
         });
@@ -530,8 +536,177 @@ describe("live onboarding: fallbacks and surfaces", () => {
     const fetcher = createPublicFollowsFetcher({
       fetcher: async (url) => Response.json(pages[url.searchParams.get("cursor") ?? ""]),
     });
-    await fetcher("did:plc:viewer", (dids) => seen.push(...dids));
+    await fetcher("did:plc:viewer", (dids) => {
+      seen.push(...dids);
+    });
     expect(seen).toEqual(["did:plc:a", "did:plc:b"]);
+  });
+});
+
+describe("live onboarding: bounds and follow loading", () => {
+  test("signed-out viewers share nothing: one request's follows never reach another", async () => {
+    const engine = engineWith();
+    const before = (await engine.getCommunity(101, ANON))!.members.map((m) => m.did);
+    const followed = [before[0]!, before[2]!];
+    const withSeeds = await engine.solveBundle({ selections: [pick(101)], seedFollowDids: followed }, ANON);
+    expect(withSeeds.follows).toHaveLength(6);
+    for (const follow of withSeeds.follows) expect(followed).not.toContain(follow.did);
+    // The next signed-out request, from anyone, sees the scene as if nothing had been sent.
+    expect((await engine.getCommunity(101, ANON))!.members.map((m) => m.did)).toEqual(before);
+    expect(engine.describe().onboarding_sessions).toBe(0);
+  });
+
+  test("only follows the engine could offer are remembered, up to a ceiling", async () => {
+    const strangers = Array.from({ length: 500 }, (_, i) => `did:plc:stranger${i}`);
+    const engine = engineWith({
+      follows: [...strangers, ...Array.from({ length: 10 }, (_, i) => memberDid(101, i + 4))],
+      config: { maxKeptFollows: 4, sheetDepth: 200 },
+    });
+    const sheet = (await engine.getCommunity(101, VIEWER))!.members.map((m) => m.did);
+    const hidden = Array.from({ length: 10 }, (_, i) => memberDid(101, i + 4)).filter((did) => !sheet.includes(did));
+    // Five hundred follows outside the catalog took none of the four places.
+    expect(hidden).toEqual([4, 5, 6, 7].map((i) => memberDid(101, i)));
+  });
+
+  test("taste comes from the first page of follows, however much more arrives", async () => {
+    const vector = (did: string): Uint8Array | null => {
+      const m = /m(\d{4})$/.exec(did);
+      if (!m) return null;
+      const out = new Uint8Array(256);
+      out[Number(m[1]) % 2] = 100;
+      return out;
+    };
+    const even = Array.from({ length: 12 }, (_, i) => memberDid(104, i * 2));
+    const odd = Array.from({ length: 12 }, (_, i) => memberDid(104, i * 2 + 1));
+    const bundle = buildBundle();
+    const order = async (pages: string[][]) => {
+      const engine = new LiveOnboardingEngine({
+        catalog: new S17CatalogEngine(bundle),
+        pool: buildPool(bundle),
+        vectors: { rawVectorForDid: (did) => vector(did) },
+        followsFetcher: async (_did, onPage) => {
+          for (const page of pages) onPage(page);
+        },
+        now: () => FIXED_NOW,
+        orderSalt: 7,
+      });
+      return (await engine.getCommunity(103, VIEWER))!.members.map((m) => m.did);
+    };
+    expect(await order([even, odd])).toEqual(await order([even]));
+    expect(await order([even, odd])).not.toEqual(await order([odd, even]));
+  });
+
+  test("a failed follow-list load is retried after a short wait, not at once and not never", async () => {
+    let t = FIXED_NOW;
+    let calls = 0;
+    const bundle = buildBundle();
+    const followed = memberDid(101, 1);
+    const engine = new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: buildPool(bundle),
+      now: () => t,
+      followsFetcher: async (_did, onPage) => {
+        calls += 1;
+        if (calls === 1) throw new Error("public API unavailable");
+        onPage([followed]);
+      },
+    });
+    const shows = async () => (await engine.getCommunity(101, VIEWER))!.members.some((m) => m.did === followed) ||
+      !(await engine.solveBundle({ selections: [pick(101, 2)], targetSize: 200 }, VIEWER)).follows
+        .every((f) => f.did !== followed);
+    expect(await shows()).toBe(true); // nothing loaded yet, so the account can still be offered
+    t += 10_000;
+    await engine.getCommunity(101, VIEWER);
+    expect(calls).toBe(1);
+    t += 25_000;
+    await engine.getCommunity(101, VIEWER);
+    expect(calls).toBe(2);
+    expect(await shows()).toBe(false);
+  });
+
+  test("a refresh stops at the follow that was newest last time", async () => {
+    let t = FIXED_NOW;
+    const requested: number[] = [];
+    let pages = [[memberDid(101, 1), "did:plc:x1"], ["did:plc:x2"], ["did:plc:x3"]];
+    const bundle = buildBundle();
+    const engine = new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: buildPool(bundle),
+      now: () => t,
+      followsFetcher: async (_did, onPage) => {
+        let count = 0;
+        for (const page of pages) {
+          count += 1;
+          if (onPage(page) === true) break;
+        }
+        requested.push(count);
+      },
+    });
+    await engine.getCommunity(101, VIEWER);
+    expect(requested).toEqual([3]);
+    // The viewer follows one more account; the refresh reads one page and stops.
+    pages = [[memberDid(101, 2), memberDid(101, 1), "did:plc:x1"], ["did:plc:x2"], ["did:plc:x3"]];
+    t += 11 * 60_000;
+    await engine.getCommunity(101, VIEWER);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(requested).toEqual([3, 1]);
+    const sheet = (await engine.getCommunity(101, VIEWER))!.members.map((m) => m.did);
+    expect(sheet).not.toContain(memberDid(101, 2));
+  });
+
+  test("follow lists load a few at a time across viewers", async () => {
+    let active = 0;
+    let most = 0;
+    const bundle = buildBundle();
+    const engine = new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: buildPool(bundle),
+      now: () => FIXED_NOW,
+      config: { maxFollowLoads: 2 },
+      followsFetcher: async (_did, onPage) => {
+        active += 1;
+        most = Math.max(most, active);
+        await new Promise((resolve) => setTimeout(resolve, 3));
+        onPage([]);
+        active -= 1;
+      },
+    });
+    await Promise.all(Array.from({ length: 7 }, (_, i) =>
+      engine.getCommunity(101, { did: `did:plc:viewer0000000000000000${i}`, unauthenticated: false })));
+    expect(most).toBe(2);
+    expect(active).toBe(0);
+  });
+
+  test("an older client asking for more than a scene's sheet shows gets only what the sheet shows", async () => {
+    const engine = engineWith();
+    const solved = await engine.solveBundle({ selections: [pick(101)], targetSize: 200 }, VIEWER);
+    const sheet = (await engine.getCommunity(101, VIEWER))!.members.map((m) => m.did);
+    expect(solved.follows.length).toBeLessThanOrEqual(40);
+    expect(solved.follows.map((f) => f.did)).toEqual(sheet.slice(0, solved.follows.length));
+  });
+
+  test("pins stop at the most one lineup may follow", async () => {
+    const engine = engineWith({ config: { maxLegacyTotal: 10 } });
+    const pinned = Array.from({ length: 30 }, (_, i) => memberDid(104, i));
+    const solved = await engine.solveBundle({ selections: [pick(101)], pinnedDids: pinned }, VIEWER);
+    expect(solved.follows).toHaveLength(10);
+    expect(solved.follows.filter((f) => f.communityId === 101)).toHaveLength(6);
+  });
+
+  test("a viewer who opens more scenes than are held gets the same order when one is rebuilt", async () => {
+    const engine = engineWith({ config: { maxListsPerSession: 2 } });
+    const first = (await engine.getCommunity(101, VIEWER))!.members.map((m) => m.did);
+    for (const communityId of [102, 103, 104]) await engine.getCommunity(communityId, VIEWER);
+    expect((await engine.getCommunity(101, VIEWER))!.members.map((m) => m.did)).toEqual(first);
+  });
+
+  test("the preview is of the lineup that will be committed: exclusions and pins included", async () => {
+    const engine = engineWith();
+    const lineup = await engine.solveBundle({ selections: [pick(101)] }, VIEWER);
+    const dropped = lineup.follows[0]!.did;
+    const preview = await engine.previewTimeline({ selections: [pick(101)], excludedDids: [dropped], limit: 40 }, VIEWER);
+    expect(preview.items.length).toBeGreaterThan(0);
+    for (const item of preview.items) expect(item.post.startsWith(`at://${dropped}/`)).toBe(false);
   });
 });
 

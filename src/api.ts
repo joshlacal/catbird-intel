@@ -2351,7 +2351,21 @@ export function createApiHandler(options: {
           const controls = parseCanonicalControlsInput(body.controls);
           if (path.endsWith(".previewTimeline")) {
             const limit = integer(body.limit, 20, 1, 40);
-            if (live) return json(await live.previewTimeline({ selections, swipes, controls, limit }, viewerRef));
+            if (live) {
+              // The preview takes the lineup's own inputs, so it previews the lineup that will be committed.
+              const previewTarget = body.targetSize === undefined || body.targetSize === null ? undefined :
+                integer(body.targetSize, 24, 8, live.config.maxLegacyTotal);
+              return json(await live.previewTimeline({
+                selections,
+                swipes,
+                controls,
+                limit,
+                targetSize: previewTarget,
+                pinnedDids: parseDidArray(body.pinnedDids, "pinnedDids", 200),
+                excludedDids: parseDidArray(body.excludedDids, "excludedDids", 500),
+                seedFollowDids,
+              }, viewerRef));
+            }
             return json(engine.previewTimeline({ selections, swipes, controls, limit, unauthenticated }));
           }
           if (live) {

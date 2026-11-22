@@ -38,7 +38,7 @@ const engine = new LiveOnboardingEngine({
   catalog,
   pool,
   vectors,
-  followsFetcher: async (did: string, onPage: (dids: string[]) => void) => onPage(followLists.get(did) ?? []),
+  followsFetcher: async (did: string, onPage: (dids: string[]) => boolean | void) => { onPage(followLists.get(did) ?? []); },
   config: { maxSessions: sessions + 10 },
 });
 

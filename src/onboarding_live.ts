@@ -46,8 +46,12 @@ export interface FollowSpaceVectors {
   rawVectorForDid(did: string, window: "t1"): Uint8Array | null;
 }
 
-/** Loads a viewer's follow list page by page. Rejecting or returning early leaves a partial list in place. */
-export type FollowsFetcher = (viewerDid: string, onPage: (dids: string[]) => void) => Promise<void>;
+/** Loads a viewer's follow list page by page. Rejecting leaves a partial list in place and is retried soon. */
+export type FollowsFetcher = (
+  viewerDid: string,
+  /** Called with each page, newest follows first. Returning true stops the load early. */
+  onPage: (dids: string[]) => boolean | void,
+) => Promise<void>;
 
 /** Live activity signals. A multiplier of 0 removes the account from new lists; null means "no data". */
 export interface LiveAccountSignals {
@@ -82,6 +86,14 @@ export interface LiveOnboardingConfig {
   /** How long the first request of a session waits for the follow list before answering with what it has. */
   followsBudgetMs: number;
   followsRefreshMs: number;
+  /** How long to wait after a failed follow-list load before trying again. */
+  followsRetryMs: number;
+  /** Follow-list loads running at once across all viewers. */
+  maxFollowLoads: number;
+  /** Offerable accounts remembered as followed, per viewer. */
+  maxKeptFollows: number;
+  /** Scene orders held per viewer; the least recently used is dropped beyond this. */
+  maxListsPerSession: number;
   /**
    * An account's draw weight is 1 / (rank + rotationOffset) ^ rotationSharpness, where rank is its
    * position in the picker's order. A higher exponent keeps the strongest accounts first more
@@ -117,6 +129,10 @@ export const LIVE_ONBOARDING_DEFAULTS: LiveOnboardingConfig = {
   maxSessions: 4000,
   followsBudgetMs: 1200,
   followsRefreshMs: 10 * 60_000,
+  followsRetryMs: 30_000,
+  maxFollowLoads: 8,
+  maxKeptFollows: 10_000,
+  maxListsPerSession: 600,
   rotationSharpness: 1.5,
   rotationOffset: 3,
   personalBeta: 0.35,
@@ -137,11 +153,21 @@ interface OrderedMember {
 interface Session {
   seed: number;
   lastSeenAt: number;
+  /** The accounts the viewer follows that this engine could offer. Their other follows are not kept. */
   follows: Set<string>;
   followsLoad: Promise<void> | null;
   followsLoading: boolean;
+  /** When the follow list was last loaded to the end; null until that has happened once. */
   followsLoadedAt: number | null;
-  /** undefined until the first list is built; null when the viewer has too few follows to infer taste. */
+  /** The earliest time another load may start. */
+  followsNextAt: number;
+  /** The viewer's most recent follow at the last complete load. A refresh stops when it meets it. */
+  newestFollow: string | null;
+  /**
+   * The viewer's taste, from the first page of their follows. undefined until that page arrives
+   * or the first list is built without it; null when there is too little to infer taste from.
+   * Set once and never changed, so every scene in a session is ordered by the same taste.
+   */
   centroid: Float32Array | null | undefined;
   /** Per scene, the viewer's order as positions in that scene's member list: a few hundred bytes each. */
   lists: Map<number, Uint16Array>;
@@ -227,6 +253,8 @@ export class LiveOnboardingEngine {
   private readonly postCentroids = new Map<number, Int8Array>();
   private readonly nearestCache = new Map<number, number[]>();
   private readonly sessions = new Map<string, Session>();
+  private followLoadsActive = 0;
+  private readonly followLoadWaiters: Array<() => void> = [];
   private readonly poolNoUnauth = new Set<string>();
   /** Why a supplied pool was not used, if it was not. */
   readonly poolSkipped: string | null;
@@ -265,24 +293,30 @@ export class LiveOnboardingEngine {
     const poolByCommunity = new Map<number, IntelMemberEntry[]>();
     for (const entry of pool?.communities ?? []) poolByCommunity.set(entry.communityId, entry.members);
 
+    // Every account belongs to one scene. The catalog's own members claim theirs first, in catalog
+    // order; the pool then adds depth behind them, and never moves an account the catalog placed.
+    // (An account in two scenes would be followed through one and silently missing from the other.)
     for (const community of this.catalog.bundle.communities) {
-      // The bundle's own members stay first and verbatim; the pool only adds depth behind them.
-      const merged: IntelMemberEntry[] = [];
-      const seen = new Set<string>();
-      for (const member of [...community.members, ...(poolByCommunity.get(community.communityId) ?? [])]) {
-        if (seen.has(member.did) || !this.catalog.isAccountAllowed(member.did, false)) continue;
-        seen.add(member.did);
+      const own: IntelMemberEntry[] = [];
+      for (const member of community.members) {
+        if (this.memberHome.has(member.did) || !this.catalog.isAccountAllowed(member.did, false)) continue;
+        this.memberHome.set(member.did, { communityId: community.communityId, member });
+        own.push(member);
+      }
+      this.membersByCommunity.set(community.communityId, own);
+    }
+    for (const community of this.catalog.bundle.communities) {
+      const merged = this.membersByCommunity.get(community.communityId)!;
+      for (const member of poolByCommunity.get(community.communityId) ?? []) {
+        if (this.memberHome.has(member.did) || !this.catalog.isAccountAllowed(member.did, false)) continue;
+        this.memberHome.set(member.did, { communityId: community.communityId, member });
         merged.push(member);
       }
-      this.membersByCommunity.set(community.communityId, merged);
       const centroid = Buffer.from(community.centPostsInt8B64, "base64");
       if (centroid.byteLength > 0) {
         this.postCentroids.set(community.communityId, new Int8Array(centroid.buffer, centroid.byteOffset, centroid.byteLength));
       }
       this.poolMemberCount += merged.length;
-      for (const member of merged) {
-        if (!this.memberHome.has(member.did)) this.memberHome.set(member.did, { communityId: community.communityId, member });
-      }
     }
   }
 
@@ -311,23 +345,44 @@ export class LiveOnboardingEngine {
   // Sessions and follow lists
   // ---------------------------------------------------------------------------------------------
 
+  private newSession(seed: number, t: number): Session {
+    return {
+      seed,
+      lastSeenAt: t,
+      follows: new Set<string>(),
+      followsLoad: null,
+      followsLoading: false,
+      followsLoadedAt: null,
+      followsNextAt: 0,
+      newestFollow: null,
+      centroid: undefined,
+      lists: new Map(),
+    };
+  }
+
+  /** Remembers which offerable accounts the viewer follows. Anything else cannot affect a list. */
+  private noteFollows(session: Session, dids: Iterable<string>): void {
+    for (const did of dids) {
+      if (session.follows.size >= this.config.maxKeptFollows) return;
+      if (this.memberHome.has(did)) session.follows.add(did);
+    }
+  }
+
   private async session(viewer: ViewerRef, seedFollowDids: readonly string[] = []): Promise<Session> {
-    const key = viewer.did ?? "anonymous";
     const t = this.now();
+    if (!viewer.did) {
+      // A signed-out viewer has no identity to keep anything under, so nothing is kept: one
+      // request's follows can never show up in another's. The order comes from the day instead.
+      const session = this.newSession(this.seedFor(viewer, t), t);
+      this.noteFollows(session, seedFollowDids);
+      session.centroid = this.tasteCentroid(seedFollowDids);
+      return session;
+    }
+    const key = viewer.did;
     let session = this.sessions.get(key);
-    if (session && t - session.lastSeenAt <= this.config.sessionTtlMs) {
-      this.sessions.delete(key); // re-insert so eviction drops the least recently used session
-    } else {
-      session = {
-        seed: this.seedFor(viewer, t),
-        lastSeenAt: t,
-        follows: new Set<string>(),
-        followsLoad: null,
-        followsLoading: false,
-        followsLoadedAt: null,
-        centroid: undefined,
-        lists: new Map(),
-      };
+    this.sessions.delete(key); // re-inserted below, so eviction drops the least recently used
+    if (!session || t - session.lastSeenAt > this.config.sessionTtlMs) {
+      session = this.newSession(this.seedFor(viewer, t), t);
     }
     this.sessions.set(key, session);
     while (this.sessions.size > this.config.maxSessions) {
@@ -336,19 +391,25 @@ export class LiveOnboardingEngine {
       this.sessions.delete(oldest);
     }
     session.lastSeenAt = t;
-    for (const did of seedFollowDids) session.follows.add(did);
+    this.noteFollows(session, seedFollowDids);
 
-    if (viewer.did && this.followsFetcher) {
-      const firstLoad = session.followsLoad === null;
-      const stale = session.followsLoadedAt !== null && t - session.followsLoadedAt > this.config.followsRefreshMs;
-      if ((firstLoad || stale) && !session.followsLoading) this.startFollowsLoad(session, viewer.did);
-      // Only the first load is worth waiting for; a refresh adds the few accounts followed since.
-      if (session.followsLoading && session.followsLoadedAt === null && session.followsLoad) {
-        await Promise.race([
-          session.followsLoad,
-          new Promise<void>((resolve) => setTimeout(resolve, this.config.followsBudgetMs)),
-        ]);
+    if (!this.followsFetcher) {
+      if (session.centroid === undefined && seedFollowDids.length > 0) {
+        session.centroid = this.tasteCentroid(seedFollowDids);
       }
+      return session;
+    }
+    if (!session.followsLoading && t >= session.followsNextAt) this.startFollowsLoad(session, viewer.did);
+    // Only the first load is worth waiting for; a refresh adds the few accounts followed since.
+    if (session.followsLoading && session.followsLoadedAt === null && session.followsLoad) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        session.followsLoad,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.config.followsBudgetMs);
+        }),
+      ]);
+      clearTimeout(timer);
     }
     return session;
   }
@@ -360,7 +421,8 @@ export class LiveOnboardingEngine {
    * viewer, so an expired session always falls in a later stretch and reshuffles.
    */
   private seedFor(viewer: ViewerRef, t: number): number {
-    if (!viewer.did) return Math.floor(this.random() * 0x1_0000_0000) >>> 0;
+    // Signed-out viewers share one order per day: the same on every request and every instance.
+    if (!viewer.did) return seededHash(`signed-out:${Math.floor(t / 86_400_000)}`, this.orderSalt);
     const stretch = this.config.sessionTtlMs;
     const offset = seededHash(viewer.did, 0x5eed) % stretch;
     return seededHash(`${viewer.did}:${Math.floor((t + offset) / stretch)}`, this.orderSalt);
@@ -368,14 +430,50 @@ export class LiveOnboardingEngine {
 
   private startFollowsLoad(session: Session, viewerDid: string): void {
     session.followsLoading = true;
-    session.followsLoad = this.followsFetcher!(viewerDid, (dids) => {
-      for (const did of dids) session.follows.add(did);
-    })
-      .catch(() => undefined) // a partial follow list is still better than none
-      .then(() => {
-        session.followsLoading = false;
+    // After one complete load, a refresh only needs the follows made since: it stops at the
+    // account that was newest last time.
+    const stopAt = session.followsLoadedAt === null ? null : session.newestFollow;
+    let newest: string | null | undefined;
+    const run = async () => {
+      await this.acquireFollowLoad();
+      try {
+        await this.followsFetcher!(viewerDid, (dids) => {
+          if (newest === undefined) {
+            newest = dids[0] ?? null;
+            // Taste comes from the first page alone (the hundred most recent follows), so it does
+            // not depend on how much of a long follow list had arrived when a list was first built.
+            if (session.centroid === undefined) session.centroid = this.tasteCentroid(dids);
+          }
+          this.noteFollows(session, dids);
+          return stopAt !== null && dids.includes(stopAt);
+        });
         session.followsLoadedAt = this.now();
-      });
+        session.followsNextAt = session.followsLoadedAt + this.config.followsRefreshMs;
+        if (newest) session.newestFollow = newest;
+      } catch {
+        // What arrived is still used; the rest is tried again shortly.
+        session.followsNextAt = this.now() + this.config.followsRetryMs;
+      } finally {
+        this.releaseFollowLoad();
+        session.followsLoading = false;
+      }
+    };
+    session.followsLoad = run();
+  }
+
+  /** Bounds how many follow lists are being loaded from the public API at once. */
+  private acquireFollowLoad(): Promise<void> {
+    if (this.followLoadsActive < this.config.maxFollowLoads) {
+      this.followLoadsActive += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => this.followLoadWaiters.push(resolve));
+  }
+
+  private releaseFollowLoad(): void {
+    const next = this.followLoadWaiters.shift();
+    if (next) next(); // the slot passes straight to the next waiter
+    else this.followLoadsActive -= 1;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -388,8 +486,8 @@ export class LiveOnboardingEngine {
     return "core";
   }
 
-  /** Unit-length mean of the follow-space vectors of the accounts the viewer follows. */
-  private tasteCentroid(follows: ReadonlySet<string>): Float32Array | null {
+  /** Unit-length mean of the follow-space vectors of the given accounts. */
+  private tasteCentroid(follows: Iterable<string>): Float32Array | null {
     if (!this.vectors) return null;
     const sum = new Float32Array(VECTOR_DIMS);
     let used = 0;
@@ -432,6 +530,8 @@ export class LiveOnboardingEngine {
     const members = this.membersByCommunity.get(communityId) ?? [];
     const cached = session.lists.get(communityId);
     if (cached) {
+      session.lists.delete(communityId); // re-inserted: the least recently read scene is dropped first
+      session.lists.set(communityId, cached);
       const restored: OrderedMember[] = new Array(cached.length);
       for (let i = 0; i < cached.length; i++) {
         const member = members[cached[i]!]!;
@@ -439,7 +539,9 @@ export class LiveOnboardingEngine {
       }
       return restored;
     }
-    if (session.centroid === undefined) session.centroid = this.tasteCentroid(session.follows);
+    // From here on the session's taste is settled: a first page of follows that arrives later
+    // does not change it, so scenes built before and after it are ordered the same way.
+    if (session.centroid === undefined) session.centroid = null;
     const centroid = session.centroid;
 
     // Closeness to the viewer's taste is compared within the scene, so it reorders a scene's
@@ -493,6 +595,11 @@ export class LiveOnboardingEngine {
     const position = new Map<IntelMemberEntry, number>();
     members.forEach((member, index) => position.set(member, index));
     session.lists.set(communityId, Uint16Array.from(ordered, (entry) => position.get(entry.member)!));
+    while (session.lists.size > this.config.maxListsPerSession) {
+      const oldest = session.lists.keys().next().value;
+      if (oldest === undefined) break;
+      session.lists.delete(oldest);
+    }
     return ordered;
   }
 
@@ -789,9 +896,15 @@ export class LiveOnboardingEngine {
       const total = clamp(targetSize, 1, this.config.maxLegacyTotal);
       const weights = [...picked.map((p) => (p.boosted ? 2 : 1)), ...duelAdds.map(() => 0.5)];
       const quotas = allocateByWeight(total, weights);
+      // A scene never gives more than its sheet shows, so every follow can be seen before it is made.
+      const shown = (quota: number) => Math.min(quota, this.config.sheetDepth);
       return [
-        ...picked.map((p, i) => ({ communityId: p.communityId, quota: quotas[i]!, picked: true })),
-        ...duelAdds.map((communityId, i) => ({ communityId, quota: quotas[picked.length + i]!, picked: false })),
+        ...picked.map((p, i) => ({ communityId: p.communityId, quota: shown(quotas[i]!), picked: true })),
+        ...duelAdds.map((communityId, i) => ({
+          communityId,
+          quota: shown(quotas[picked.length + i]!),
+          picked: false,
+        })),
       ];
     }
 
@@ -859,20 +972,13 @@ export class LiveOnboardingEngine {
     }
 
     // Pins are accounts the viewer ticked themselves. They are added to the lineup, never traded
-    // against a scene's own share.
+    // against a scene's own share, up to the most one lineup may follow.
     const extras: Pick[] = [];
     for (const did of params.pinnedDids ?? []) {
+      if (used.size >= this.config.maxLegacyTotal) break;
       if (used.has(did) || excluded.has(did) || session.follows.has(did)) continue;
       if (!this.allowed(did, viewer)) continue;
-      let home: { communityId: number; member: IntelMemberEntry } | undefined;
-      for (const scene of plan) {
-        const member = this.membersByCommunity.get(scene.communityId)?.find((m) => m.did === did);
-        if (member) {
-          home = { communityId: scene.communityId, member };
-          break;
-        }
-      }
-      home ??= this.memberHome.get(did);
+      const home = this.memberHome.get(did);
       if (!home) continue;
       used.add(did);
       const group = groups.get(home.communityId);
@@ -952,13 +1058,22 @@ export class LiveOnboardingEngine {
     swipes?: CalibrationSwipeAnswerInput[];
     controls?: BundleControlsInput;
     limit?: number;
+    targetSize?: number;
+    pinnedDids?: string[];
+    excludedDids?: string[];
+    seedFollowDids?: string[];
   }, viewer: ViewerRef) {
+    // Solved with everything the lineup will be solved with, so the preview is of that lineup.
     const solved = await this.solveBundle({
       selections: params.selections,
       swipes: params.swipes,
       controls: params.controls,
+      targetSize: params.targetSize,
+      pinnedDids: params.pinnedDids,
+      excludedDids: params.excludedDids,
+      seedFollowDids: params.seedFollowDids,
     }, viewer);
-    const session = await this.session(viewer);
+    const session = await this.session(viewer, params.seedFollowDids);
     const limit = clamp(params.limit ?? 20, 1, 40);
     const items: { post: string; communityId: number; communityTitle: string; authorRole: string }[] = [];
     const seen = new Set<string>();
@@ -1049,14 +1164,14 @@ export function createPublicFollowsFetcher(options: {
         headers: { accept: "application/json" },
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error(`getFollows answered ${response.status}`);
       const body = await response.json() as { follows?: unknown; cursor?: unknown };
       const dids: string[] = [];
       for (const raw of Array.isArray(body.follows) ? body.follows : []) {
         const did = raw && typeof raw === "object" ? (raw as { did?: unknown }).did : undefined;
         if (typeof did === "string" && did.startsWith("did:")) dids.push(did);
       }
-      onPage(dids);
+      if (onPage(dids) === true) return;
       cursor = typeof body.cursor === "string" && body.cursor.length > 0 ? body.cursor : undefined;
       if (!cursor) return;
     }

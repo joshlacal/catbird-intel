@@ -65,10 +65,11 @@ for (const viewerKind of ["new account", "follows top half of each scene"] as co
       const live = new LiveOnboardingEngine({
         catalog,
         pool,
-        followsFetcher: async (_did: string, onPage: (dids: string[]) => void) => onPage(followList),
+        followsFetcher: async (_did: string, onPage: (dids: string[]) => boolean | void) => { onPage(followList); },
         random: rng,
       });
-      const viewer = { did: "did:plc:simviewer", unauthenticated: false };
+      // A signed-in viewer's order comes from their DID, so each trial is a different viewer.
+      const viewer = { did: `did:plc:simviewer${Math.floor(rng() * 1e9)}`, unauthenticated: false };
       const cards = new Map<number, string[]>();
       const sections = new Map<number, string[]>();
       for (const c of picked) {
@@ -105,7 +106,8 @@ for (const c of probe) {
   const seen = new Map<string, number>();
   for (let s = 0; s < 100; s++) {
     const live = new LiveOnboardingEngine({ catalog, pool, random: rng });
-    const detail = (await live.getCommunity(c.communityId, { did: null, unauthenticated: false }))!;
+    // One hundred different viewers: the order is derived from who is asking.
+    const detail = (await live.getCommunity(c.communityId, { did: `did:plc:variety${s}`, unauthenticated: false }))!;
     for (const m of detail.members.slice(0, 6)) seen.set(m.did, (seen.get(m.did) ?? 0) + 1);
   }
   distinct.push(seen.size);

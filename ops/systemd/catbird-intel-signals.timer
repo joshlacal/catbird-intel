@@ -1,0 +1,10 @@
+[Unit]
+Description=Rebuild the onboarding account signals at 01:20 UTC, after the daily export
+
+[Timer]
+OnCalendar=*-*-* 01:20:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

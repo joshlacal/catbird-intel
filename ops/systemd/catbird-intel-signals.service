@@ -1,0 +1,12 @@
+[Unit]
+Description=Catbird intel: nightly rebuild of the onboarding account-signals file
+After=catbird-intel-export.service
+
+[Service]
+Type=oneshot
+User=josh
+ExecStart=/home/josh/releases/intel-signals-job-20261122/ops/build-onboarding-signals-nightly.sh
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=200%
+MemoryMax=7G

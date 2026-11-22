@@ -27,216 +27,35 @@ import type {
   S17CatalogEngine,
 } from "./intel_catalog.ts";
 import { generateDuels, type DuelSource } from "./onboarding_duels.ts";
+import {
+  LIVE_ONBOARDING_DEFAULTS,
+  type FollowSpaceVectors,
+  type FollowsFetcher,
+  type LiveAccountSignals,
+  type LiveOnboardingConfig,
+  type MemberTier,
+  type OnboardingPoolFile,
+  type OrderedMember,
+  type Session,
+  type ViewerRef,
+} from "./onboarding_live_types.ts";
+import { allocateByWeight, clamp, seededHash } from "./onboarding_math.ts";
+import { scoreMembers } from "./onboarding_order.ts";
+import { nearestByContent, pickedCommunityIds, planScenes } from "./onboarding_scenes.ts";
+import { applySlate, tierOf } from "./onboarding_slate.ts";
+import { tasteCentroid } from "./onboarding_taste.ts";
 
-export type MemberTier = "headliner" | "core" | "rising";
-
-/** Deep reviewed candidate pool written by `graph/s16_s17/build_intel_serving_v2.py --pool-out`. */
-export interface OnboardingPoolFile {
-  poolVersion: string;
-  generatedAt: string;
-  sourceCatalogVersion: string;
-  depth: number;
-  /** Pool accounts that asked not to be shown to signed-out viewers. */
-  noUnauthDids?: string[];
-  communities: { communityId: number; members: IntelMemberEntry[] }[];
-}
-
-/** The slice of the vector store this engine needs: a producer's follow-space vector as raw int8 bytes. */
-export interface FollowSpaceVectors {
-  rawVectorForDid(did: string, window: "t1"): Uint8Array | null;
-}
-
-/** Loads a viewer's follow list page by page. Rejecting leaves a partial list in place and is retried soon. */
-export type FollowsFetcher = (
-  viewerDid: string,
-  /** Called with each page, newest follows first. Returning true stops the load early. */
-  onPage: (dids: string[]) => boolean | void,
-) => Promise<void>;
-
-/** Live activity signals. A multiplier of 0 removes the account from new lists; null means "no data". */
-export interface LiveAccountSignals {
-  accountMultiplier(did: string): number | null;
-  samplePostFor(did: string): string | null;
-  version(): string | null;
-  /** Extra fields for the health report. */
-  describe?(): Record<string, unknown>;
-}
-
-export interface ViewerRef {
-  did: string | null;
-  unauthenticated: boolean;
-}
-
-export interface LiveOnboardingConfig {
-  cardFaces: number;
-  sheetDepth: number;
-  defaultLineup: number;
-  boostedLineup: number;
-  /** Follows taken from a scene the viewer did not pick but chose in a taste duel. */
-  duelLineup: number;
-  /** How many content-nearest scenes a pick contributes to its duels. */
-  duelContentNeighbours: number;
-  /** A scene must be at least this close in content (cosine of post centroids) to count as alike. */
-  duelMinLikeness: number;
-  benchPerScene: number;
-  maxAutoTotal: number;
-  maxLegacyTotal: number;
-  sessionTtlMs: number;
-  maxSessions: number;
-  /** How long the first request of a session waits for the follow list before answering with what it has. */
-  followsBudgetMs: number;
-  followsRefreshMs: number;
-  /** How long to wait after a failed follow-list load before trying again. */
-  followsRetryMs: number;
-  /** Follow-list loads running at once across all viewers. */
-  maxFollowLoads: number;
-  /** Offerable accounts remembered as followed, per viewer. */
-  maxKeptFollows: number;
-  /** Scene orders held per viewer; the least recently used is dropped beyond this. */
-  maxListsPerSession: number;
-  /**
-   * An account's draw weight is 1 / (rank + rotationOffset) ^ rotationSharpness, where rank is its
-   * position in the picker's order. A higher exponent keeps the strongest accounts first more
-   * often; a higher offset treats the top few as near equals. At 1.5 and 3 the top-ranked account
-   * is in the first six in about three sessions of four, and about a quarter of first-six places
-   * go to accounts ranked below 25.
-   */
-  rotationSharpness: number;
-  rotationOffset: number;
-  /** Strength of the "close to who you already follow" boost, per standard deviation. */
-  personalBeta: number;
-  minFollowsForTaste: number;
-  headlinerFollowers: number;
-  risingFollowers: number;
-  megaFollowers: number;
-  maxHeadlinersPerSix: number;
-  /** A slot's wanted kind is honoured only if such an account is this close to the front of what is left. */
-  slateWindow: number;
-}
-
-export const LIVE_ONBOARDING_DEFAULTS: LiveOnboardingConfig = {
-  cardFaces: 6,
-  sheetDepth: 40,
-  defaultLineup: 6,
-  boostedLineup: 12,
-  duelLineup: 3,
-  duelContentNeighbours: 10,
-  duelMinLikeness: 0.5,
-  benchPerScene: 2,
-  maxAutoTotal: 180,
-  maxLegacyTotal: 200,
-  sessionTtlMs: 90 * 60_000,
-  maxSessions: 4000,
-  followsBudgetMs: 1200,
-  followsRefreshMs: 10 * 60_000,
-  followsRetryMs: 30_000,
-  maxFollowLoads: 8,
-  maxKeptFollows: 10_000,
-  maxListsPerSession: 600,
-  rotationSharpness: 1.5,
-  rotationOffset: 3,
-  personalBeta: 0.35,
-  minFollowsForTaste: 8,
-  headlinerFollowers: 20_000,
-  risingFollowers: 1_500,
-  megaFollowers: 500_000,
-  maxHeadlinersPerSix: 2,
-  slateWindow: 20,
+export { LIVE_ONBOARDING_DEFAULTS, allocateByWeight };
+export { createPublicFollowsFetcher } from "./onboarding_follows.ts";
+export type {
+  FollowSpaceVectors,
+  FollowsFetcher,
+  LiveAccountSignals,
+  LiveOnboardingConfig,
+  MemberTier,
+  OnboardingPoolFile,
+  ViewerRef,
 };
-
-interface OrderedMember {
-  member: IntelMemberEntry;
-  tier: MemberTier;
-  key: number;
-}
-
-interface Session {
-  seed: number;
-  lastSeenAt: number;
-  /** The accounts the viewer follows that this engine could offer. Their other follows are not kept. */
-  follows: Set<string>;
-  followsLoad: Promise<void> | null;
-  followsLoading: boolean;
-  /** When the follow list was last loaded to the end; null until that has happened once. */
-  followsLoadedAt: number | null;
-  /** The earliest time another load may start. */
-  followsNextAt: number;
-  /** The viewer's most recent follow at the last complete load. A refresh stops when it meets it. */
-  newestFollow: string | null;
-  /**
-   * The viewer's taste, from the first page of their follows. undefined until that page arrives
-   * or the first list is built without it; null when there is too little to infer taste from.
-   * Set once and never changed, so every scene in a session is ordered by the same taste.
-   */
-  centroid: Float32Array | null | undefined;
-  /** Per scene, the viewer's order as positions in that scene's member list: a few hundred bytes each. */
-  lists: Map<number, Uint16Array>;
-}
-
-interface SlateSlot {
-  roles?: readonly CommunityRole[];
-  tier?: MemberTier;
-}
-
-/** The kinds of account the first six positions aim for, repeated for positions seven to twelve. */
-const SLATE: readonly SlateSlot[] = [
-  { roles: ["anchor_creator"] },
-  { roles: ["visual_maker"] },
-  { roles: ["conversationalist"] },
-  { tier: "rising" },
-  { roles: ["anchor_creator", "project_or_studio"] },
-  { roles: ["scene_curator"] },
-];
-const SLATE_POSITIONS = SLATE.length * 2;
-const VECTOR_DIMS = 256;
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-/** FNV-1a over the string, mixed with the seed and finished with a murmur3 avalanche. */
-function seededHash(text: string, seed: number): number {
-  let h = (0x811c9dc5 ^ seed) >>> 0;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  h ^= h >>> 16;
-  h = Math.imul(h, 0x85ebca6b) >>> 0;
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35) >>> 0;
-  h ^= h >>> 16;
-  return h >>> 0;
-}
-
-function signedByte(value: number): number {
-  return value > 127 ? value - 256 : value;
-}
-
-/** Splits `total` across `weights` by largest remainder; every entry gets at least one while the total allows. */
-export function allocateByWeight(total: number, weights: readonly number[]): number[] {
-  const n = weights.length;
-  const out = new Array<number>(n).fill(0);
-  if (n === 0 || total <= 0) return out;
-  const order = weights.map((w, i) => ({ w, i })).sort((a, b) => b.w - a.w || a.i - b.i);
-  if (total <= n) {
-    for (const { i } of order.slice(0, total)) out[i] = 1;
-    return out;
-  }
-  const spare = total - n;
-  const sum = weights.reduce((acc, w) => acc + w, 0);
-  const shares = weights.map((w) => (sum > 0 ? (spare * w) / sum : spare / n));
-  let given = 0;
-  shares.forEach((share, i) => {
-    out[i] = 1 + Math.floor(share);
-    given += out[i]!;
-  });
-  const byRemainder = shares
-    .map((share, i) => ({ r: share - Math.floor(share), i }))
-    .sort((a, b) => b.r - a.r || a.i - b.i);
-  for (let k = 0; given < total; k++, given++) out[byRemainder[k % n]!.i]! += 1;
-  return out;
-}
 
 export class LiveOnboardingEngine {
   readonly config: LiveOnboardingConfig;
@@ -375,7 +194,7 @@ export class LiveOnboardingEngine {
       // request's follows can never show up in another's. The order comes from the day instead.
       const session = this.newSession(this.seedFor(viewer, t), t);
       this.noteFollows(session, seedFollowDids);
-      session.centroid = this.tasteCentroid(seedFollowDids);
+      session.centroid = tasteCentroid(this.vectors, this.config, seedFollowDids);
       return session;
     }
     const key = viewer.did;
@@ -395,7 +214,7 @@ export class LiveOnboardingEngine {
 
     if (!this.followsFetcher) {
       if (session.centroid === undefined && seedFollowDids.length > 0) {
-        session.centroid = this.tasteCentroid(seedFollowDids);
+        session.centroid = tasteCentroid(this.vectors, this.config, seedFollowDids);
       }
       return session;
     }
@@ -442,7 +261,7 @@ export class LiveOnboardingEngine {
             newest = dids[0] ?? null;
             // Taste comes from the first page alone (the hundred most recent follows), so it does
             // not depend on how much of a long follow list had arrived when a list was first built.
-            if (session.centroid === undefined) session.centroid = this.tasteCentroid(dids);
+            if (session.centroid === undefined) session.centroid = tasteCentroid(this.vectors, this.config, dids);
           }
           this.noteFollows(session, dids);
           return stopAt !== null && dids.includes(stopAt);
@@ -480,52 +299,6 @@ export class LiveOnboardingEngine {
   // Ordered lists
   // ---------------------------------------------------------------------------------------------
 
-  private tierOf(member: IntelMemberEntry): MemberTier {
-    if (member.followers >= this.config.headlinerFollowers) return "headliner";
-    if (member.followers < this.config.risingFollowers) return "rising";
-    return "core";
-  }
-
-  /** Unit-length mean of the follow-space vectors of the given accounts. */
-  private tasteCentroid(follows: Iterable<string>): Float32Array | null {
-    if (!this.vectors) return null;
-    const sum = new Float32Array(VECTOR_DIMS);
-    let used = 0;
-    for (const did of follows) {
-      const raw = this.vectors.rawVectorForDid(did, "t1");
-      if (!raw) continue;
-      let normSq = 0;
-      for (let i = 0; i < VECTOR_DIMS; i++) {
-        const v = signedByte(raw[i]!);
-        normSq += v * v;
-      }
-      if (normSq === 0) continue;
-      const inv = 1 / Math.sqrt(normSq);
-      for (let i = 0; i < VECTOR_DIMS; i++) sum[i] = sum[i]! + signedByte(raw[i]!) * inv;
-      used += 1;
-    }
-    if (used < this.config.minFollowsForTaste) return null;
-    let normSq = 0;
-    for (let i = 0; i < VECTOR_DIMS; i++) normSq += sum[i]! * sum[i]!;
-    if (normSq === 0) return null;
-    const inv = 1 / Math.sqrt(normSq);
-    for (let i = 0; i < VECTOR_DIMS; i++) sum[i] = sum[i]! * inv;
-    return sum;
-  }
-
-  private affinity(did: string, centroid: Float32Array): number | null {
-    const raw = this.vectors?.rawVectorForDid(did, "t1");
-    if (!raw) return null;
-    let dot = 0;
-    let normSq = 0;
-    for (let i = 0; i < VECTOR_DIMS; i++) {
-      const v = signedByte(raw[i]!);
-      dot += v * centroid[i]!;
-      normSq += v * v;
-    }
-    return normSq === 0 ? null : dot / Math.sqrt(normSq);
-  }
-
   private orderedList(session: Session, communityId: number, viewer: ViewerRef): OrderedMember[] {
     const members = this.membersByCommunity.get(communityId) ?? [];
     const cached = session.lists.get(communityId);
@@ -535,7 +308,7 @@ export class LiveOnboardingEngine {
       const restored: OrderedMember[] = new Array(cached.length);
       for (let i = 0; i < cached.length; i++) {
         const member = members[cached[i]!]!;
-        restored[i] = { member, tier: this.tierOf(member), key: 0 };
+        restored[i] = { member, tier: tierOf(member, this.config), key: 0 };
       }
       return restored;
     }
@@ -544,42 +317,7 @@ export class LiveOnboardingEngine {
     if (session.centroid === undefined) session.centroid = null;
     const centroid = session.centroid;
 
-    // Closeness to the viewer's taste is compared within the scene, so it reorders a scene's
-    // members without favouring scenes that happen to sit near the viewer's existing follows.
-    const affinities = centroid ? members.map((m) => this.affinity(m.did, centroid)) : null;
-    let mean = 0;
-    let deviation = 0;
-    if (affinities) {
-      const known = affinities.filter((a): a is number => a !== null);
-      if (known.length >= 4) {
-        mean = known.reduce((acc, a) => acc + a, 0) / known.length;
-        deviation = Math.sqrt(known.reduce((acc, a) => acc + (a - mean) * (a - mean), 0) / known.length);
-      }
-    }
-
-    // Rank by the picker's score rather than using the score itself: scores fall almost linearly
-    // through a scene, so raw scores would make the draw close to uniform.
-    const rankOf = new Map<string, number>();
-    [...members]
-      .sort((x, y) => y.rankScoreBps - x.rankScoreBps)
-      .forEach((member, rank) => rankOf.set(member.did, rank));
-
-    const scored: OrderedMember[] = [];
-    members.forEach((member, index) => {
-      const live = this.liveSignals?.accountMultiplier(member.did) ?? null;
-      if (live !== null && live <= 0) return;
-      let weight = 1 / Math.pow(rankOf.get(member.did)! + this.config.rotationOffset, this.config.rotationSharpness);
-      if (live !== null) weight *= live;
-      const a = affinities?.[index] ?? null;
-      if (a !== null && deviation > 1e-6) {
-        weight *= Math.exp(this.config.personalBeta * clamp((a - mean) / deviation, -2, 2));
-      }
-      // Gumbel-max: sorting by log(weight) + Gumbel noise draws an order in which an account's
-      // chance of coming first is proportional to its weight.
-      const u = (seededHash(member.did, session.seed) + 0.5) / 0x1_0000_0000;
-      scored.push({ member, tier: this.tierOf(member), key: Math.log(weight) - Math.log(-Math.log(u)) });
-    });
-    scored.sort((x, y) => y.key - x.key || (x.member.did < y.member.did ? -1 : 1));
+    const scored = scoreMembers(members, centroid, session.seed, this.vectors, this.config, this.liveSignals);
 
     // The mix is arranged among the accounts this viewer can still be offered. Accounts already
     // known to be followed go to the back (they are filtered whenever the list is read), so a
@@ -591,7 +329,7 @@ export class LiveOnboardingEngine {
         this.allowed(candidate.member.did, viewer);
       (offered ? open : closed).push(candidate);
     }
-    const ordered = this.applySlate(open).concat(closed);
+    const ordered = applySlate(open, this.config).concat(closed);
     const position = new Map<IntelMemberEntry, number>();
     members.forEach((member, index) => position.set(member, index));
     session.lists.set(communityId, Uint16Array.from(ordered, (entry) => position.get(entry.member)!));
@@ -601,40 +339,6 @@ export class LiveOnboardingEngine {
       session.lists.delete(oldest);
     }
     return ordered;
-  }
-
-  /** Gives the first twelve positions a mix of account kinds and at most a few very large accounts. */
-  private applySlate(byKey: OrderedMember[]): OrderedMember[] {
-    const remaining = [...byKey];
-    const ordered: OrderedMember[] = [];
-    let headliners = 0;
-    let megas = 0;
-    const withinCaps = (c: OrderedMember, position: number): boolean => {
-      const headlinerCap = this.config.maxHeadlinersPerSix * (Math.floor(position / SLATE.length) + 1);
-      if (c.tier === "headliner" && headliners >= headlinerCap) return false;
-      if (c.member.followers > this.config.megaFollowers && megas >= 1) return false;
-      return true;
-    };
-    for (let position = 0; position < SLATE_POSITIONS && remaining.length > 0; position++) {
-      const slot = SLATE[position % SLATE.length]!;
-      const wanted = (c: OrderedMember): boolean =>
-        (slot.tier ? c.tier === slot.tier : true) && (slot.roles ? slot.roles.includes(c.member.role) : true);
-      let pick = -1;
-      const window = Math.min(remaining.length, this.config.slateWindow);
-      for (let i = 0; i < window; i++) {
-        if (wanted(remaining[i]!) && withinCaps(remaining[i]!, position)) {
-          pick = i;
-          break;
-        }
-      }
-      if (pick < 0) pick = remaining.findIndex((c) => withinCaps(c, position));
-      if (pick < 0) pick = 0;
-      const [chosen] = remaining.splice(pick, 1);
-      if (chosen!.tier === "headliner") headliners += 1;
-      if (chosen!.member.followers > this.config.megaFollowers) megas += 1;
-      ordered.push(chosen!);
-    }
-    return ordered.concat(remaining);
   }
 
   /** May this viewer be shown this account, or a post by it? Covers pool accounts the catalog does not list. */
@@ -778,10 +482,10 @@ export class LiveOnboardingEngine {
     maxSwipes?: number;
   }, viewer: ViewerRef) {
     const session = await this.session(viewer, params.seedFollowDids);
-    const picks = this.pickedCommunityIds(params.selections);
+    const picks = pickedCommunityIds(this.catalog, params.selections);
     const source: DuelSource = {
       community: (communityId) => this.catalog.community(communityId),
-      nearestByContent: (communityId) => this.nearestByContent(communityId),
+      nearestByContent: (communityId) => nearestByContent(this.postCentroids, this.nearestCache, this.config, communityId),
       isHostilePair: (a, b) => this.catalog.isHostilePair(a, b),
       offerableCount: (communityId) => this.visible(session, communityId, viewer).length,
       followedCount: (communityId) => this.followedCount(session, communityId),
@@ -809,128 +513,9 @@ export class LiveOnboardingEngine {
     return { catalogVersion: this.catalog.bundle.catalogVersion, swipes };
   }
 
-  /** The scenes whose posts are most like this one's: closest post centroids first, weak matches left out. */
-  private nearestByContent(communityId: number): number[] {
-    const cached = this.nearestCache.get(communityId);
-    if (cached) return cached;
-    const own = this.postCentroids.get(communityId);
-    const scored: { id: number; cosine: number }[] = [];
-    if (own) {
-      let ownSq = 0;
-      for (let i = 0; i < own.length; i++) ownSq += own[i]! * own[i]!;
-      for (const [id, other] of this.postCentroids) {
-        if (id === communityId || other.length !== own.length) continue;
-        let dot = 0;
-        let otherSq = 0;
-        for (let i = 0; i < own.length; i++) {
-          dot += own[i]! * other[i]!;
-          otherSq += other[i]! * other[i]!;
-        }
-        const cosine = ownSq > 0 && otherSq > 0 ? dot / Math.sqrt(ownSq * otherSq) : 0;
-        if (cosine >= this.config.duelMinLikeness) scored.push({ id, cosine });
-      }
-    }
-    const nearest = scored
-      .sort((x, y) => y.cosine - x.cosine || x.id - y.id)
-      .slice(0, this.config.duelContentNeighbours)
-      .map((entry) => entry.id);
-    this.nearestCache.set(communityId, nearest);
-    return nearest;
-  }
-
-  /** The scenes a viewer picked, in order, or the catalog's first four when they picked none. */
-  private pickedCommunityIds(selections: CommunitySelectionInput[]): number[] {
-    const picks: number[] = [];
-    for (const selection of selections) {
-      if (!picks.includes(selection.communityId) && this.catalog.hasCommunity(selection.communityId)) {
-        picks.push(selection.communityId);
-      }
-    }
-    if (picks.length > 0) return picks;
-    return this.catalog.bundle.communities.slice(0, 4).map((community) => community.communityId);
-  }
-
   // ---------------------------------------------------------------------------------------------
   // Lineup
   // ---------------------------------------------------------------------------------------------
-
-  /**
-   * The scenes a lineup draws from, in output order, with how many follows each contributes.
-   * `targetSize` undefined sizes each scene on its own; a number is the older client contract
-   * (one total), split across the picked scenes in proportion to their weight.
-   */
-  private planScenes(
-    selections: CommunitySelectionInput[],
-    swipes: CalibrationSwipeAnswerInput[],
-    targetSize: number | undefined,
-  ): { communityId: number; quota: number; picked: boolean }[] {
-    const picked: { communityId: number; boosted: boolean }[] = [];
-    const seen = new Set<number>();
-    for (const selection of selections) {
-      if (seen.has(selection.communityId) || !this.catalog.hasCommunity(selection.communityId)) continue;
-      seen.add(selection.communityId);
-      picked.push({ communityId: selection.communityId, boosted: selection.weight === 2 });
-    }
-    if (picked.length === 0) {
-      // Nothing picked: the same four-scene fallback the static engine uses.
-      for (const community of this.catalog.bundle.communities.slice(0, 4)) {
-        seen.add(community.communityId);
-        picked.push({ communityId: community.communityId, boosted: false });
-      }
-    }
-
-    // A duel answer in favour of a scene the viewer did not pick adds a small share of it.
-    const duelAdds: number[] = [];
-    for (const swipe of swipes) {
-      const chosen = swipe.choice === "a" ? [swipe.communityA] :
-        swipe.choice === "b" ? [swipe.communityB] :
-        swipe.choice === "both" ? [swipe.communityA, swipe.communityB] : [];
-      for (const communityId of chosen) {
-        if (seen.has(communityId) || !this.catalog.hasCommunity(communityId)) continue;
-        seen.add(communityId);
-        duelAdds.push(communityId);
-      }
-    }
-
-    if (targetSize !== undefined) {
-      const total = clamp(targetSize, 1, this.config.maxLegacyTotal);
-      const weights = [...picked.map((p) => (p.boosted ? 2 : 1)), ...duelAdds.map(() => 0.5)];
-      const quotas = allocateByWeight(total, weights);
-      // A scene never gives more than its sheet shows, so every follow can be seen before it is made.
-      const shown = (quota: number) => Math.min(quota, this.config.sheetDepth);
-      return [
-        ...picked.map((p, i) => ({ communityId: p.communityId, quota: shown(quotas[i]!), picked: true })),
-        ...duelAdds.map((communityId, i) => ({
-          communityId,
-          quota: shown(quotas[picked.length + i]!),
-          picked: false,
-        })),
-      ];
-    }
-
-    const plan = [
-      ...picked.map((p) => ({
-        communityId: p.communityId,
-        quota: p.boosted ? this.config.boostedLineup : this.config.defaultLineup,
-        picked: true,
-      })),
-      ...duelAdds.map((communityId) => ({ communityId, quota: this.config.duelLineup, picked: false })),
-    ];
-    let total = plan.reduce((acc, scene) => acc + scene.quota, 0);
-    // Over the cap: duel additions give way first, then the extra half of boosted scenes.
-    for (let i = plan.length - 1; i >= 0 && total > this.config.maxAutoTotal; i--) {
-      if (plan[i]!.picked) continue;
-      total -= plan[i]!.quota;
-      plan[i]!.quota = 0;
-    }
-    while (total > this.config.maxAutoTotal) {
-      const largest = plan.reduce((best, scene) => (scene.quota > best.quota ? scene : best), plan[0]!);
-      if (largest.quota <= 1) break;
-      largest.quota -= 1;
-      total -= 1;
-    }
-    return plan;
-  }
 
   async solveBundle(params: {
     selections: CommunitySelectionInput[];
@@ -946,7 +531,7 @@ export class LiveOnboardingEngine {
     const pace = params.controls?.pace ?? "balanced";
     const repostTamer = params.controls?.originalsOnlyForHeavyReposters ?? true;
     const excluded = new Set(params.excludedDids ?? []);
-    const plan = this.planScenes(params.selections, params.swipes ?? [], params.targetSize);
+    const plan = planScenes(this.catalog, this.config, params.selections, params.swipes ?? [], params.targetSize);
 
     interface Pick { communityId: number; member: IntelMemberEntry }
     const used = new Set<string>();
@@ -1137,43 +722,4 @@ export class LiveOnboardingEngine {
       estimatedDailyPosts: solved.summary.estimatedDailyPosts,
     };
   }
-}
-
-/**
- * Follow-list loader over the public AppView. One page is 100 follows; `maxPages` bounds the
- * work for accounts that follow tens of thousands.
- */
-export function createPublicFollowsFetcher(options: {
-  fetcher?: (input: URL, init?: RequestInit) => Promise<Response>;
-  baseUrl?: string;
-  maxPages?: number;
-  timeoutMs?: number;
-} = {}): FollowsFetcher {
-  const fetcher = options.fetcher ?? fetch;
-  const baseUrl = options.baseUrl ?? "https://public.api.bsky.app";
-  const maxPages = options.maxPages ?? 100;
-  const timeoutMs = options.timeoutMs ?? 3_000;
-  return async (viewerDid, onPage) => {
-    let cursor: string | undefined;
-    for (let page = 0; page < maxPages; page++) {
-      const url = new URL("/xrpc/app.bsky.graph.getFollows", baseUrl);
-      url.searchParams.set("actor", viewerDid);
-      url.searchParams.set("limit", "100");
-      if (cursor) url.searchParams.set("cursor", cursor);
-      const response = await fetcher(url, {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response.ok) throw new Error(`getFollows answered ${response.status}`);
-      const body = await response.json() as { follows?: unknown; cursor?: unknown };
-      const dids: string[] = [];
-      for (const raw of Array.isArray(body.follows) ? body.follows : []) {
-        const did = raw && typeof raw === "object" ? (raw as { did?: unknown }).did : undefined;
-        if (typeof did === "string" && did.startsWith("did:")) dids.push(did);
-      }
-      if (onPage(dids) === true) return;
-      cursor = typeof body.cursor === "string" && body.cursor.length > 0 ? body.cursor : undefined;
-      if (!cursor) return;
-    }
-  };
 }

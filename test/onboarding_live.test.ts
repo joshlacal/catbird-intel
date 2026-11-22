@@ -513,6 +513,42 @@ describe("live onboarding: fallbacks and surfaces", () => {
   });
 });
 
+describe("live onboarding: generated duels", () => {
+  test("a duel offers unpicked neighbours, and choosing a side follows the accounts whose posts it showed", async () => {
+    const engine = engineWith();
+    const { swipes } = await engine.getCalibrationSwipes({ selections: [pick(101)], maxSwipes: 4 }, VIEWER);
+    expect(swipes.length).toBe(1);
+    const duel = swipes[0]!;
+    expect([duel.optionA.communityId, duel.optionB.communityId].sort()).toEqual([102, 103]);
+    expect(duel.swipeId).toBe("live:102:103");
+
+    const solved = await engine.solveBundle({
+      selections: [pick(101)],
+      swipes: [{ swipeId: duel.swipeId, communityA: duel.optionA.communityId, communityB: duel.optionB.communityId, choice: "a" }],
+    }, VIEWER);
+    const added = solved.follows.filter((f) => f.communityId === duel.optionA.communityId).map((f) => f.did);
+    expect(added.length).toBe(3);
+    const shownOwners = duel.optionA.samplePostUris.map((uri) => uri.slice(5).split("/")[0]);
+    expect(shownOwners.every((did) => added.includes(did!))).toBe(true);
+    expect(solved.follows.some((f) => f.communityId === duel.optionB.communityId)).toBe(false);
+  });
+
+  test("a scene hostile to a pick is never a side of its duels", async () => {
+    const engine = engineWith();
+    const { swipes } = await engine.getCalibrationSwipes({ selections: [pick(103)], maxSwipes: 4 }, VIEWER);
+    expect(swipes.length).toBe(1);
+    expect([swipes[0]!.optionA.communityId, swipes[0]!.optionB.communityId].sort()).toEqual([101, 102]);
+  });
+
+  test("a duel never shows a post by someone the viewer already follows", async () => {
+    const follows = Array.from({ length: 60 }, (_, i) => memberDid(102, i)).filter((_, i) => i % 2 === 0);
+    const engine = engineWith({ follows });
+    const { swipes } = await engine.getCalibrationSwipes({ selections: [pick(101)], maxSwipes: 4 }, VIEWER);
+    const side = [swipes[0]!.optionA, swipes[0]!.optionB].find((o) => o.communityId === 102)!;
+    for (const uri of side.samplePostUris) expect(follows).not.toContain(uri.slice(5).split("/")[0]!);
+  });
+});
+
 describe("live onboarding over HTTP", () => {
   const post = (path: string, body: unknown) => new Request(`http://intel.local/xrpc/${path}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),

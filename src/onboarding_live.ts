@@ -26,6 +26,7 @@ import type {
   IntelMemberEntry,
   S17CatalogEngine,
 } from "./intel_catalog.ts";
+import { generateDuels, type DuelSource } from "./onboarding_duels.ts";
 
 export type MemberTier = "headliner" | "core" | "rising";
 
@@ -67,6 +68,10 @@ export interface LiveOnboardingConfig {
   boostedLineup: number;
   /** Follows taken from a scene the viewer did not pick but chose in a taste duel. */
   duelLineup: number;
+  /** How many content-nearest scenes a pick contributes to its duels. */
+  duelContentNeighbours: number;
+  /** A scene must be at least this close in content (cosine of post centroids) to count as alike. */
+  duelMinLikeness: number;
   benchPerScene: number;
   maxAutoTotal: number;
   maxLegacyTotal: number;
@@ -101,6 +106,8 @@ export const LIVE_ONBOARDING_DEFAULTS: LiveOnboardingConfig = {
   defaultLineup: 6,
   boostedLineup: 12,
   duelLineup: 3,
+  duelContentNeighbours: 10,
+  duelMinLikeness: 0.5,
   benchPerScene: 2,
   maxAutoTotal: 180,
   maxLegacyTotal: 200,
@@ -213,6 +220,8 @@ export class LiveOnboardingEngine {
   private readonly random: () => number;
   private readonly membersByCommunity = new Map<number, IntelMemberEntry[]>();
   private readonly memberHome = new Map<string, { communityId: number; member: IntelMemberEntry }>();
+  private readonly postCentroids = new Map<number, Int8Array>();
+  private readonly nearestCache = new Map<number, number[]>();
   private readonly sessions = new Map<string, Session>();
   private readonly poolNoUnauth = new Set<string>();
   /** Why a supplied pool was not used, if it was not. */
@@ -259,6 +268,10 @@ export class LiveOnboardingEngine {
         merged.push(member);
       }
       this.membersByCommunity.set(community.communityId, merged);
+      const centroid = Buffer.from(community.centPostsInt8B64, "base64");
+      if (centroid.byteLength > 0) {
+        this.postCentroids.set(community.communityId, new Int8Array(centroid.buffer, centroid.byteOffset, centroid.byteLength));
+      }
       this.poolMemberCount += merged.length;
       for (const member of merged) {
         if (!this.memberHome.has(member.did)) this.memberHome.set(member.did, { communityId: community.communityId, member });
@@ -627,8 +640,77 @@ export class LiveOnboardingEngine {
     seedFollowDids?: string[];
     maxSwipes?: number;
   }, viewer: ViewerRef) {
-    await this.session(viewer, params.seedFollowDids);
-    return this.catalog.getCalibrationSwipes({ ...params, unauthenticated: viewer.unauthenticated });
+    const session = await this.session(viewer, params.seedFollowDids);
+    const picks = this.pickedCommunityIds(params.selections);
+    const source: DuelSource = {
+      community: (communityId) => this.catalog.community(communityId),
+      nearestByContent: (communityId) => this.nearestByContent(communityId),
+      isHostilePair: (a, b) => this.catalog.isHostilePair(a, b),
+      offerableCount: (communityId) => this.visible(session, communityId, viewer).length,
+      followedCount: (communityId) => this.followedCount(session, communityId),
+      noise: (communityId) => (seededHash(`duel:${communityId}`, session.seed) + 0.5) / 0x1_0000_0000,
+      // The posts a side shows are by the accounts choosing it would add, then the scene's own samples.
+      offerPosts: (communityId) => {
+        const posts: string[] = [];
+        for (const { member } of this.visible(session, communityId, viewer).slice(0, this.config.duelLineup)) {
+          const uri = this.samplePostOf(member, viewer);
+          if (uri && !posts.includes(uri)) posts.push(uri);
+        }
+        for (const uri of this.catalog.community(communityId)?.samplePostUris ?? []) {
+          if (posts.length >= 3) break;
+          if (!posts.includes(uri) && this.allowed(uri, viewer)) posts.push(uri);
+        }
+        return posts;
+      },
+    };
+    const swipes = generateDuels({
+      picks,
+      maxSwipes: clamp(params.maxSwipes ?? 5, 1, 12),
+      source,
+      config: { minOffer: this.config.duelLineup },
+    });
+    return { catalogVersion: this.catalog.bundle.catalogVersion, swipes };
+  }
+
+  /** The scenes whose posts are most like this one's: closest post centroids first, weak matches left out. */
+  private nearestByContent(communityId: number): number[] {
+    const cached = this.nearestCache.get(communityId);
+    if (cached) return cached;
+    const own = this.postCentroids.get(communityId);
+    const scored: { id: number; cosine: number }[] = [];
+    if (own) {
+      let ownSq = 0;
+      for (let i = 0; i < own.length; i++) ownSq += own[i]! * own[i]!;
+      for (const [id, other] of this.postCentroids) {
+        if (id === communityId || other.length !== own.length) continue;
+        let dot = 0;
+        let otherSq = 0;
+        for (let i = 0; i < own.length; i++) {
+          dot += own[i]! * other[i]!;
+          otherSq += other[i]! * other[i]!;
+        }
+        const cosine = ownSq > 0 && otherSq > 0 ? dot / Math.sqrt(ownSq * otherSq) : 0;
+        if (cosine >= this.config.duelMinLikeness) scored.push({ id, cosine });
+      }
+    }
+    const nearest = scored
+      .sort((x, y) => y.cosine - x.cosine || x.id - y.id)
+      .slice(0, this.config.duelContentNeighbours)
+      .map((entry) => entry.id);
+    this.nearestCache.set(communityId, nearest);
+    return nearest;
+  }
+
+  /** The scenes a viewer picked, in order, or the catalog's first four when they picked none. */
+  private pickedCommunityIds(selections: CommunitySelectionInput[]): number[] {
+    const picks: number[] = [];
+    for (const selection of selections) {
+      if (!picks.includes(selection.communityId) && this.catalog.hasCommunity(selection.communityId)) {
+        picks.push(selection.communityId);
+      }
+    }
+    if (picks.length > 0) return picks;
+    return this.catalog.bundle.communities.slice(0, 4).map((community) => community.communityId);
   }
 
   // ---------------------------------------------------------------------------------------------

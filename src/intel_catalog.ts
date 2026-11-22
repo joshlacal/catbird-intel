@@ -206,6 +206,11 @@ export class S17CatalogEngine {
     return this.commById.get(communityId) ?? null;
   }
 
+  /** Whether two communities are marked as hostile to each other in the catalog. */
+  isHostilePair(a: number, b: number): boolean {
+    return this.highHostilitySet.has(pairKey(a, b));
+  }
+
   /** Whether an account (or the owner of an AT URI) may be shown to this kind of viewer. */
   isAccountAllowed(uriOrDid: string, unauthenticated: boolean): boolean {
     return this.isUriAllowed(uriOrDid, unauthenticated);

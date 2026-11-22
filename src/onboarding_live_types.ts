@@ -112,7 +112,7 @@ export const LIVE_ONBOARDING_DEFAULTS: LiveOnboardingConfig = {
   maxListsPerSession: 600,
   rotationSharpness: 1.5,
   rotationOffset: 3,
-  personalBeta: 0.35,
+  personalBeta: 0.7,
   minFollowsForTaste: 8,
   headlinerFollowers: 20_000,
   risingFollowers: 1_500,

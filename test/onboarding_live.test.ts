@@ -132,13 +132,17 @@ function engineWith(options: {
     catalog: new S17CatalogEngine(bundle),
     pool: options.pool === false ? null : buildPool(bundle),
     followsFetcher: options.fetcher ?? (async (_did, onPage) => onPage(follows)),
-    // First draw is the session seed; later draws only label session ids.
+    // A signed-out viewer's order is the first draw; later draws only label session ids.
     random: () => (draws++ === 0 ? (options.seed ?? 0.123456) : 0.5),
+    // A signed-in viewer's order comes from their DID, the time and this salt.
+    orderSalt: Math.floor((options.seed ?? 0.123456) * 0x1_0000_0000),
+    now: () => FIXED_NOW,
     config: options.config,
   });
 }
 
 const pick = (communityId: number, weight = 1) => ({ communityId, weight });
+const FIXED_NOW = 1_800_000_000_000;
 
 describe("live onboarding: what is shown is what is followed", () => {
   test("the card is a prefix of the detail sheet, and the sheet's prefix is the lineup", async () => {
@@ -346,6 +350,24 @@ describe("live onboarding: rotation and variety", () => {
     expect(new Set(other).size).toBe(other.length);
   });
 
+  test("a restart mid-flow gives a signed-in viewer the same order again", async () => {
+    const bundle = buildBundle();
+    const make = (random: number) => new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: buildPool(bundle),
+      now: () => FIXED_NOW,
+      random: () => random,
+    });
+    const order = async (engine: LiveOnboardingEngine, viewer: typeof VIEWER | typeof ANON) =>
+      (await engine.getCommunity(101, viewer))!.members.map((m) => m.did);
+    // Two instances stand for the service before and after a restart; their random sources differ.
+    expect(await order(make(0.11), VIEWER)).toEqual(await order(make(0.93), VIEWER));
+    const someoneElse = { did: "did:plc:viewer00000000000000002", unauthenticated: false };
+    expect(await order(make(0.11), someoneElse)).not.toEqual(await order(make(0.11), VIEWER));
+    // A signed-out viewer has no identity to derive an order from, so theirs is drawn.
+    expect(await order(make(0.11), ANON)).not.toEqual(await order(make(0.93), ANON));
+  });
+
   test("a session expires and the next one reshuffles", async () => {
     let t = 1_000_000;
     let draws = 0;
@@ -417,13 +439,13 @@ describe("live onboarding: rotation and variety", () => {
     const leadShare = async (personalised: boolean) => {
       let even = 0;
       for (let i = 0; i < 60; i++) {
-        let draws = 0;
         const engine = new LiveOnboardingEngine({
           catalog: new S17CatalogEngine(bundle),
           pool: buildPool(bundle),
           vectors: personalised ? { rawVectorForDid: (did) => vector(did) } : null,
           followsFetcher: async (_did, onPage) => onPage(follows),
-          random: () => (draws++ === 0 ? (i + 0.5) / 60 : 0.5),
+          now: () => FIXED_NOW,
+          orderSalt: i + 1, // sixty different orders for the same viewer
         });
         for (const m of (await engine.getCommunity(103, VIEWER))!.members.slice(0, 12)) {
           if (Number(/m(\d{4})$/.exec(m.did)![1]) % 2 === 0) even += 1;

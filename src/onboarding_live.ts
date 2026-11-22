@@ -219,6 +219,7 @@ export class LiveOnboardingEngine {
   private readonly liveSignals: LiveAccountSignals | null;
   private readonly now: () => number;
   private readonly random: () => number;
+  private readonly orderSalt: number;
   private readonly membersByCommunity = new Map<number, IntelMemberEntry[]>();
   private readonly memberHome = new Map<string, { communityId: number; member: IntelMemberEntry }>();
   private readonly postCentroids = new Map<number, Int8Array>();
@@ -238,6 +239,8 @@ export class LiveOnboardingEngine {
     config?: Partial<LiveOnboardingConfig>;
     now?: () => number;
     random?: () => number;
+    /** Mixed into every signed-in viewer's order. Instances that should agree must share it. */
+    orderSalt?: number;
   }) {
     this.catalog = options.catalog;
     this.vectors = options.vectors ?? null;
@@ -246,6 +249,7 @@ export class LiveOnboardingEngine {
     this.config = { ...LIVE_ONBOARDING_DEFAULTS, ...(options.config ?? {}) };
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
+    this.orderSalt = (options.orderSalt ?? 0) >>> 0;
     // A pool is screened against one catalog build. Behind any other catalog its accounts have not
     // been through that catalog's exclusions, so it is left out rather than trusted.
     const supplied = options.pool ?? null;
@@ -312,7 +316,7 @@ export class LiveOnboardingEngine {
       this.sessions.delete(key); // re-insert so eviction drops the least recently used session
     } else {
       session = {
-        seed: Math.floor(this.random() * 0x1_0000_0000) >>> 0,
+        seed: this.seedFor(viewer, t),
         lastSeenAt: t,
         follows: new Set<string>(),
         followsLoad: null,
@@ -344,6 +348,19 @@ export class LiveOnboardingEngine {
       }
     }
     return session;
+  }
+
+  /**
+   * A signed-in viewer's order comes from who they are and which stretch of time it is, not from a
+   * random draw, so a service restart or a second instance in the middle of a flow arrives at the
+   * same order. A stretch is one session lifetime long and starts at a different moment for each
+   * viewer, so an expired session always falls in a later stretch and reshuffles.
+   */
+  private seedFor(viewer: ViewerRef, t: number): number {
+    if (!viewer.did) return Math.floor(this.random() * 0x1_0000_0000) >>> 0;
+    const stretch = this.config.sessionTtlMs;
+    const offset = seededHash(viewer.did, 0x5eed) % stretch;
+    return seededHash(`${viewer.did}:${Math.floor((t + offset) / stretch)}`, this.orderSalt);
   }
 
   private startFollowsLoad(session: Session, viewerDid: string): void {

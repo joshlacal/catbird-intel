@@ -35,6 +35,8 @@ export interface OnboardingPoolFile {
   generatedAt: string;
   sourceCatalogVersion: string;
   depth: number;
+  /** Pool accounts that asked not to be shown to signed-out viewers. */
+  noUnauthDids?: string[];
   communities: { communityId: number; members: IntelMemberEntry[] }[];
 }
 
@@ -212,6 +214,9 @@ export class LiveOnboardingEngine {
   private readonly membersByCommunity = new Map<number, IntelMemberEntry[]>();
   private readonly memberHome = new Map<string, { communityId: number; member: IntelMemberEntry }>();
   private readonly sessions = new Map<string, Session>();
+  private readonly poolNoUnauth = new Set<string>();
+  /** Why a supplied pool was not used, if it was not. */
+  readonly poolSkipped: string | null;
   private poolMemberCount = 0;
 
   constructor(options: {
@@ -231,10 +236,18 @@ export class LiveOnboardingEngine {
     this.config = { ...LIVE_ONBOARDING_DEFAULTS, ...(options.config ?? {}) };
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
-    this.poolVersion = options.pool?.poolVersion ?? null;
+    // A pool is screened against one catalog build. Behind any other catalog its accounts have not
+    // been through that catalog's exclusions, so it is left out rather than trusted.
+    const supplied = options.pool ?? null;
+    const pool = supplied && supplied.sourceCatalogVersion === this.catalog.bundle.catalogVersion ? supplied : null;
+    this.poolSkipped = supplied && !pool
+      ? `pool ${supplied.poolVersion} was built for catalog ${supplied.sourceCatalogVersion}, not ${this.catalog.bundle.catalogVersion}`
+      : null;
+    this.poolVersion = pool?.poolVersion ?? null;
+    for (const did of pool?.noUnauthDids ?? []) this.poolNoUnauth.add(did);
 
     const poolByCommunity = new Map<number, IntelMemberEntry[]>();
-    for (const entry of options.pool?.communities ?? []) poolByCommunity.set(entry.communityId, entry.members);
+    for (const entry of pool?.communities ?? []) poolByCommunity.set(entry.communityId, entry.members);
 
     for (const community of this.catalog.bundle.communities) {
       // The bundle's own members stay first and verbatim; the pool only adds depth behind them.
@@ -266,6 +279,7 @@ export class LiveOnboardingEngine {
       onboarding_engine: "live",
       onboarding_pool_version: this.poolVersion,
       onboarding_pool_members: this.poolMemberCount,
+      onboarding_pool_skipped: this.poolSkipped,
       onboarding_live_signals: this.liveSignals?.version() ?? null,
       onboarding_personalised: this.vectors !== null,
       onboarding_sessions: this.sessions.size,
@@ -380,7 +394,7 @@ export class LiveOnboardingEngine {
     return normSq === 0 ? null : dot / Math.sqrt(normSq);
   }
 
-  private orderedList(session: Session, communityId: number): OrderedMember[] {
+  private orderedList(session: Session, communityId: number, viewer: ViewerRef): OrderedMember[] {
     const cached = session.lists.get(communityId);
     if (cached) return cached;
     if (session.centroid === undefined) session.centroid = this.tasteCentroid(session.follows);
@@ -424,7 +438,17 @@ export class LiveOnboardingEngine {
     });
     scored.sort((x, y) => y.key - x.key || (x.member.did < y.member.did ? -1 : 1));
 
-    const ordered = this.applySlate(scored);
+    // The mix is arranged among the accounts this viewer can still be offered. Accounts already
+    // known to be followed go to the back (they are filtered whenever the list is read), so a
+    // viewer who follows a scene's mid-sized accounts is not left with its largest ones in a row.
+    const open: OrderedMember[] = [];
+    const closed: OrderedMember[] = [];
+    for (const candidate of scored) {
+      const offered = !session.follows.has(candidate.member.did) &&
+        this.allowed(candidate.member.did, viewer);
+      (offered ? open : closed).push(candidate);
+    }
+    const ordered = this.applySlate(open).concat(closed);
     session.lists.set(communityId, ordered);
     return ordered;
   }
@@ -463,6 +487,14 @@ export class LiveOnboardingEngine {
     return ordered.concat(remaining);
   }
 
+  /** May this viewer be shown this account, or a post by it? Covers pool accounts the catalog does not list. */
+  private allowed(uriOrDid: string, viewer: ViewerRef): boolean {
+    if (!this.catalog.isAccountAllowed(uriOrDid, viewer.unauthenticated)) return false;
+    if (!viewer.unauthenticated || this.poolNoUnauth.size === 0) return true;
+    const owner = uriOrDid.startsWith("at://") ? uriOrDid.slice(5).split("/", 1)[0]! : uriOrDid;
+    return !this.poolNoUnauth.has(owner);
+  }
+
   /** A scene's list as this viewer may see it now: no one they follow, hid, or may not be shown. */
   private visible(
     session: Session,
@@ -470,10 +502,10 @@ export class LiveOnboardingEngine {
     viewer: ViewerRef,
     alsoExcluded?: ReadonlySet<string>,
   ): OrderedMember[] {
-    return this.orderedList(session, communityId).filter(({ member }) =>
+    return this.orderedList(session, communityId, viewer).filter(({ member }) =>
       !session.follows.has(member.did) &&
       !(alsoExcluded?.has(member.did) ?? false) &&
-      this.catalog.isAccountAllowed(member.did, viewer.unauthenticated));
+      this.allowed(member.did, viewer));
   }
 
   private followedCount(session: Session, communityId: number): number {
@@ -486,7 +518,7 @@ export class LiveOnboardingEngine {
 
   private samplePostOf(member: IntelMemberEntry, viewer: ViewerRef): string | undefined {
     const uri = this.liveSignals?.samplePostFor(member.did) ?? member.samplePostUri;
-    return uri && this.catalog.isAccountAllowed(uri, viewer.unauthenticated) ? uri : undefined;
+    return uri && this.allowed(uri, viewer) ? uri : undefined;
   }
 
   private decorate<T extends { communityId: number }>(summary: T, session: Session, viewer: ViewerRef) {
@@ -719,7 +751,7 @@ export class LiveOnboardingEngine {
     const extras: Pick[] = [];
     for (const did of params.pinnedDids ?? []) {
       if (used.has(did) || excluded.has(did) || session.follows.has(did)) continue;
-      if (!this.catalog.isAccountAllowed(did, viewer.unauthenticated)) continue;
+      if (!this.allowed(did, viewer)) continue;
       let home: { communityId: number; member: IntelMemberEntry } | undefined;
       for (const scene of plan) {
         const member = this.membersByCommunity.get(scene.communityId)?.find((m) => m.did === did);
@@ -858,7 +890,7 @@ export class LiveOnboardingEngine {
         const uris = community.previewPostUris.length > 0 ? community.previewPostUris : community.samplePostUris;
         for (const uri of uris) {
           if (items.length >= limit) break;
-          if (seen.has(uri) || !this.catalog.isAccountAllowed(uri, viewer.unauthenticated)) continue;
+          if (seen.has(uri) || !this.allowed(uri, viewer)) continue;
           const owner = /^at:\/\/(did:[^/]+)\//.exec(uri)?.[1] ?? "";
           if ((lineup.has(owner) || session.follows.has(owner)) !== inTimeline) continue;
           seen.add(uri);

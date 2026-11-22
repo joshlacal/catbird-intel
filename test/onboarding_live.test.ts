@@ -374,6 +374,21 @@ describe("live onboarding: rotation and variety", () => {
     }
   });
 
+  test("the mix holds among the accounts a viewer does not follow yet", async () => {
+    // Following every mid-sized account in the catalog's own 25 must not leave headliners in a row.
+    const follows = Array.from({ length: 25 }, (_, i) => i)
+      .filter((i) => i % 9 !== 0 && i % 4 !== 0)
+      .map((i) => memberDid(103, i));
+    for (const seed of [0.05, 0.31, 0.58, 0.83]) {
+      const engine = engineWith({ seed, follows });
+      const detail = (await engine.getCommunity(103, VIEWER))!;
+      const six = detail.members.slice(0, 6);
+      expect(six.some((m) => follows.includes(m.did))).toBe(false);
+      expect(six.filter((m) => m.tier === "headliner").length).toBeLessThanOrEqual(2);
+      expect(new Set(six.map((m) => m.role)).size).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   test("across sessions the deep pool is used, and stronger accounts lead more often", async () => {
     const appearances = new Map<string, number>();
     for (let i = 0; i < 200; i++) {
@@ -427,6 +442,34 @@ describe("live onboarding: fallbacks and surfaces", () => {
     expect(detail.members.length).toBeLessThanOrEqual(25);
     const solved = await engine.solveBundle({ selections: [pick(101)] }, VIEWER);
     expect(solved.follows.map((f) => f.did)).toEqual(detail.members.slice(0, 6).map((m) => m.did));
+  });
+
+  test("a pool built for another catalog is left out, and the catalog's own members still serve", async () => {
+    const bundle = buildBundle();
+    const engine = new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: { ...buildPool(bundle), sourceCatalogVersion: "some_other_catalog" },
+    });
+    expect(engine.poolVersion).toBeNull();
+    expect(engine.poolSkipped).toContain("some_other_catalog");
+    expect(engine.describe().onboarding_pool_skipped).toContain("some_other_catalog");
+    const detail = (await engine.getCommunity(103, VIEWER))!;
+    expect(detail.members.every((m) => Number(m.did.slice(-4)) < 25)).toBe(true);
+  });
+
+  test("a pool account that opted out of signed-out viewing is hidden from them only", async () => {
+    const bundle = buildBundle();
+    const deepDid = memberDid(103, 30);
+    const make = () => new LiveOnboardingEngine({
+      catalog: new S17CatalogEngine(bundle),
+      pool: { ...buildPool(bundle), noUnauthDids: [deepDid] },
+      random: () => 0.4,
+      config: { sheetDepth: 80 },
+    });
+    const signedIn = (await make().getCommunity(103, VIEWER))!.members.map((m) => m.did);
+    const signedOut = (await make().getCommunity(103, ANON))!.members.map((m) => m.did);
+    expect(signedIn).toContain(deepDid);
+    expect(signedOut).not.toContain(deepDid);
   });
 
   test("a scene with fewer candidates than its share gives what it has", async () => {

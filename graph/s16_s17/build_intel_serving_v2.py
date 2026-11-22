@@ -309,7 +309,167 @@ def classify_member(
     return role, mode, repost_bps, media_bps, est_ppw, why[:108]
 
 
-def build_bundle(out_path: pathlib.Path = OUT_PATH) -> dict[str, Any]:
+def pool_rank_bps(rank_idx: int, s13_raw: float) -> int:
+    """The bundle's member rankScoreBps formula, for a pool position."""
+    decay = max(0.55, 1.0 - 0.016 * rank_idx)
+    return int(round(min(9950.0, max(5000.0, (6800.0 + min(3000.0, math.log1p(max(s13_raw, 1.0)) * 340.0)) * decay))))
+
+
+def assemble_pool_members(
+    bundle_members: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    depth: int,
+    *,
+    blocked: set[str],
+    make_member,
+) -> list[dict[str, Any]]:
+    """One community's onboarding pool: the bundle's members verbatim (same DIDs, order, values), then the
+    picker's other screened candidates by descending effective score, skipping blocked and repeated DIDs.
+    `make_member(candidate, position)` builds a deep member; its rankScoreBps is clamped so the list never
+    rises after the bundle's last member."""
+    out = [dict(m) for m in bundle_members]
+    seen = {m["did"] for m in out}
+    rest = sorted(
+        (cand for cand in candidates if cand["did"] not in seen),
+        key=lambda cand: (-float(cand["eff"]), -int(cand["followers"]), cand["did"]),
+    )
+    prev_bps = out[-1]["rankScoreBps"] if out else 9950
+    for cand in rest:
+        if len(out) >= depth:
+            break
+        did = cand["did"]
+        if did in seen or did in blocked:
+            continue
+        member = make_member(cand, len(out))
+        member["rankScoreBps"] = min(prev_bps, int(member["rankScoreBps"]))
+        prev_bps = member["rankScoreBps"]
+        out.append(member)
+        seen.add(did)
+    return out
+
+
+def write_onboarding_pool(
+    bundle: dict[str, Any],
+    bundle_path: pathlib.Path,
+    pool_in: pathlib.Path,
+    pool_out: pathlib.Path,
+    *,
+    blocked: set[str],
+    no_unauth_all: set[str],
+    sqlite_orig_uris: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Write `intel_onboarding_pool_v1`: per bundle community, the bundle's members then deeper screened
+    candidates from the picker's pool_candidates.json. Only DIDs, numbers and post URIs; no handles or bios."""
+    sidecar = json.loads(pool_in.read_text())
+    depth = int(sidecar["poolDepth"])
+    cards_by_cid = {int(cd["community"]): cd["candidates"] for cd in sidecar["cards"]}
+    pool_dids = {cand["did"] for cands in cards_by_cid.values() for cand in cands}
+
+    sig_tbl = pq.read_table(
+        S17_DIR / "candidate_signals.parquet",
+        columns=[
+            "did", "slab_img_frac", "posts_per_day", "curator_boost", "pq_posts", "pq_originals",
+            "pq_mutual_share", "claude_acct_type", "c5_pred_type", "c5_p_brand", "s13_score",
+        ],
+    )
+    sig_cols = {col: sig_tbl[col].to_pylist() for col in sig_tbl.column_names}
+    pool_sig: dict[str, dict[str, Any]] = {}
+    for idx, d in enumerate(sig_cols["did"]):
+        if d in pool_dids:
+            pool_sig[d] = {col: sig_cols[col][idx] for col in sig_tbl.column_names if col != "did"}
+    med_tbl = pq.read_table(LAKE / "s12-closeout-20261030/medoids.parquet", columns=["did", "uris"])
+    pool_med: dict[str, list[str]] = {}
+    for d, uris in zip(med_tbl["did"].to_pylist(), med_tbl["uris"].to_pylist()):
+        if d in pool_dids and d not in blocked and uris:
+            clean_u = [u for u in uris if isinstance(u, str) and u.startswith(f"at://{d}/app.bsky.feed.post/")]
+            if clean_u:
+                pool_med[d] = clean_u[:3]
+    oct_tbl = pq.read_table(
+        S16_DIR / "oct22_preview_posts.parquet", columns=["uri", "did", "politicalness", "heat"]
+    )
+    pool_oct: dict[str, list[str]] = collections.defaultdict(list)
+    for uri, d, pol, heat in zip(
+        oct_tbl["uri"].to_pylist(), oct_tbl["did"].to_pylist(),
+        oct_tbl["politicalness"].to_pylist(), oct_tbl["heat"].to_pylist(),
+    ):
+        if d not in pool_dids or d in blocked or not str(uri).startswith(f"at://{d}/app.bsky.feed.post/"):
+            continue
+        if (pol is not None and float(pol) > 0.45) or (heat is not None and float(heat) > 0.45):
+            continue
+        if len(pool_oct[d]) < 4:
+            pool_oct[d].append(str(uri))
+
+    def make_member(cand: dict[str, Any], pos: int) -> dict[str, Any]:
+        did = cand["did"]
+        sig = pool_sig.get(did)
+        role, mode, rp_bps, media_bps, est_ppw, why = classify_member(cand, sig)
+        s13_raw = float((sig or {}).get("s13_score") or cand.get("s13") or 100.0)
+        sample: str | None = None
+        for cand_u in (
+            [f"at://{did}/app.bsky.feed.post/{rk}" for rk in (cand.get("md") or []) if rk]
+            + sqlite_orig_uris.get(did, [])
+            + pool_med.get(did, [])
+            + pool_oct.get(did, [])
+        ):
+            if cand_u.startswith(f"at://{did}/app.bsky.feed.post/"):
+                sample = cand_u
+                break
+        return {
+            "did": did,
+            "followers": int(cand["followers"]),
+            "role": role,
+            "recommendedMode": mode,
+            "whyPicked": why,
+            "rankScoreBps": pool_rank_bps(pos, s13_raw),
+            "repostShareBps": rp_bps,
+            "mediaShareBps": media_bps,
+            "estimatedPostsPerWeek": est_ppw,
+            "samplePostUri": sample,
+        }
+
+    communities: list[dict[str, Any]] = []
+    missing_cards: list[int] = []
+    # A DID lives in one community across the pool, as in the bundle: deep picks never repeat any bundle
+    # member or an earlier community's deep pick (the sidecar can come from a later picker run).
+    excluded = set(blocked) | {m["did"] for comm in bundle["communities"] for m in comm["members"]}
+    for comm in bundle["communities"]:
+        cid = int(comm["communityId"])
+        if cid not in cards_by_cid:
+            missing_cards.append(cid)
+        members = assemble_pool_members(
+            comm["members"], cards_by_cid.get(cid, []), depth, blocked=excluded, make_member=make_member
+        )
+        excluded.update(m["did"] for m in members)
+        communities.append({"communityId": cid, "members": members})
+
+    bundle_bytes = bundle_path.read_bytes()
+    now = dt.datetime.now(dt.timezone.utc)
+    all_members = {m["did"] for comm in communities for m in comm["members"]}
+    pool = {
+        "poolVersion": f"pool_v1_{now:%Y%m%d}_{hashlib.sha256(bundle_bytes).hexdigest()[:8]}",
+        "generatedAt": now.isoformat(),
+        "sourceCatalogVersion": bundle["catalogVersion"],
+        "depth": depth,
+        "communities": communities,
+        "noUnauthDids": sorted(all_members & no_unauth_all),
+    }
+    tmp = pool_out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(pool, ensure_ascii=False, separators=(",", ":")))
+    tmp.replace(pool_out)
+    sizes = sorted(len(comm["members"]) for comm in communities)
+    print(
+        f"Wrote {pool_out} ({pool_out.stat().st_size / 1e6:.2f} MB): {len(communities)} communities, "
+        f"{sum(sizes)} members (min {sizes[0] if sizes else 0}, max {sizes[-1] if sizes else 0}), "
+        f"{len(missing_cards)} communities without a picker pool card."
+    )
+    return pool
+
+
+def build_bundle(
+    out_path: pathlib.Path = OUT_PATH,
+    pool_in: pathlib.Path | None = None,
+    pool_out: pathlib.Path | None = None,
+) -> dict[str, Any]:
     cards_v1 = json.loads((S17_DIR / "cards_v1.json").read_text())
     descs = json.loads((S17_DIR / "cards_descriptions.json").read_text())
     insp = json.loads((S17_DIR / "inspector_index.json").read_text())
@@ -911,6 +1071,19 @@ def build_bundle(out_path: pathlib.Path = OUT_PATH) -> dict[str, Any]:
         f"{sum(1 for c in communities_out if len(c['samplePostUris']) >= 3)}/1016 >=3 sample posts, "
         f"{len(duels_out)} taste duels, {len(warm_start)} warm-start DIDs."
     )
+    if pool_in is not None and pool_out is not None:
+        # non_organic_exclude_dids.txt lines are "did\treason", so `non_org` above never matches a DID; the
+        # picker already keeps those accounts off cards. The pool parses the DID column as a deeper guard.
+        non_org_dids = {line.split("\t", 1)[0].strip() for line in non_org if line.strip()}
+        write_onboarding_pool(
+            bundle,
+            out_path,
+            pool_in,
+            pool_out,
+            blocked=unsafe_dids | non_org_dids,
+            no_unauth_all=no_unauth_all,
+            sqlite_orig_uris=sqlite_orig_uris,
+        )
     return bundle
 
 
@@ -922,4 +1095,27 @@ if __name__ == "__main__":
         default=OUT_PATH,
         help="Bundle output path (default: the lake's intel_serving_v2.json, the file a deploy copies).",
     )
-    build_bundle(parser.parse_args().out)
+    parser.add_argument(
+        "--s17-dir",
+        type=pathlib.Path,
+        default=None,
+        help="Read the picker outputs (cards_v1.json, inspector_index.json, ...) from this directory instead.",
+    )
+    parser.add_argument(
+        "--pool-in",
+        type=pathlib.Path,
+        default=None,
+        help="The picker's pool_candidates.json (build_s17.py --pool-depth N). Needs --pool-out.",
+    )
+    parser.add_argument(
+        "--pool-out",
+        type=pathlib.Path,
+        default=None,
+        help="Write intel_onboarding_pool_v1 here: each bundle community's members, then deeper screened accounts.",
+    )
+    args = parser.parse_args()
+    if (args.pool_in is None) != (args.pool_out is None):
+        parser.error("--pool-in and --pool-out go together")
+    if args.s17_dir is not None:
+        S17_DIR = args.s17_dir
+    build_bundle(args.out, args.pool_in, args.pool_out)

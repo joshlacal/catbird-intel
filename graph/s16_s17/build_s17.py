@@ -613,6 +613,49 @@ def trimmed_unit_centroid(mat: np.ndarray, trim_q: float = 0.15) -> tuple[np.nda
     return c1.astype(np.float32), float(sims1.mean())
 
 
+def deep_pool_pids(
+    eff_sorted_pids: list[int],
+    card_cands: list[int],
+    depth: int,
+    *,
+    is_sup,
+    is_unapproved_rehome,
+    is_excluded,
+    top_n: int = BUNDLE_DEFAULT,
+) -> list[int]:
+    """Onboarding pool order for one card: the card's top `top_n` verbatim, then every other eligible account
+    in effective-score order. Deep positions skip S13 supplements, re-homed accounts that are not manually
+    approved, and anything carrying an account exclusion. The >500k headliner cap is not applied (the live
+    engine caps headliners itself). `eff_sorted_pids` is already screened and sorted like Stage D."""
+    top = list(card_cands[:top_n])
+    top_set = set(top)
+    deep = [
+        p
+        for p in eff_sorted_pids
+        if p not in top_set and not is_sup(p) and not is_unapproved_rehome(p) and not is_excluded(p)
+    ]
+    return (top + deep)[: max(depth, 0)]
+
+
+def pool_account_meta(did: str, sig_r: dict, lf_r: dict | None, followers: int, s13: float, medoid_uris) -> dict:
+    """The per-account fields the serving-bundle builder needs to classify a pool member (same rounding as
+    inspector `acct_meta`). No handles, names or bios."""
+    cl_type_s = (sig_r.get("claude_acct_type") or "").strip()
+    c5_type_s = (sig_r.get("c5_pred_type") or "").strip()
+    meta = {
+        "did": did,
+        "followers": int(followers),
+        "s13": round(float(s13), 2),
+        "img": round(float(sig_r.get("slab_img_frac") or 0.0), 2),
+        "ppd": round(float(sig_r.get("posts_per_day") or 0.0), 1),
+        "at": (cl_type_s or c5_type_s)[:28],
+        "md": [u.rsplit("/", 1)[-1] for u in (medoid_uris or [])[:3]],
+    }
+    if lf_r is not None:
+        meta["lf"] = {"rp": lf_r.get("repost_frac"), "ry": lf_r.get("reply_frac")}
+    return meta
+
+
 def sha256_file(p: pathlib.Path) -> str:
     h = hashlib.sha256()
     with open(p, "rb") as fh:
@@ -789,6 +832,13 @@ def main() -> None:
         "--strict-registered-only",
         action="store_true",
         help="Disable provisional S17 rev-2/rev-3 safety, embedding, and live-feed curation rules.",
+    )
+    ap.add_argument(
+        "--pool-depth",
+        type=int,
+        default=0,
+        help="Opt-in: also write pool_candidates.json with each kept card's screened ordered list up to N "
+        "(the top 25 verbatim, then deeper eligible accounts by effective score). 0 = off; no other output changes.",
     )
     args = ap.parse_args()
     out_dir = pathlib.Path(args.out).expanduser()
@@ -1713,6 +1763,7 @@ def main() -> None:
 
     # Stage D: Final candidate ranking, clean lists & descriptions, starter packs, O7 feeds, and medoids per canonical card
     rehomed_in_top25_total = 0
+    pool_by_canon: dict[int, list[tuple[int, float]]] = {}  # only filled with --pool-depth > 0
     for cd_base in canon_cards:
         c = cd_base["community"]
         native_pids = cd_base["native_elig_pids"]
@@ -1780,6 +1831,18 @@ def main() -> None:
             excluded_cards["lt25_after_pop_or_sup_cap"].append(c)
             continue
         rehomed_in_top25_total += rh_cnt
+        if args.pool_depth > 0:
+            pool_by_canon[c] = [
+                (p_i, eff_score_by_pid[p_i])
+                for p_i in deep_pool_pids(
+                    elig_pids,
+                    card_cands,
+                    args.pool_depth,
+                    is_sup=lambda p: bool(s13_sup[p]),
+                    is_unapproved_rehome=lambda p: p in rehomed_set_c and full_dids[p] not in manual_approved_dids,
+                    is_excluded=lambda p: full_dids[p] in acct_excl_reason_by_did,
+                )
+            ]
 
         # Clean starter packs (deduplicated by URI across merged twins)
         kept_packs: list[dict] = []
@@ -2551,6 +2614,33 @@ def main() -> None:
         "verify": ver_report,
     }
     (out_dir / "receipt.json").write_text(json.dumps(receipt, indent=2))
+    if args.pool_depth > 0:
+        pool_cards = []
+        for cd in kept_cards_raw:
+            c_k = cd["community"]
+            top_set_k = set(cd["cand_pids"][:BUNDLE_DEFAULT])
+            entries = []
+            for p_i, eff in pool_by_canon.get(c_k, []):
+                d_p = full_dids[p_i]
+                meta_p = pool_account_meta(
+                    d_p,
+                    sig_by_pid.get(p_i) or {},
+                    live_feed_by_did.get(d_p),
+                    live_prof_by_did[d_p]["followersCount"],
+                    float(s13_score[p_i]),
+                    medoid_by_did.get(d_p),
+                )
+                meta_p["eff"] = round(float(eff), 4)
+                meta_p["top"] = p_i in top_set_k
+                entries.append(meta_p)
+            pool_cards.append({"community": int(c_k), "candidates": entries})
+        pool_sidecar = {
+            "poolDepth": args.pool_depth,
+            "sourceCardsSha256": sha256_file(cards_json_path),
+            "cards": pool_cards,
+        }
+        (out_dir / "pool_candidates.json").write_text(json.dumps(pool_sidecar, separators=(",", ":")))
+        print(f"[s17-build] pool_candidates.json: cards={len(pool_cards):,}, depth={args.pool_depth}", flush=True)
     print(
         f"[s17-build] PASS: v0_cards={len(chosen_payload['cards']):,}, bytes={len(chosen_bytes):,}/{MAX_JSON_BYTES:,}, "
         f"rehomed={rehome_summary['rehomed_eligible_total']:,} (top25={rehome_summary['rehomed_in_top25']:,}), "

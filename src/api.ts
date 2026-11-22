@@ -12,6 +12,7 @@ import {
   type CalibrationSwipeAnswerInput,
   type CommunitySelectionInput,
 } from "./intel_catalog.ts";
+import { LiveOnboardingEngine, createPublicFollowsFetcher } from "./onboarding_live.ts";
 import { AuthenticationError, createServiceAuthenticator, type ServiceAuthenticator } from "./service_auth.ts";
 import { SERVING_CONTRACT_VERSION, InvalidRequest, parseControls, passesControls, controlReport,
   recommendationAction, type ServingControls } from "./serving_contract.ts";
@@ -125,6 +126,7 @@ let defaultCommunities: number[] = [];
 let sourceCommunityVersion: string | null = null;
 let cacheRefreshedAt: string | null = null;
 let activeCatalogEngine: S17CatalogEngine | null = null;
+let activeLiveOnboarding: LiveOnboardingEngine | null = null;
 let activeVectorStore: IntelVectorStore | null = null;
 const publicFollowsCache = new Map<string, { expiresAt: number; dids: string[] }>();
 
@@ -135,6 +137,11 @@ export function installVectorStore(store: IntelVectorStore | null) {
 
 export function installCatalogEngine(engine: S17CatalogEngine | null) {
   activeCatalogEngine = engine;
+}
+
+/** The live onboarding engine wraps the catalog engine; null serves onboarding from the static catalog. */
+export function installLiveOnboardingEngine(engine: LiveOnboardingEngine | null) {
+  activeLiveOnboarding = engine;
 }
 
 /** Explicit dependency seam for local fixture-backed HTTP tests and future atomic publication. */
@@ -2036,6 +2043,7 @@ async function topicClusters(
 export function createApiHandler(options: {
   authenticate?: ServiceAuthenticator;
   catalogEngine?: S17CatalogEngine | null;
+  liveOnboarding?: LiveOnboardingEngine | null;
   vectorStore?: IntelVectorStore | null;
   queryClickHouse?: (sql: string) => Promise<JsonRow[]>;
   appViewFetch?: AppViewFetch;
@@ -2044,6 +2052,10 @@ export function createApiHandler(options: {
 } = {}) {
   const authenticate = options.authenticate ?? createServiceAuthenticator();
   const getEngine = () => options.catalogEngine ?? activeCatalogEngine;
+  // A handler given its own catalog engine never falls through to the process-wide live engine,
+  // which wraps a different catalog.
+  const getLive = () => Object.prototype.hasOwnProperty.call(options, "liveOnboarding") ?
+    options.liveOnboarding ?? null : options.catalogEngine ? null : activeLiveOnboarding;
   const getVectorStore = () => Object.prototype.hasOwnProperty.call(options, "vectorStore") ?
     options.vectorStore ?? null : activeVectorStore;
   const query: ClickHouseQuery = options.queryClickHouse ? async (sql) => {
@@ -2059,6 +2071,7 @@ export function createApiHandler(options: {
       const url = new URL(request.url);
       const path = url.pathname;
       const engine = getEngine();
+      const live = engine ? getLive() : null;
       const vectorStore = getVectorStore();
       if (path === "/health") return json({
         ok: true,
@@ -2078,11 +2091,13 @@ export function createApiHandler(options: {
           s17_catalog_version: engine.bundle.catalogVersion,
           s17_communities: engine.bundle.communities.length,
           s17_scenes: engine.bundle.scenes.length,
+          ...(live ? live.describe() : { onboarding_engine: "static" }),
         } : {}),
       });
       const method = path.startsWith("/xrpc/") ? path.slice(6) : "blue.catbird.intel.getCommunity";
       const viewer = await authenticate(request, method);
       const unauthenticated = viewer === null; // Never infer authentication from request fields.
+      const viewerRef = { did: viewer, unauthenticated };
       const v4Method = V4_METHODS[method] === true;
       if ((v4Method || (options.requireServiceAuth && path.startsWith("/xrpc/blue.catbird."))) && unauthenticated) {
         return json({ error: "AuthRequired", message: "Service authentication required" }, 401);
@@ -2234,6 +2249,7 @@ export function createApiHandler(options: {
         const q = url.searchParams.get("q");
         const macroCategory = url.searchParams.get("macroCategory");
         const limit = integer(url.searchParams.get("limit"), 80, 1, 200);
+        if (live) return json(await live.getCatalog({ seedFollowDids, q, macroCategory, limit }, viewerRef));
         return json(engine.getCatalog({ seedFollowDids, q, macroCategory, limit, unauthenticated }));
       }
 
@@ -2265,7 +2281,7 @@ export function createApiHandler(options: {
             throw new InvalidRequest("Missing required parameter: communityId");
           }
           const cid = integer(url.searchParams.get("communityId"), 0, 0, 0xffffffff);
-          const detail = engine.getCommunity(cid, unauthenticated);
+          const detail = live ? await live.getCommunity(cid, viewerRef) : engine.getCommunity(cid, unauthenticated);
           if (!detail) return json({ error: "CommunityNotFound" }, 404);
           return json(detail);
         }
@@ -2296,6 +2312,7 @@ export function createApiHandler(options: {
           const sceneSlug = url.searchParams.get("sceneSlug");
           const limit = integer(url.searchParams.get("limit"), 60, 1, 200);
           const cursor = url.searchParams.get("cursor");
+          if (live) return json(await live.listCommunities({ q, macroCategory, sceneSlug, limit, cursor }, viewerRef));
           return json(engine.listCommunities({ q, macroCategory, sceneSlug, limit, cursor, unauthenticated }));
         }
         if (!engine && communitiesById.size === 0) {
@@ -2326,13 +2343,27 @@ export function createApiHandler(options: {
           const seedFollowDids = parseDidArray(body.seedFollowDids, "seedFollowDids", 100);
           if (path.endsWith(".getCalibrationSwipes")) {
             const maxSwipes = integer(body.maxSwipes, 5, 1, 12);
+            if (live) return json(await live.getCalibrationSwipes({ selections, seedFollowDids, maxSwipes }, viewerRef));
             return json(engine.getCalibrationSwipes({ selections, seedFollowDids, maxSwipes, unauthenticated }));
           }
           const swipes = parseCanonicalSwipesInput(body.swipes);
           const controls = parseCanonicalControlsInput(body.controls);
           if (path.endsWith(".previewTimeline")) {
             const limit = integer(body.limit, 20, 1, 40);
+            if (live) return json(await live.previewTimeline({ selections, swipes, controls, limit }, viewerRef));
             return json(engine.previewTimeline({ selections, swipes, controls, limit, unauthenticated }));
+          }
+          if (live) {
+            // No targetSize asks the live engine to size each scene itself; a number is the older
+            // client contract, one total split across the picked scenes.
+            const targetSize = body.targetSize === undefined || body.targetSize === null ? undefined :
+              integer(body.targetSize, 24, 8, live.config.maxLegacyTotal);
+            const pinnedDids = parseDidArray(body.pinnedDids, "pinnedDids", 200);
+            const excludedDids = parseDidArray(body.excludedDids, "excludedDids", 500);
+            return json(await live.solveBundle(
+              { selections, swipes, controls, targetSize, pinnedDids, excludedDids, seedFollowDids },
+              viewerRef,
+            ));
           }
           const targetSize = integer(body.targetSize, 24, 8, 50);
           const pinnedDids = parseDidArray(body.pinnedDids, "pinnedDids", 30);
@@ -2408,6 +2439,26 @@ if (import.meta.main) {
       `${activeVectorStore.manifest.vectorizedProducerCount}/${activeVectorStore.manifest.producerCount} producers, ` +
       `${activeVectorStore.manifest.communityCentroidCount} communities`,
     );
+  }
+  if (process.env.INTEL_ONBOARDING_ENGINE === "live" && activeCatalogEngine) {
+    const poolPath = process.env.INTEL_ONBOARDING_POOL_PATH;
+    const pool = poolPath && existsSync(poolPath) ? LiveOnboardingEngine.loadPoolFile(poolPath) : null;
+    if (poolPath && !pool) console.warn(`Onboarding pool not found at ${poolPath}; using the catalog's own members`);
+    const lineupSize = (name: string, fallback: number) => {
+      const value = Number(process.env[name] ?? fallback);
+      return Number.isInteger(value) && value >= 1 && value <= 24 ? value : fallback;
+    };
+    activeLiveOnboarding = new LiveOnboardingEngine({
+      catalog: activeCatalogEngine,
+      pool,
+      vectors: activeVectorStore,
+      followsFetcher: createPublicFollowsFetcher({ baseUrl: PUBLIC_APPVIEW }),
+      config: {
+        defaultLineup: lineupSize("INTEL_ONBOARDING_LINEUP_DEFAULT", 6),
+        boostedLineup: lineupSize("INTEL_ONBOARDING_LINEUP_BOOSTED", 12),
+      },
+    });
+    console.log(`Live onboarding engine on: ${JSON.stringify(activeLiveOnboarding.describe())}`);
   }
   if (process.env.INTEL_SKIP_CLICKHOUSE !== "1") {
     try {

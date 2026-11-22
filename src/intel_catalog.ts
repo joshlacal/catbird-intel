@@ -202,6 +202,71 @@ export class S17CatalogEngine {
     return this.commById.has(communityId);
   }
 
+  community(communityId: number): IntelCommunityEntry | null {
+    return this.commById.get(communityId) ?? null;
+  }
+
+  /** Whether an account (or the owner of an AT URI) may be shown to this kind of viewer. */
+  isAccountAllowed(uriOrDid: string, unauthenticated: boolean): boolean {
+    return this.isUriAllowed(uriOrDid, unauthenticated);
+  }
+
+  /**
+   * Feeds, starter packs and unselected neighbour scenes for a lineup. `feedOrder` decides which
+   * scenes' feeds and packs win the limited slots; `covered` is every scene the lineup draws from.
+   * A neighbour is offered only if it is not hostile to any covered scene.
+   */
+  auxiliaryFor(feedOrder: readonly number[], covered: Iterable<number>, unauthenticated: boolean) {
+    const coveredIds = new Set(covered);
+    const feeds: { uri: string; communityId: number; communityTitle: string }[] = [];
+    const seenFeeds = new Set<string>();
+    const starterPacks: { uri: string; communityId: number; communityTitle: string }[] = [];
+    const seenPacks = new Set<string>();
+
+    for (const cid of feedOrder) {
+      if (!coveredIds.has(cid)) continue;
+      const comm = this.commById.get(cid);
+      if (!comm) continue;
+      for (const uri of comm.feedGeneratorUris) {
+        if (!seenFeeds.has(uri) && this.isUriAllowed(uri, unauthenticated) && feeds.length < 6) {
+          seenFeeds.add(uri);
+          feeds.push({ uri, communityId: cid, communityTitle: comm.title });
+        }
+      }
+      for (const uri of comm.starterPackUris) {
+        if (!seenPacks.has(uri) && this.isUriAllowed(uri, unauthenticated) && starterPacks.length < 4) {
+          seenPacks.add(uri);
+          starterPacks.push({ uri, communityId: cid, communityTitle: comm.title });
+        }
+      }
+    }
+
+    const neighborScores = new Map<number, number>();
+    for (const cid of coveredIds) {
+      const comm = this.commById.get(cid);
+      if (!comm) continue;
+      for (const nid of comm.neighborCommunityIds) {
+        if (coveredIds.has(nid) || !this.commById.has(nid)) continue;
+        let hostile = false;
+        for (const scid of coveredIds) {
+          if (this.highHostilitySet.has(pairKey(nid, scid))) {
+            hostile = true;
+            break;
+          }
+        }
+        if (!hostile) {
+          neighborScores.set(nid, (neighborScores.get(nid) ?? 0) + 1);
+        }
+      }
+    }
+    const harmoniousNeighbors = [...neighborScores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([nid]) => this.toCommunitySummary(this.commById.get(nid)!, unauthenticated));
+
+    return { feeds, starterPacks, harmoniousNeighbors };
+  }
+
   private isUriAllowed(uriOrDid: string, unauthenticated: boolean): boolean {
     const owner = ownerDidFromUri(uriOrDid);
     if (!owner) return false;
@@ -744,53 +809,12 @@ export class S17CatalogEngine {
       };
     });
 
-    // Collect top feeds & starter packs from covered communities
-    const feeds: { uri: string; communityId: number; communityTitle: string }[] = [];
-    const seenFeeds = new Set<string>();
-    const starterPacks: { uri: string; communityId: number; communityTitle: string }[] = [];
-    const seenPacks = new Set<string>();
-
-    for (const [cid] of rankedComms) {
-      if (!selectedCids.has(cid)) continue;
-      const comm = this.commById.get(cid);
-      if (!comm) continue;
-      for (const uri of comm.feedGeneratorUris) {
-        if (!seenFeeds.has(uri) && this.isUriAllowed(uri, params.unauthenticated) && feeds.length < 6) {
-          seenFeeds.add(uri);
-          feeds.push({ uri, communityId: cid, communityTitle: comm.title });
-        }
-      }
-      for (const uri of comm.starterPackUris) {
-        if (!seenPacks.has(uri) && this.isUriAllowed(uri, params.unauthenticated) && starterPacks.length < 4) {
-          seenPacks.add(uri);
-          starterPacks.push({ uri, communityId: cid, communityTitle: comm.title });
-        }
-      }
-    }
-
-    // Harmonious neighbor communities not yet selected
-    const neighborScores = new Map<number, number>();
-    for (const cid of selectedCids) {
-      const comm = this.commById.get(cid);
-      if (!comm) continue;
-      for (const nid of comm.neighborCommunityIds) {
-        if (selectedCids.has(nid) || !this.commById.has(nid)) continue;
-        let hostile = false;
-        for (const scid of selectedCids) {
-          if (this.highHostilitySet.has(pairKey(nid, scid))) {
-            hostile = true;
-            break;
-          }
-        }
-        if (!hostile) {
-          neighborScores.set(nid, (neighborScores.get(nid) ?? 0) + 1);
-        }
-      }
-    }
-    const harmoniousNeighbors = [...neighborScores.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([nid]) => this.toCommunitySummary(this.commById.get(nid)!, params.unauthenticated));
+    // Feeds, starter packs and harmonious neighbours for the scenes the lineup covers
+    const { feeds, starterPacks, harmoniousNeighbors } = this.auxiliaryFor(
+      rankedComms.map(([cid]) => cid),
+      selectedCids,
+      params.unauthenticated,
+    );
 
     const estimatedDailyPosts = Math.round(
       selected.reduce((sum, { member, hideReposts }) => {

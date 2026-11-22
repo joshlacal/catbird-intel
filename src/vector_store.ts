@@ -421,6 +421,17 @@ export class IntelVectorStore {
     return this.vectorForRow(signal.vecRow, window);
   }
 
+  /**
+   * Zero-copy view of a producer's quantized vector (signed int8 values stored as bytes), or null
+   * when the producer has no vector in this window. Cosine similarity needs no scale factor.
+   */
+  rawVectorForDid(did: string, window: VectorWindow): Uint8Array | null {
+    const signal = this.signalForDid(did);
+    if (!signal || signal.vecRow < 0 || !this.hasWindow(signal, window)) return null;
+    const offset = signal.vecRow * INTEL_VECTOR_DIMS;
+    return this.vectors[window].q8.subarray(offset, offset + INTEL_VECTOR_DIMS);
+  }
+
   vectorCountForDid(did: string, window: VectorWindow): number {
     const signal = this.signalForDid(did);
     if (!signal || signal.vecRow < 0 || !this.hasWindow(signal, window)) return 0;

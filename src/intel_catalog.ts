@@ -505,9 +505,13 @@ export class S17CatalogEngine {
         if (aScene !== undefined && selectedScenes.has(aScene)) relevance += 2;
         if (bScene !== undefined && selectedScenes.has(bScene)) relevance += 2;
         if (duel.kind === "collision_trap") relevance += 1;
-        return { duel, relevance };
+        // A collision trap asks which meaning of an ambiguous word the viewer wants. Selecting
+        // exactly one of its two communities already answers that, so the duel only fills a slot
+        // when nothing unanswered is left.
+        const answered = duel.kind === "collision_trap" && selectedCids.has(aCid) !== selectedCids.has(bCid);
+        return { duel, relevance, answered };
       })
-      .sort((x, y) => y.relevance - x.relevance);
+      .sort((x, y) => Number(x.answered) - Number(y.answered) || y.relevance - x.relevance);
 
     const swipes = [];
     for (const { duel } of scored) {

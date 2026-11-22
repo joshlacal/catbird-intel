@@ -12,6 +12,10 @@ serving bundle for `catbird-intel`:
 4. Precomputed contrastive `tasteDuels` (8 classic ambiguity traps + ~56 sibling sub-scene splitters).
 5. Compact `warmStartIndex` mapping top producers to `(communityId, weightBps)` for instant orbit seeding,
    plus `highHostilityPairs` (`S14`) and `noUnauthDids` (`S5` `!no-unauthenticated`).
+
+Final serving gate (2026-11-21): accounts matching `feed_screen.unattended_feed_reason` (broadcast-only
+auto-posters with no mutual ties and almost no engagement) are excluded from members, sample posts and
+preview posts. The excluded DIDs are written beside the bundle for audit.
 """
 from __future__ import annotations
 
@@ -19,22 +23,27 @@ import base64
 import collections
 import datetime as dt
 import hashlib
+import argparse
 import json
 import math
 import pathlib
 import re
 import sqlite3
+import sys
 from typing import Any
 
 import numpy as np
 import pyarrow.parquet as pq
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from feed_screen import is_broadcast_only, unattended_feed_reason  # noqa: E402
 
 LAKE = pathlib.Path("/Users/joshlacalamito/catbird-lake-local")
 S17_DIR = LAKE / "s17-picker-v1-20261030"
 S16_DIR = LAKE / "s16-s17-20261030"
 OUT_PATH = S17_DIR / "intel_serving_v2.json"
 
-CATALOG_VERSION = "s17_rev6_intel_v2_20261031"
+CATALOG_VERSION = "s17_rev6_intel_v2_20261121"
 _B32_SET = set("abcdefghijklmnopqrstuvwxyz234567")
 
 
@@ -239,7 +248,15 @@ def classify_member(
     else:
         repost_frac = 0.12
 
-    reply_frac = float(lf.get("ry")) if lf.get("ry") is not None else (0.32 if pq_mutual >= 0.35 else 0.15)
+    # A window of 30+ posts that are all originals is measured evidence of no replies; without a live
+    # feed sample it overrides the default reply estimate and the cadence-based conversational guess.
+    broadcast_only = lf.get("ry") is None and is_broadcast_only(sig)
+    if lf.get("ry") is not None:
+        reply_frac = float(lf.get("ry"))
+    elif broadcast_only:
+        reply_frac = 0.0
+    else:
+        reply_frac = 0.32 if pq_mutual >= 0.35 else 0.15
 
     repost_bps = int(round(max(0.0, min(1.0, repost_frac)) * 10000))
     media_bps = int(round(max(0.0, min(1.0, img_frac)) * 10000))
@@ -260,8 +277,11 @@ def classify_member(
         role = "visual_maker"
     elif repost_bps >= 4200 or (curator_boost >= 550.0 and repost_bps >= 2200):
         role = "scene_curator"
-    elif reply_frac >= 0.26 or pq_mutual >= 0.36 or (ppd >= 2.8 and media_bps < 2000):
+    elif reply_frac >= 0.26 or pq_mutual >= 0.36 or (ppd >= 2.8 and media_bps < 2000 and not broadcast_only):
         role = "conversationalist"
+    elif broadcast_only and pq_mutual <= 0.02:
+        # Broadcasts without replies and without mutual ties to the scene: a feed, not a regular.
+        role = "project_or_studio"
     else:
         role = "anchor_creator"
 
@@ -289,7 +309,7 @@ def classify_member(
     return role, mode, repost_bps, media_bps, est_ppw, why[:108]
 
 
-def build_bundle() -> dict[str, Any]:
+def build_bundle(out_path: pathlib.Path = OUT_PATH) -> dict[str, Any]:
     cards_v1 = json.loads((S17_DIR / "cards_v1.json").read_text())
     descs = json.loads((S17_DIR / "cards_descriptions.json").read_text())
     insp = json.loads((S17_DIR / "inspector_index.json").read_text())
@@ -299,6 +319,7 @@ def build_bundle() -> dict[str, Any]:
     non_org = set((S17_DIR / "non_organic_exclude_dids.txt").read_text().splitlines())
     overrides = json.loads((S17_DIR / "manual_overrides.json").read_text())
     manual_excl = set(overrides.get("excluded_dids", []))
+    manual_approved = set(overrides.get("approved_dids", []))
 
     prof = pq.read_table(
         LAKE / "s5-sweep-20261030/profiles.parquet",
@@ -343,6 +364,10 @@ def build_bundle() -> dict[str, Any]:
             "c5_pred_type",
             "c5_p_brand",
             "s13_score",
+            "pq_light_engagers",
+            "slab_n_posts",
+            "slab_near_dup_frac",
+            "slab_nn_mean_cos",
         ],
     )
     sig_by_did: dict[str, dict[str, Any]] = {}
@@ -350,6 +375,25 @@ def build_bundle() -> dict[str, Any]:
     for idx, d in enumerate(sig_cols["did"]):
         if d in catalog_did_set:
             sig_by_did[d] = {col: sig_cols[col][idx] for col in sig_tbl.column_names if col != "did"}
+
+    # Final serving gate: unattended broadcast feeds never reach members, sample posts or previews.
+    # Every candidate is screened, not only catalog members, because preview posts also come from
+    # non-member authors. An operator approval in manual_overrides.json wins over the screen.
+    screen_cols = (
+        "pq_posts",
+        "pq_originals",
+        "pq_mutual_share",
+        "pq_light_engagers",
+        "slab_n_posts",
+        "slab_near_dup_frac",
+        "slab_nn_mean_cos",
+    )
+    unattended_feed_dids = {
+        d
+        for idx, d in enumerate(sig_cols["did"])
+        if d not in manual_approved and unattended_feed_reason({col: sig_cols[col][idx] for col in screen_cols})
+    }
+    unsafe_dids |= unattended_feed_dids
 
     # Load author_feeds.sqlite for clean post URI backfill + aggregate community TF-IDF terms
     con = sqlite3.connect(S17_DIR / "author_feeds.sqlite")
@@ -854,11 +898,14 @@ def build_bundle() -> dict[str, Any]:
         "warmStartIndex": dict(warm_start),
     }
 
-    tmp = OUT_PATH.with_suffix(".json.tmp")
+    tmp = out_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(bundle, ensure_ascii=False, separators=(",", ":")))
-    tmp.replace(OUT_PATH)
+    tmp.replace(out_path)
+    excl_path = out_path.with_name(out_path.stem + ".unattended_feed_exclude_dids.txt")
+    excl_path.write_text("".join(f"{d}\n" for d in sorted(unattended_feed_dids)))
     print(
-        f"Wrote {OUT_PATH} ({OUT_PATH.stat().st_size / 1e6:.2f} MB): "
+        f"Excluded {len(unattended_feed_dids)} unattended broadcast feeds ({excl_path.name}). "
+        f"Wrote {out_path} ({out_path.stat().st_size / 1e6:.2f} MB): "
         f"{len(scenes_out)} scenes, {len(communities_out)} communities, "
         f"{sum(len(c['members']) for c in communities_out)} member entries, "
         f"{sum(1 for c in communities_out if len(c['samplePostUris']) >= 3)}/1016 >=3 sample posts, "
@@ -868,4 +915,11 @@ def build_bundle() -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    build_bundle()
+    parser = argparse.ArgumentParser(description="Build the S17 rev 6 intel serving bundle.")
+    parser.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=OUT_PATH,
+        help="Bundle output path (default: the lake's intel_serving_v2.json, the file a deploy copies).",
+    )
+    build_bundle(parser.parse_args().out)

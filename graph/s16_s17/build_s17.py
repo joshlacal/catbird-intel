@@ -47,6 +47,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import s3_prep  # noqa: E402
 from s6picker import inputs as s6_in, keywords as s6_kw  # noqa: E402
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from feed_screen import unattended_feed_reason  # noqa: E402
+
 MAX_JSON_BYTES = 2_097_152
 BUNDLE_DEFAULT = 25
 POP_LIMIT = 500_000
@@ -270,6 +273,12 @@ def screen_rev4_data_signals(
         or (pqp >= 250 and pql <= 2 and fol < 500)
     ):
         return "automated_firehose_cadence"
+
+    # 5b. Unattended broadcast feeds: no replies, no mutual ties and almost no engagement.
+    # Catches auto-posters that stay under each single-axis threshold in screens 5 and 6.
+    feed_reason = unattended_feed_reason(sig)
+    if feed_reason:
+        return feed_reason
 
     # 6. Slab per-post near-duplicate template/promo bot (catches both slow-cadence and active template bots)
     sn = int(sig.get("slab_n_posts") or 0)

@@ -630,3 +630,53 @@ describe("Catbird Intel v3 Canonical XRPC & DID Key Resolution", () => {
     expect(solve503.status).toBe(503);
   });
 });
+
+describe("Calibration swipe selection", () => {
+  const split = {
+    swipeId: "split_apple_101_102",
+    kind: "subscene_split" as const,
+    prompt: "Inside Apple & Swift Craft, which corner feels more like home?",
+    optionA: {
+      communityId: 101,
+      title: "SwiftUI & Apple Platform Craft",
+      subtitle: "iOS and macOS developers building native apps.",
+      sceneTitle: "Apple & Swift Craft",
+      samplePostUris: ["at://did:plc:swftanchor0000000001/app.bsky.feed.post/3l7revaaaaaaa"],
+    },
+    optionB: {
+      communityId: 102,
+      title: "Shaders & Graphics",
+      subtitle: "Graphics programmers.",
+      sceneTitle: "Apple & Swift Craft",
+      samplePostUris: ["at://did:plc:shdranchor0000000001/app.bsky.feed.post/3l7revaaaaaaa"],
+    },
+  };
+  const engineWithSplit = () => {
+    const bundle = buildSyntheticBundle();
+    bundle.tasteDuels.push(split);
+    return new S17CatalogEngine(bundle);
+  };
+  const ids = (selected: number[], maxSwipes: number) =>
+    engineWithSplit()
+      .getCalibrationSwipes({
+        selections: selected.map((communityId) => ({ communityId, weight: 1 })),
+        maxSwipes,
+        unauthenticated: false,
+      })
+      .swipes.map((swipe) => swipe.swipeId);
+
+  test("a collision trap the selection already answers is asked last, or not at all", () => {
+    // Picking the Apple community answers "which Swift do you mean".
+    expect(ids([101], 1)).toEqual(["split_apple_101_102"]);
+    expect(ids([101], 4)).toEqual(["split_apple_101_102", "trap_swift"]);
+    expect(ids([201], 1)).toEqual(["split_apple_101_102"]);
+  });
+
+  test("an unanswered collision trap keeps its priority", () => {
+    // Both meanings picked: which one matters more is still open.
+    expect(ids([101, 201], 1)).toEqual(["trap_swift"]);
+    // Neither meaning picked, same scene as a pick: the word is still ambiguous.
+    expect(ids([102], 2)).toEqual(["split_apple_101_102", "trap_swift"]);
+    expect(ids([303], 1)).toEqual(["trap_swift"]);
+  });
+});

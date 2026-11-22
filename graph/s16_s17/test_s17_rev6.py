@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import pathlib
 import re
+import sys
 
 import pyarrow.parquet as pq
 import pytest
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from build_intel_serving_v2 import CATALOG_VERSION  # noqa: E402
+from feed_screen import unattended_feed_reason  # noqa: E402
+
 LAKE = pathlib.Path("/Users/joshlacalamito/catbird-lake-local")
 S17_DIR = LAKE / "s17-picker-v1-20261030"
-BUNDLE_PATH = S17_DIR / "intel_serving_v2.json"
+# INTEL_SERVING_BUNDLE_PATH points the suite at a candidate bundle before it replaces the lake file.
+BUNDLE_PATH = pathlib.Path(os.environ.get("INTEL_SERVING_BUNDLE_PATH") or S17_DIR / "intel_serving_v2.json")
 EXP_PATH = S17_DIR / "s17_rev6_experiments.json"
 
 ALLOWED_MACRO_CATEGORIES = {
@@ -55,7 +62,7 @@ def experiments() -> dict:
 
 
 def test_safety_and_skeleton_only_invariants(bundle: dict) -> None:
-    assert bundle["catalogVersion"] == "s17_rev6_intel_v2_20261031"
+    assert bundle["catalogVersion"] == CATALOG_VERSION
     assert len(bundle["communities"]) == 1016
     assert len(bundle["scenes"]) == 104
 
@@ -102,6 +109,41 @@ def test_safety_and_skeleton_only_invariants(bundle: dict) -> None:
             assert did not in manual_excl, f"manual excluded DID leaked: {did}"
             if did in expected_no_unauth:
                 assert did in bundle_no_unauth, f"!no-unauthenticated DID {did} missing from noUnauthDids"
+
+
+def test_no_unattended_broadcast_feeds_are_served(bundle: dict) -> None:
+    overrides = json.loads((S17_DIR / "manual_overrides.json").read_text())
+    approved = set(overrides.get("approved_dids", []))
+    columns = [
+        "did",
+        "pq_posts",
+        "pq_originals",
+        "pq_mutual_share",
+        "pq_light_engagers",
+        "slab_n_posts",
+        "slab_near_dup_frac",
+        "slab_nn_mean_cos",
+    ]
+    table = pq.read_table(S17_DIR / "candidate_signals.parquet", columns=columns)
+    cols = {name: table[name].to_pylist() for name in columns}
+    screened = {
+        did
+        for idx, did in enumerate(cols["did"])
+        if did not in approved and unattended_feed_reason({name: cols[name][idx] for name in columns[1:]})
+    }
+    assert screened, "The screen matched nothing; candidate_signals columns may have changed"
+
+    for comm in bundle["communities"]:
+        for m in comm["members"]:
+            assert m["did"] not in screened, f"Unattended broadcast feed served as a member: {m['did']}"
+        for uri in comm["samplePostUris"] + comm["previewPostUris"]:
+            assert uri.split("/")[2] not in screened, f"Post from an unattended broadcast feed served: {uri}"
+        for did in comm["sampleAccountDids"]:
+            assert did not in screened, f"Unattended broadcast feed served as a sample account: {did}"
+    for duel in bundle["tasteDuels"]:
+        for side in ("optionA", "optionB"):
+            for uri in duel[side]["samplePostUris"]:
+                assert uri.split("/")[2] not in screened, f"Duel post from an unattended broadcast feed: {uri}"
 
 
 def test_all_104_scenes_have_clean_human_titles_categories_and_symbols(bundle: dict) -> None:

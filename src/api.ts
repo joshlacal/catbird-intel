@@ -13,6 +13,7 @@ import {
   type CommunitySelectionInput,
 } from "./intel_catalog.ts";
 import { LiveOnboardingEngine, createPublicFollowsFetcher } from "./onboarding_live.ts";
+import { FileAccountSignals } from "./onboarding_signals.ts";
 import { AuthenticationError, createServiceAuthenticator, type ServiceAuthenticator } from "./service_auth.ts";
 import { SERVING_CONTRACT_VERSION, InvalidRequest, parseControls, passesControls, controlReport,
   recommendationAction, type ServingControls } from "./serving_contract.ts";
@@ -2448,11 +2449,24 @@ if (import.meta.main) {
       const value = Number(process.env[name] ?? fallback);
       return Number.isInteger(value) && value >= 1 && value <= 24 ? value : fallback;
     };
+    // Account signals (recent activity, how often follows are kept) come from a file rebuilt on
+    // its own schedule. The path may not exist yet: the file is picked up when it appears.
+    const signalsPath = process.env.INTEL_ONBOARDING_SIGNALS_PATH;
+    const signalsMaxAgeHours = Number(process.env.INTEL_ONBOARDING_SIGNALS_MAX_AGE_HOURS ?? 0);
+    const liveSignals = signalsPath
+      ? new FileAccountSignals({
+        path: signalsPath,
+        maxAgeMs: signalsMaxAgeHours > 0 ? signalsMaxAgeHours * 3_600_000 : null,
+      })
+      : null;
+    const orderSalt = Number(process.env.INTEL_ONBOARDING_ORDER_SALT ?? 0);
     activeLiveOnboarding = new LiveOnboardingEngine({
       catalog: activeCatalogEngine,
       pool,
       vectors: activeVectorStore,
       followsFetcher: createPublicFollowsFetcher({ baseUrl: PUBLIC_APPVIEW }),
+      liveSignals,
+      orderSalt: Number.isInteger(orderSalt) && orderSalt >= 0 ? orderSalt : 0,
       config: {
         defaultLineup: lineupSize("INTEL_ONBOARDING_LINEUP_DEFAULT", 6),
         boostedLineup: lineupSize("INTEL_ONBOARDING_LINEUP_BOOSTED", 12),

@@ -54,6 +54,8 @@ export interface LiveAccountSignals {
   accountMultiplier(did: string): number | null;
   samplePostFor(did: string): string | null;
   version(): string | null;
+  /** Extra fields for the health report. */
+  describe?(): Record<string, unknown>;
 }
 
 export interface ViewerRef {
@@ -299,6 +301,7 @@ export class LiveOnboardingEngine {
       onboarding_pool_members: this.poolMemberCount,
       onboarding_pool_skipped: this.poolSkipped,
       onboarding_live_signals: this.liveSignals?.version() ?? null,
+      ...(this.liveSignals?.describe?.() ?? {}),
       onboarding_personalised: this.vectors !== null,
       onboarding_sessions: this.sessions.size,
     };

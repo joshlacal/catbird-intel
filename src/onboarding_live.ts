@@ -141,7 +141,8 @@ interface Session {
   followsLoadedAt: number | null;
   /** undefined until the first list is built; null when the viewer has too few follows to infer taste. */
   centroid: Float32Array | null | undefined;
-  lists: Map<number, OrderedMember[]>;
+  /** Per scene, the viewer's order as positions in that scene's member list: a few hundred bytes each. */
+  lists: Map<number, Uint16Array>;
 }
 
 interface SlateSlot {
@@ -408,11 +409,18 @@ export class LiveOnboardingEngine {
   }
 
   private orderedList(session: Session, communityId: number, viewer: ViewerRef): OrderedMember[] {
+    const members = this.membersByCommunity.get(communityId) ?? [];
     const cached = session.lists.get(communityId);
-    if (cached) return cached;
+    if (cached) {
+      const restored: OrderedMember[] = new Array(cached.length);
+      for (let i = 0; i < cached.length; i++) {
+        const member = members[cached[i]!]!;
+        restored[i] = { member, tier: this.tierOf(member), key: 0 };
+      }
+      return restored;
+    }
     if (session.centroid === undefined) session.centroid = this.tasteCentroid(session.follows);
     const centroid = session.centroid;
-    const members = this.membersByCommunity.get(communityId) ?? [];
 
     // Closeness to the viewer's taste is compared within the scene, so it reorders a scene's
     // members without favouring scenes that happen to sit near the viewer's existing follows.
@@ -462,7 +470,9 @@ export class LiveOnboardingEngine {
       (offered ? open : closed).push(candidate);
     }
     const ordered = this.applySlate(open).concat(closed);
-    session.lists.set(communityId, ordered);
+    const position = new Map<IntelMemberEntry, number>();
+    members.forEach((member, index) => position.set(member, index));
+    session.lists.set(communityId, Uint16Array.from(ordered, (entry) => position.get(entry.member)!));
     return ordered;
   }
 

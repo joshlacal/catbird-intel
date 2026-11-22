@@ -9,6 +9,7 @@ the service.
 | `live_sim.ts <bundle> [pool]` | Static engine against live engine over random selections: how many follows, how many of the faces shown on a card are followed, how many picked scenes contribute nobody, and how many different accounts lead a scene across sessions. |
 | `duel_probe.ts <bundle> <pool>` | The duels generated for a few realistic sets of picks, two sessions each, and how many scenes yield a full set of duels as a single pick. |
 | `http_walk.ts <viewer did or anon> [base url]` | One pass through the flow over HTTP (catalog, scene detail, lineup, preview, duels), checked against an independent copy of the viewer's public follow list. |
+| `load_check.ts <bundle> <pool> [sessions]` | Memory held per session and time for a viewer's whole flow, with many sessions open at once. |
 | `dev_viewer_proxy.ts` | Stands in for the gateway on a developer machine: signs each forwarded request for one viewer, so the local service sees a signed-in viewer. |
 
 ## Running the service locally with the live engine

@@ -45,7 +45,8 @@ FOLLOW_SCHEMA = pa.schema([("did", pa.string()), ("rkey", pa.string()), ("rev", 
 POST_SCHEMA = pa.schema([("did", pa.string()), ("rkey", pa.string()), ("rev", pa.uint64()), ("is_deleted", pa.uint8()),
                          ("indexed_at", TS), ("created_at", TS), ("text", pa.string()), ("reply_parent", pa.string()),
                          ("image_count", pa.uint8()), ("has_video", pa.uint8()), ("self_labels", pa.list_(pa.string())),
-                         ("politicalness", pa.float32()), ("heat", pa.float32())])
+                         ("politicalness", pa.float32()), ("heat", pa.float32()), ("quote_uri", pa.string()),
+                         ("external_uri", pa.string()), ("facet_links", pa.list_(pa.string()))])
 STATUS_SCHEMA = pa.schema([("did", pa.string()), ("seq", pa.uint64()), ("indexed_at", TS), ("active", pa.uint8()),
                            ("status", pa.string())])
 
@@ -77,13 +78,15 @@ class Export:
         return rk
 
     def post(self, did, created_us, text="", reply="", images=0, video=0, labels=(), political=None, heat=None,
-             rev=10, indexed_us=None, rkey=None, deleted=False):
+             rev=10, indexed_us=None, rkey=None, deleted=False, quote="", link="", facets=(), clock=7):
         idx = indexed_us if indexed_us is not None else created_us + 2_000_000
-        rk = rkey or tid(created_us, 7)
+        rk = rkey or tid(created_us, clock)
         row = {"did": did, "rkey": rk, "rev": rev, "is_deleted": int(deleted), "indexed_at": idx // 1000,
                "created_at": 0 if deleted else created_us // 1000, "text": "" if deleted else text,
                "reply_parent": "" if deleted else reply, "image_count": images, "has_video": video,
-               "self_labels": [] if deleted else list(labels), "politicalness": political, "heat": heat}
+               "self_labels": [] if deleted else list(labels), "politicalness": political, "heat": heat,
+               "quote_uri": "" if deleted else quote, "external_uri": "" if deleted else link,
+               "facet_links": [] if deleted else list(facets)}
         self._add("posts", day_of(idx), row)
         return rk
 

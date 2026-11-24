@@ -10,6 +10,8 @@ Three signals per pool DID, reference time = end of the --as-of UTC day:
                      follows excluded, removed14d = a tombstone with a higher rev indexed within
                      --removal-days of creation. Shrunk, create-day-standardised relative risk and
                      the [0.6, 1.25] multiplier come from build_follow_outcomes.py.
+  4. link-feed gate  own posts in the activity window are mostly links to one site and almost nobody
+                     replies to or quotes them (link_feed_screen.py) -> multiplier 0
 
 Export rows are raw (tombstones included, not deduplicated): every record is reduced to its max-rev row.
 Output holds only DIDs, numbers and at:// URIs. Diagnostics go to stderr and --report.
@@ -33,6 +35,7 @@ import pyarrow.parquet as pq
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import build_follow_outcomes as FO  # noqa: E402
+import link_feed_screen as LF  # noqa: E402
 
 VERSION = "onboarding_signals_v1"
 LIVE_PATH_NAME = "intel_onboarding_signals_v1.candidate.json"  # watched by a running local service
@@ -205,16 +208,34 @@ def scan_status(root: pathlib.Path, last: dt.date, pool_arr: pa.Array, npool: in
 
 
 POST_COLS = ["rkey", "rev", "is_deleted", "created_at", "reply_parent", "text", "image_count", "has_video",
-             "self_labels", "politicalness", "heat"]
+             "self_labels", "politicalness", "heat", "external_uri", "facet_links"]
+_TARGET_DID = r"^at://(?P<did>did:[^/]+)/"
+
+
+def _targets(col, pool_arr: pa.Array) -> pa.Array:
+    """Pool index of the account an at:// URI column points at (null when outside the pool)."""
+    did = pc.struct_field(pc.extract_regex(pc.fill_null(col, ""), _TARGET_DID), [0])
+    return pc.index_in(did, value_set=pool_arr)
 
 
 def scan_posts(files: list[pathlib.Path], pool_arr: pa.Array, npool: int):
+    """Pool accounts' own posts, plus how many distinct other accounts replied to or quoted each one."""
     raw = np.zeros(npool, np.int64)
     parts = []
+    responder_ids: dict[str, int] = {}
+    pairs = []
     for f in files:
         pf = pq.ParquetFile(f)
         for rg in range(pf.num_row_groups):
-            pidx = pc.index_in(pf.read_row_group(rg, columns=["did"])["did"], value_set=pool_arr)
+            head = pf.read_row_group(rg, columns=["did", "reply_parent", "quote_uri"])
+            for col in ("reply_parent", "quote_uri"):
+                tgt = _targets(head[col], pool_arr)
+                hit = pc.fill_null(pc.not_equal(pc.take(pool_arr, tgt), head["did"]), False)
+                if pc.any(hit).as_py():
+                    src = map_ids(head["did"].filter(hit), responder_ids, add=True)
+                    tg = tgt.filter(hit).to_numpy(zero_copy_only=False).astype(np.int64)
+                    pairs.append((tg << 32) | src)
+            pidx = pc.index_in(head["did"], value_set=pool_arr)
             m = pc.is_valid(pidx)
             sel = pidx.filter(m).to_numpy()
             if len(sel) == 0:
@@ -227,6 +248,8 @@ def scan_posts(files: list[pathlib.Path], pool_arr: pa.Array, npool: int):
                 pc.greater(pc.fill_null(pc.list_value_length(t["self_labels"]), 0), 0))
             media = pc.or_(pc.greater(pc.fill_null(t["image_count"], 0), 0),
                            pc.equal(pc.fill_null(t["has_video"], 0), 1))
+            hosts = [LF.link_host(e or (fl[0] if fl else ""))
+                     for e, fl in zip(t["external_uri"].to_pylist(), t["facet_links"].to_pylist())]
             parts.append(pa.table({
                 "pidx": pa.array(sel.astype(np.int32)),
                 "rkey": t["rkey"],
@@ -237,8 +260,11 @@ def scan_posts(files: list[pathlib.Path], pool_arr: pa.Array, npool: int):
                 "tlen": pc.utf8_length(pc.fill_null(t["text"], "")),
                 "media": media,
                 "safe": pc.invert(unsafe),
+                "host": pa.array(hosts, pa.string()),
             }))
-    return raw, parts
+    keys = np.unique(np.concatenate(pairs)) if pairs else np.zeros(0, np.int64)
+    responders = np.bincount((keys >> 32).astype(np.int64), minlength=npool)
+    return raw, parts, responders
 
 
 def count_rows(files: list[pathlib.Path], pool_arr: pa.Array, npool: int) -> np.ndarray:
@@ -437,7 +463,8 @@ def kept_follow(fo: dict, npool: int, nb: int, w0: int, ref: int, removal_days: 
 def build(export_root: pathlib.Path, pool_path: pathlib.Path, as_of: str, *, activity_days: int = 14,
           follow_from: str = "2026-10-19", follow_to: str = "2026-11-07", removal_days: int = 14,
           k: float | None = None, min_eligible: int | None = None, viewer_day_cap: int = 3,
-          max_dormant_share: float = 0.25, sanity_n: int = 15, allow_missing: bool = False) -> dict:
+          max_dormant_share: float = 0.25, max_link_feed_share: float = 0.05, sanity_n: int = 15,
+          allow_missing: bool = False) -> dict:
     t0 = time.time()
     last = dt.date.fromisoformat(as_of)
     ref = int(dt.datetime(last.year, last.month, last.day, tzinfo=dt.timezone.utc).timestamp()) * 1_000_000 + DAY_US
@@ -472,9 +499,12 @@ def build(export_root: pathlib.Path, pool_path: pathlib.Path, as_of: str, *, act
     t_status = time.time()
 
     # (b) activity + (c) sample post
-    raw14, parts = scan_posts(post_files, pool_arr, npool)
+    raw14, parts, responders14 = scan_posts(post_files, pool_arr, npool)
     posts14 = np.zeros(npool, np.int64)
     orig14 = np.zeros(npool, np.int64)
+    linked14 = np.zeros(npool, np.int64)
+    top_domain14 = np.zeros(npool, np.int64)
+    top_host: list[str] = [""] * npool
     last_us = np.full(npool, -1, np.int64)
     sample: list[str | None] = [None] * npool
     if parts:
@@ -490,6 +520,18 @@ def build(export_root: pathlib.Path, pool_path: pathlib.Path, as_of: str, *, act
         posts14 = np.bincount(p[live], minlength=npool)
         orig14 = np.bincount(p[live & orig], minlength=npool)
         np.maximum.at(last_us, p[live], np.minimum(cu[live], ref))
+        host = np.asarray(t["host"].to_pylist(), dtype=object)
+        li = np.nonzero(live & orig & (host != ""))[0]
+        linked14 = np.bincount(p[li], minlength=npool)
+        if len(li):
+            host_ids: dict[str, int] = {}
+            hid = np.fromiter((host_ids.setdefault(h, len(host_ids)) for h in host[li]), np.int64, count=len(li))
+            pair, cnt = np.unique((p[li].astype(np.int64) << 32) | hid, return_counts=True)
+            names = {v: k for k, v in host_ids.items()}
+            for o, h, c in zip((pair >> 32).tolist(), (pair & 0xFFFFFFFF).tolist(), cnt.tolist()):
+                if c > top_domain14[o]:
+                    top_domain14[o] = c
+                    top_host[o] = names[h]
         cand = live & orig & t["safe"].to_numpy(zero_copy_only=False) & (
             (t["tlen"].to_numpy() >= MIN_SAMPLE_TEXT) | t["media"].to_numpy(zero_copy_only=False))
         ci = np.nonzero(cand)[0]
@@ -537,6 +579,28 @@ def build(export_root: pathlib.Path, pool_path: pathlib.Path, as_of: str, *, act
         rep["stopped"] = f"dormant share {share:.4f} > {max_dormant_share}"
         return {"code": 3, "report": rep, "signals": None, "detail": None, "error": rep["stopped"]}
 
+    # link-feed gate: own posts mostly link to one site and almost nobody replies to or quotes them
+    link_feed = LF.link_feed_mask(orig14, linked14, top_domain14, responders14) & ~inactive & ~dormant
+    judged = orig14 >= LF.MIN_TOP_LEVEL
+    rep["linkFeed"] = {
+        "reason": LF.REASON,
+        "thresholds": {"minTopLevel": LF.MIN_TOP_LEVEL, "minLinkShare": LF.MIN_LINK_SHARE,
+                       "minTopDomainShare": LF.MIN_TOP_DOMAIN_SHARE,
+                       "maxRespondersPerPost": LF.MAX_RESPONDERS_PER_POST},
+        "flagged": dist(link_feed),
+        "judged": int(judged.sum()),
+        "accountsWithResponders": int((responders14 > 0).sum()),
+        "respondersPerPostPct": {q: round(float(np.percentile(responders14[judged] / orig14[judged], q)), 4)
+                                 for q in (5, 10, 25, 50)} if judged.any() else None,
+        "accounts": [{"did": dids[i], "role": rows[i].get("role"), "followers": int(rows[i].get("followers") or 0),
+                      "topLevel": int(orig14[i]), "linked": int(linked14[i]), "topHost": top_host[i],
+                      "topHostPosts": int(top_domain14[i]), "responders": int(responders14[i])}
+                     for i in sorted(np.nonzero(link_feed)[0].tolist(), key=lambda i: (-int(orig14[i]), dids[i]))]}
+    lf_share = float(link_feed.mean()) if npool else 0.0
+    if lf_share > max_link_feed_share:
+        rep["stopped"] = f"link-feed share {lf_share:.4f} > {max_link_feed_share}"
+        return {"code": 4, "report": rep, "signals": None, "detail": None, "error": rep["stopped"]}
+
     # sample freshness vs the pool's
     def uri_age_days(u):
         if not u:
@@ -544,7 +608,7 @@ def build(export_root: pathlib.Path, pool_path: pathlib.Path, as_of: str, *, act
         us, ok = tid_us(pa.array([u.rsplit("/", 1)[-1]]))
         return (ref - int(us[0])) / DAY_US if ok[0] else None
 
-    gated = inactive | dormant
+    gated = inactive | dormant | link_feed
     differs = [i for i in range(npool) if not gated[i] and sample[i] and sample[i] != rows[i].get("samplePostUri")]
     new_age = [a for a in (uri_age_days(sample[i]) for i in differs) if a is not None]
     old_age = [a for a in (uri_age_days(rows[i].get("samplePostUri")) for i in differs) if a is not None]
@@ -582,13 +646,15 @@ def build(export_root: pathlib.Path, pool_path: pathlib.Path, as_of: str, *, act
         if ent:
             accounts[did] = ent
     rep["output"] = {"accounts": len(accounts), "multiplierZero": int(gated.sum()),
+                     "linkFeedZero": int(link_feed.sum()),
                      "multiplierKeep": int(((mult_out != 1.0) & ~gated).sum()),
                      "samplePostUri": int(sum(1 for e in accounts.values() if "samplePostUri" in e))}
     rep["seconds"] = {"status": round(t_status - t0, 1), "posts": round(t_posts - t_status, 1),
                       "follows": round(t_follows - t_posts, 1), "total": round(time.time() - t0, 1)}
     signals = {"signalsVersion": VERSION, "generatedAt": iso(ref), "accounts": accounts}
     detail = {"dids": dids, "posts14": posts14, "originals14": orig14, "lastPostUs": last_us, "raw14": raw14,
-              "inactive": inactive, "dormant": dormant, "sample": sample, "n": kf["n"], "o": kf["o"], "mult": mult_out}
+              "inactive": inactive, "dormant": dormant, "linkFeed": link_feed, "linked14": linked14,
+              "topDomain14": top_domain14, "responders14": responders14, "sample": sample, "n": kf["n"], "o": kf["o"], "mult": mult_out}
     return {"code": 0, "report": rep, "signals": signals, "detail": detail, "error": None}
 
 
@@ -618,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-eligible", type=int, default=None, help="default: ceil(10 / g)")
     ap.add_argument("--viewer-day-cap", type=int, default=3, help="max removals per viewer per day; 0 = off")
     ap.add_argument("--max-dormant-share", type=float, default=0.25)
+    ap.add_argument("--max-link-feed-share", type=float, default=0.05,
+                    help="stop without writing when a larger share of the pool looks like link feeds")
     ap.add_argument("--sanity-n", type=int, default=15)
     ap.add_argument("--allow-missing", action="store_true")
     ap.add_argument("--allow-live-path", action="store_true")
@@ -630,7 +698,8 @@ def main(argv: list[str] | None = None) -> int:
     pa.set_io_thread_count(a.threads)
     res = build(a.export_root, a.pool, a.as_of, activity_days=a.activity_days, follow_from=a.follow_from,
                 follow_to=a.follow_to, removal_days=a.removal_days, k=a.k, min_eligible=a.min_eligible,
-                viewer_day_cap=a.viewer_day_cap, max_dormant_share=a.max_dormant_share, sanity_n=a.sanity_n,
+                viewer_day_cap=a.viewer_day_cap, max_dormant_share=a.max_dormant_share,
+                max_link_feed_share=a.max_link_feed_share, sanity_n=a.sanity_n,
                 allow_missing=a.allow_missing)
     rep_text = json.dumps(res["report"], indent=1, sort_keys=True) + "\n"
     if a.report:

@@ -684,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-eligible", type=int, default=None, help="default: ceil(10 / g)")
     ap.add_argument("--viewer-day-cap", type=int, default=3, help="max removals per viewer per day; 0 = off")
     ap.add_argument("--max-dormant-share", type=float, default=0.25)
+    ap.add_argument("--link-stats-out", type=pathlib.Path, default=None,
+                    help="also write {did: [own posts, linked own posts]} for the window (why_picked.py input)")
     ap.add_argument("--max-link-feed-share", type=float, default=0.05,
                     help="stop without writing when a larger share of the pool looks like link feeds")
     ap.add_argument("--sanity-n", type=int, default=15)
@@ -710,6 +712,12 @@ def main(argv: list[str] | None = None) -> int:
         return res["code"]
     write_atomic(a.out, json.dumps(res["signals"], sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n")
     print(f"wrote {a.out} ({len(res['signals']['accounts'])} accounts)", file=sys.stderr)
+    if a.link_stats_out:
+        d = res["detail"]
+        stats = {did: [int(n), int(k)] for did, n, k in zip(d["dids"], d["originals14"], d["linked14"]) if n > 0}
+        write_atomic(a.link_stats_out, json.dumps({"asOf": a.as_of, "activityDays": a.activity_days,
+                                                   "accounts": stats}, sort_keys=True, separators=(",", ":")) + "\n")
+        print(f"wrote {a.link_stats_out} ({len(stats)} accounts)", file=sys.stderr)
     return 0
 
 

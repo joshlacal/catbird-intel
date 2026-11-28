@@ -37,6 +37,11 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from feed_screen import is_broadcast_only, unattended_feed_reason  # noqa: E402
+import why_picked  # noqa: E402
+
+# {did: (own posts, linked own posts)} from `build_onboarding_signals.py --link-stats-out`, set by
+# --link-stats in main(); empty means no link evidence and every anchor reads "mostly original posts".
+LINK_STATS: dict[str, tuple[int, int]] = {}
 
 LAKE = pathlib.Path("/Users/joshlacalamito/catbird-lake-local")
 S17_DIR = LAKE / "s17-picker-v1-20261030"
@@ -226,6 +231,7 @@ def tokenize_clean(text: str) -> list[str]:
 def classify_member(
     meta: dict[str, Any],
     sig: dict[str, Any] | None,
+    did: str = "",
 ) -> tuple[str, str, int, int, int, str]:
     """Return (role, recommendedMode, repostShareBps, mediaShareBps, estPostsPerWeek, whyPicked)."""
     lf = meta.get("lf") or {}
@@ -301,7 +307,7 @@ def classify_member(
     elif role == "conversationalist":
         why = f"Conversational regular · active community threads · ~{est_ppw}/wk"
     else:
-        why = f"Core scene anchor · strong original posts · ~{est_ppw}/wk"
+        why = why_picked.anchor_why(est_ppw, LINK_STATS.get(did))
 
     if mode == "originals_only" and "Originals Only" not in why:
         why = f"{why} · Originals Only suggested"
@@ -402,7 +408,7 @@ def write_onboarding_pool(
     def make_member(cand: dict[str, Any], pos: int) -> dict[str, Any]:
         did = cand["did"]
         sig = pool_sig.get(did)
-        role, mode, rp_bps, media_bps, est_ppw, why = classify_member(cand, sig)
+        role, mode, rp_bps, media_bps, est_ppw, why = classify_member(cand, sig, did)
         s13_raw = float((sig or {}).get("s13_score") or cand.get("s13") or 100.0)
         sample: str | None = None
         for cand_u in (
@@ -693,7 +699,7 @@ def build_bundle(
                 referenced_no_unauth.add(did)
             meta = acct_meta_list[aid]
             sig = sig_by_did.get(did)
-            role, mode, rp_bps, media_bps, est_ppw, why = classify_member(meta, sig)
+            role, mode, rp_bps, media_bps, est_ppw, why = classify_member(meta, sig, did)
             # Normalized rank score in basis points (top member ~9800, 25th ~6200)
             s13_raw = float((sig or {}).get("s13_score") or meta.get("s13") or 100.0)
             decay = max(0.55, 1.0 - 0.016 * rank_idx)
@@ -1113,7 +1119,15 @@ if __name__ == "__main__":
         default=None,
         help="Write intel_onboarding_pool_v1 here: each bundle community's members, then deeper screened accounts.",
     )
+    parser.add_argument(
+        "--link-stats",
+        type=pathlib.Path,
+        default=None,
+        help="build_onboarding_signals.py --link-stats-out file; anchors that mostly post links read "
+        "'Shares articles and links' instead of 'mostly original posts'.",
+    )
     args = parser.parse_args()
+    LINK_STATS.update(why_picked.load_link_stats(args.link_stats))
     if (args.pool_in is None) != (args.pool_out is None):
         parser.error("--pool-in and --pool-out go together")
     if args.s17_dir is not None:

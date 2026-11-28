@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Upload sealed daily ClickHouse Parquet exports from netcup to Google Drive.
 
-Target Drive folder: CatbirdCommunity/catbird-lake/hot-export (13tCh7MmqAnA7iUQN1Vd9mg2HMNrGRdRb)
+Target Drive folder: My Drive/catbird-intel-hot-export, created by this app on first run.
+  The token is minted by mint_drive_token.py with only the drive.file scope, so the app sees
+  and writes only files it created itself, never the rest of the Drive. Set
+  HOT_EXPORT_FOLDER_ID to target an existing folder instead (needs a full-Drive token).
 Subfolder per day:   day=YYYY-MM-DD
 
 Reads OAuth credentials from DRIVE_OAUTH_PATH (default ~/.config/catbird-intel/drive-oauth.json).
@@ -22,9 +25,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-HOT_EXPORT_FOLDER_ID = os.environ.get(
-    "HOT_EXPORT_FOLDER_ID", "13tCh7MmqAnA7iUQN1Vd9mg2HMNrGRdRb"
-)
+HOT_EXPORT_FOLDER_ID = os.environ.get("HOT_EXPORT_FOLDER_ID", "")
+HOT_EXPORT_ROOT_NAME = os.environ.get("HOT_EXPORT_ROOT_NAME", "catbird-intel-hot-export")
 DEFAULT_OAUTH_PATH = os.path.expanduser("~/.config/catbird-intel/drive-oauth.json")
 CHUNK_SIZE = 32 * 1024 * 1024  # 32 MiB
 
@@ -186,7 +188,8 @@ def sync_day_dir(client: DriveClient, day_dir: pathlib.Path, day_name: str) -> N
         raise RuntimeError(f"No export files found in {day_dir}")
 
     folder_name = f"day={day_name}"
-    folder_id = client.ensure_folder(HOT_EXPORT_FOLDER_ID, folder_name)
+    root_id = HOT_EXPORT_FOLDER_ID or client.ensure_folder("root", HOT_EXPORT_ROOT_NAME)
+    folder_id = client.ensure_folder(root_id, folder_name)
     remote = client.list_children(folder_id)
 
     uploaded_bytes = 0
